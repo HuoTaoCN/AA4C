@@ -1,0 +1,11 @@
+[package]
+name = "aa4c-discovery"
+description = "AA4C 设备发现：mDNS 广播与浏览"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aa4c-types = { workspace = true }

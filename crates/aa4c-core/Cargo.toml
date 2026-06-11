@@ -1,0 +1,16 @@
+[package]
+name = "aa4c-core"
+description = "AA4C Core：生命周期、事件总线、服务编排"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aa4c-types = { workspace = true }
+aa4c-identity = { workspace = true }
+aa4c-discovery = { workspace = true }
+aa4c-transfer = { workspace = true }
+aa4c-store = { workspace = true }
+tracing = { workspace = true }

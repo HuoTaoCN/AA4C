@@ -1,0 +1,15 @@
+[package]
+name = "aa4c-types"
+description = "AA4C 公共类型：设备、任务、事件、错误（无 I/O）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
