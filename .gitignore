@@ -11,7 +11,8 @@ dist/
 
 # Tauri
 apps/desktop/src-tauri/target/
-apps/desktop/src-tauri/gen/
+# gen/android 工程源文件入库；schemas 与 Gradle 产物由各级 .gitignore 排除
+apps/desktop/src-tauri/gen/schemas/
 
 # 数据与密钥（本地运行产生，绝不入库）
 *.db
