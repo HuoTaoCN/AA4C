@@ -1,0 +1,35 @@
+# Rust
+/target/
+**/target/
+Cargo.lock.orig
+
+# Node / 前端
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Tauri
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+
+# 数据与密钥（本地运行产生，绝不入库）
+*.db
+*.db-wal
+*.db-shm
+identity/
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 日志与临时文件
+*.log
+*.aa4c-part
+.env
+.env.local

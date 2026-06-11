@@ -1,0 +1,171 @@
+# AA4C Database Schema（V0.1）
+
+> SQLite 数据库设计。与 [API_DESIGN.md](API_DESIGN.md) 中的 `aa4c-store` 接口对应。
+
+## 1. 总体约定
+
+| 项 | 约定 |
+|----|------|
+| 引擎 | SQLite（`rusqlite`，bundled 编译，无系统依赖） |
+| 文件位置 | `<data_dir>/aa4c.db`（如 macOS：`~/Library/Application Support/aa4c/aa4c.db`） |
+| 日志模式 | `PRAGMA journal_mode = WAL`（读写并发） |
+| 外键 | `PRAGMA foreign_keys = ON` |
+| 时间戳 | 一律 **unix 毫秒**（INTEGER），UTC |
+| 主键 | 业务实体用 TEXT（DeviceId / UUID），明细行用 INTEGER 自增 |
+| 枚举 | TEXT + CHECK 约束（可读性优先，量级很小） |
+| 迁移 | `PRAGMA user_version`，启动时按版本号顺序执行（见 §5） |
+
+数据库只存**元数据**，文件内容永远在文件系统中。
+
+## 2. V0.1 表结构
+
+### 2.1 devices —— 设备表
+
+```sql
+CREATE TABLE devices (
+    id            TEXT PRIMARY KEY,             -- 设备指纹 = BLAKE3(公钥) hex
+    name          TEXT NOT NULL,                -- 用户可见设备名
+    platform      TEXT NOT NULL
+                  CHECK (platform IN ('windows','macos','linux','android','ios','server')),
+    public_key    BLOB NOT NULL,                -- Ed25519 公钥（32 字节）
+    trusted       INTEGER NOT NULL DEFAULT 0,   -- 是否已配对（0/1）
+    paired_at     INTEGER,                      -- 配对完成时间
+    last_seen_at  INTEGER,                      -- 最近一次在线时间
+    last_addr     TEXT,                         -- 最近一次发现的地址 "ip:port"
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+);
+
+CREATE INDEX idx_devices_trusted ON devices(trusted);
+```
+
+说明：
+
+- 未配对但发现过的设备**不入库**（只在内存中），配对成功才写入，避免表被局域网陌生设备污染
+- 解除配对 = 直接 `DELETE`，而非 `trusted = 0`
+
+### 2.2 transfer_tasks —— 传输任务表
+
+```sql
+CREATE TABLE transfer_tasks (
+    id                 TEXT PRIMARY KEY,        -- UUID v4
+    direction          TEXT NOT NULL CHECK (direction IN ('send','recv')),
+    peer_device_id     TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    status             TEXT NOT NULL
+                       CHECK (status IN ('waiting_accept','transferring','done',
+                                         'failed','cancelled','rejected')),
+    total_bytes        INTEGER NOT NULL DEFAULT 0,
+    transferred_bytes  INTEGER NOT NULL DEFAULT 0,
+    file_count         INTEGER NOT NULL DEFAULT 0,
+    save_dir           TEXT,                    -- 接收任务的保存目录（send 任务为 NULL）
+    error              TEXT,                    -- 失败原因（人类可读）
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+);
+
+CREATE INDEX idx_tasks_created ON transfer_tasks(created_at DESC);
+CREATE INDEX idx_tasks_peer    ON transfer_tasks(peer_device_id);
+CREATE INDEX idx_tasks_status  ON transfer_tasks(status);
+```
+
+说明：
+
+- 进度（`transferred_bytes`）**节流写库**（≥1s 一次），实时进度走事件总线，不依赖数据库
+- 应用启动时将所有 `waiting_accept` / `transferring` 状态的任务标记为 `failed`（error = "应用重启中断"）——V0.1 不做断点续传恢复
+
+### 2.3 transfer_files —— 传输文件明细表
+
+```sql
+CREATE TABLE transfer_files (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     TEXT NOT NULL REFERENCES transfer_tasks(id) ON DELETE CASCADE,
+    file_index  INTEGER NOT NULL,               -- 任务内序号（与协议 file_index 对应）
+    rel_path    TEXT NOT NULL,                  -- 相对路径，'/' 分隔
+    size        INTEGER NOT NULL,
+    hash        TEXT,                           -- BLAKE3 hex，完成后填充
+    status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','transferring','done','failed')),
+    abs_path    TEXT,                           -- 本地绝对路径（发送=源路径，接收=落盘路径）
+    UNIQUE (task_id, file_index)
+);
+
+CREATE INDEX idx_files_task ON transfer_files(task_id);
+```
+
+### 2.4 settings —— 设置表（KV）
+
+```sql
+CREATE TABLE settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,                   -- JSON 编码的值
+    updated_at INTEGER NOT NULL
+);
+```
+
+V0.1 已定义的 key：
+
+| key | 默认值 | 说明 |
+|-----|--------|------|
+| `device_name` | hostname | 本机设备名 |
+| `save_dir` | `~/Downloads/AA4C` | 默认接收目录 |
+| `auto_accept_from_trusted` | `false` | 已配对设备来文件是否免确认 |
+| `listen_port` | `42420` | 监听端口 |
+
+> 设备私钥**不存数据库**，单独存放于 `<data_dir>/identity/`，文件权限 0600。
+
+## 3. 实体关系
+
+```
+devices 1 ──── n transfer_tasks 1 ──── n transfer_files
+                      settings（独立 KV）
+```
+
+## 4. 未来版本预留（不在 V0.1 建表）
+
+仅作设计预告，等对应版本再写迁移：
+
+| 版本 | 表 | 用途 |
+|------|----|------|
+| V0.2 | `sync_folders` | 同步目录配置（路径、模式、对端设备、忽略规则） |
+| V0.2 | `sync_file_index` | 文件块索引（路径、mtime、块哈希列表，参考 Syncthing） |
+| V0.2 | `sync_conflicts` | 冲突记录 |
+| V0.3 | `shares` | 分享链接（token、权限、过期时间、访问记录） |
+| V0.4 | `download_tasks` | 下载任务（url、协议、引擎、状态） |
+| V0.5 | `tags` / `file_tags` | AI 标签 |
+| V0.5 | `archive_rules` | 归档规则（匹配条件 → 目标目录） |
+
+> 若 V0.5 文件索引规模超出 SQLite 舒适区（千万级行），再评估迁移 RocksDB；元数据表保留在 SQLite。
+
+## 5. 迁移策略
+
+使用 `PRAGMA user_version` 做版本控制：
+
+```rust
+const MIGRATIONS: &[&str] = &[
+    /* v1: */ include_str!("migrations/001_init.sql"),
+    // v2: 002_sync.sql （V0.2 时追加）
+];
+
+fn migrate(conn: &Connection) -> Result<()> {
+    let current: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
+        let tx = conn.transaction()?;       // 每个迁移一个事务
+        tx.execute_batch(sql)?;
+        tx.pragma_update(None, "user_version", i as i32 + 1)?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+```
+
+规则：
+
+1. 迁移文件**只追加，永不修改**已发布的迁移
+2. 每个迁移在独立事务中执行，失败则整体回滚、应用拒绝启动
+3. 不做降级迁移；升级前数据库文件自动备份为 `aa4c.db.bak.<version>`
+
+## 6. 性能注意事项
+
+- 打开连接后执行：`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;`
+- `rusqlite` 连接不跨线程共享：用单一专职线程 + mpsc channel 包装成 async 接口（见 API_DESIGN §7）
+- 批量插入 `transfer_files` 使用单事务 + prepared statement
