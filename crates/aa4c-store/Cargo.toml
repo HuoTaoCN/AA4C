@@ -9,6 +9,9 @@ rust-version.workspace = true
 
 [dependencies]
 aa4c-types = { workspace = true }
+rusqlite = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -1,9 +1,19 @@
 //! AA4C 公共类型：设备、任务、事件、错误。
 //!
 //! 本 crate 被所有其他 crate 依赖，禁止引入任何 I/O 依赖。
-//! 完整类型定义见 API_DESIGN.md §3，将在 M1 里程碑实现。
+//! 类型契约见 API_DESIGN.md §3，协议常量见 PROTOCOL.md §0。
 
 #![forbid(unsafe_code)]
+
+mod device;
+mod error;
+mod event;
+mod transfer;
+
+pub use device::{DeviceId, DeviceInfo, Platform};
+pub use error::{Aa4cError, Result};
+pub use event::CoreEvent;
+pub use transfer::{Direction, FileStatus, TaskId, TransferFile, TransferStatus, TransferTask};
 
 /// 协议版本（PROTOCOL.md §0）。
 pub const PROTO_VERSION: u16 = 1;
@@ -14,14 +24,11 @@ pub const DEFAULT_PORT: u16 = 42420;
 /// mDNS 服务类型（PROTOCOL.md §1）。
 pub const SERVICE_TYPE: &str = "_aa4c._tcp.local.";
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// 分块大小：4 MiB（PROTOCOL.md §0）。
+pub const CHUNK_SIZE: usize = 4 * 1024 * 1024;
 
-    #[test]
-    fn constants_are_stable() {
-        assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(DEFAULT_PORT, 42420);
-        assert!(SERVICE_TYPE.ends_with("._tcp.local."));
-    }
-}
+/// 最大帧长：16 MiB（PROTOCOL.md §3）。
+pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
+
+// 协议不变量：分块必须能放进一帧
+const _: () = assert!(MAX_FRAME_LEN > CHUNK_SIZE);

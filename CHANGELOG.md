@@ -8,6 +8,7 @@
 
 - 项目文档体系：愿景白皮书、架构设计、API 设计、协议规范（ATP v1 + v2 草案）、数据库设计、UI 设计规范、V0.1 实现计划、测试指南、贡献指南、安全策略
 - M0 工程脚手架：Cargo workspace（6 个 crate）、Tauri 2 + Vue3 + TypeScript 桌面端工程、tracing 日志、GitHub Actions CI（三平台 fmt / clippy / test / 前端构建 / cargo-audit）与 Release 工作流
+- M1 类型与存储：`aa4c-types` 全部公共类型（设备 / 任务 / 事件 / 错误，API_DESIGN §3）；`aa4c-store` SQLite 持久化（user_version 迁移、专职线程 async 封装、设备 / 任务 / 设置 CRUD、外键级联）
 
 ### Planned (V0.1)
 
