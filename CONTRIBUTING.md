@@ -19,6 +19,17 @@
 | pnpm | ≥ 9 |
 | Tauri CLI | 2.x |
 
+仅参与 Android 开发时额外需要：
+
+| 工具 | 版本 |
+|------|------|
+| JDK | 17 |
+| Android SDK | platform-tools、platforms;android-34、build-tools;34.0.0 |
+| Android NDK | 27.x |
+| Rust targets | `aarch64-linux-android` `armv7-linux-androideabi` `i686-linux-android` `x86_64-linux-android` |
+
+环境变量：`JAVA_HOME`、`ANDROID_HOME`、`NDK_HOME`。
+
 各平台 Tauri 系统依赖见 [Tauri 官方文档](https://tauri.app/start/prerequisites/)（Linux 需要 webkit2gtk 等）。
 
 ```bash

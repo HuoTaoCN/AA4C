@@ -20,5 +20,6 @@
 - 设备配对（双向 PIN 确认）
 - 局域网加密文件传输（TLS 1.3 + BLAKE3 校验）
 - 桌面端（Tauri + Vue3：Windows / macOS / Linux）
+- Android 实验版（Tauri 2，与桌面端同一代码库）
 
 [Unreleased]: https://github.com/HuoTaoCN/AA4C/commits/main

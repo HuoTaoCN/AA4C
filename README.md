@@ -63,7 +63,7 @@ AA4C（设备直连，数据属于用户）：
 ## Architecture
 
 ```
-UI (Tauri / Flutter / Web)
+UI（Tauri 2：桌面 + Android 同一代码库 / Web 可选）
         │
    AA4C Core (Rust)
         │
