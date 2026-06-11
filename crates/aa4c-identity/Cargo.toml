@@ -1,6 +1,6 @@
 [package]
 name = "aa4c-identity"
-description = "AA4C 设备身份：密钥、证书、配对协议"
+description = "AA4C 设备身份：密钥、证书、TLS 证书固定、配对协议"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,13 @@ rust-version.workspace = true
 
 [dependencies]
 aa4c-types = { workspace = true }
+blake3 = { workspace = true }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+x509-parser = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }

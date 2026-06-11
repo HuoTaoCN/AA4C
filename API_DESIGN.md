@@ -161,20 +161,30 @@ pub enum CoreEvent {
 ## 4. aa4c-identity —— 设备身份与配对
 
 ```rust
-/// 本机身份：Ed25519 密钥对 + 自签名 TLS 证书
-pub struct Identity {
-    pub device_id: DeviceId,         // = BLAKE3(public_key) hex
-    pub keypair: Ed25519KeyPair,
-    pub cert: CertifiedKey,          // rcgen 生成的自签名证书（含 Ed25519 公钥）
-}
+/// 本机身份：Ed25519 密钥对 + 自签名 TLS 证书。
+/// 私钥存 `<data_dir>/identity/device.key`（PEM，0600）；
+/// 证书每次启动由私钥重新自签（指纹固定在公钥上，证书本身可变）。
+pub struct Identity { /* 字段私有 */ }
 
 impl Identity {
-    /// 加载或首次生成身份（存放于平台数据目录，私钥文件权限 0600）
+    /// 加载或首次生成身份
     pub fn load_or_generate(data_dir: &Path) -> Result<Self>;
-    /// 生成 rustls ServerConfig / ClientConfig（证书固定：校验对端证书指纹 = DeviceId）
-    pub fn tls_server_config(&self) -> Result<rustls::ServerConfig>;
+    pub fn device_id(&self) -> &DeviceId;        // = BLAKE3(public_key) hex
+    pub fn public_key(&self) -> &[u8];           // Ed25519 公钥 32 字节
+
+    /// mTLS：双方互验证书。expect_peer = Some(id) 时握手内强制指纹一致；
+    /// None 时（监听端常规路径 / 首次配对）接受任意有效 Ed25519 证书，
+    /// 由上层在握手后用 device_id_from_cert 校验 trusted 或走 PIN 确认
+    pub fn tls_server_config(&self, expect_peer: Option<&DeviceId>) -> Result<rustls::ServerConfig>;
     pub fn tls_client_config(&self, expect_peer: Option<&DeviceId>) -> Result<rustls::ClientConfig>;
 }
+
+/// 从对端证书 DER 提取 DeviceId（仅接受 Ed25519 证书）
+pub fn device_id_from_cert(cert: &CertificateDer<'_>) -> Result<DeviceId>;
+/// 由公钥计算 DeviceId
+pub fn device_id_from_public_key(public_key: &[u8]) -> DeviceId;
+/// 配对 PIN（PROTOCOL.md §6.1）
+pub fn derive_pin(pk_a: &[u8], pk_b: &[u8]) -> String;
 
 /// 配对协议（发起方 = A，接收方 = B）：
 /// 1. A 通过 TLS 连接 B，发送 PairRequest{A 的 DeviceInfo + 公钥}
