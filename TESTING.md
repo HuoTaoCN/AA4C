@@ -71,6 +71,7 @@ cargo fmt --check && cargo clippy --workspace -- -D warnings && cargo test --wor
 | test | ubuntu / macos / windows | `cargo test --workspace` |
 | frontend | ubuntu | `pnpm install && pnpm test && pnpm build` |
 | audit | ubuntu | `cargo audit`（依赖安全公告） |
+| android | ubuntu | `tauri android build --debug`（编译哨兵，A0 起启用，不阻塞合并） |
 | build | 三平台 | `tauri build`（仅 tag / release 分支） |
 
 ## 5. 手动验收清单（每个 release 前）
@@ -90,6 +91,14 @@ cargo fmt --check && cargo clippy --workspace -- -D warnings && cargo test --wor
 - [ ] 重名文件接收：自动加 `(1)` 后缀，不覆盖
 - [ ] 深色模式、最小窗口 900×600 无横向滚动
 - [ ] UI 全程无专业术语（按 UI_DESIGN_SPEC §7 术语表抽查）
+
+**Android 追加项（A3 起）**：
+
+- [ ] Android 真机 ↔ 桌面互相发现、配对、双向传输（哈希一致）
+- [ ] 移动布局：底部导航、单列列表、无横向滚动、触控目标不误触
+- [ ] 文件选择器可选多文件；接收后保存位置提示正确
+- [ ] 锁屏/切后台中断后恢复前台：任务状态如实显示失败而非卡死
+- [ ] Android 13+ 通知权限请求流程正常
 
 ## 6. 性能基准（参考值，不阻塞合并）
 

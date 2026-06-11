@@ -34,7 +34,7 @@ AA4C **是**：个人数字空间。
 |----|------|
 | Backend | Rust（edition 2021，async = tokio） |
 | Desktop | Tauri 2 + Vue3 + TypeScript + Pinia |
-| Mobile | Flutter |
+| Mobile | Tauri 2 Android（与桌面端同一工程 `apps/desktop`，Android 原生部分用 Kotlin 插件） |
 | Database | SQLite（rusqlite） |
 
 ## 架构规则

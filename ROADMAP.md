@@ -30,7 +30,7 @@
 - 局域网加密传输
 - 传输记录与任务管理
 
-支持平台：Windows / macOS / Linux
+支持平台：Windows / macOS / Linux + **Android（实验版，Tauri 2 同一代码库，与桌面端并行开发）**
 
 📄 详细实现步骤见 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md)。
 
@@ -48,7 +48,7 @@
 - 冲突解决
 - 同步历史
 
-新增平台：Android / iOS（Flutter）
+平台：Android 体验完善（前台服务、系统分享接入）；iOS（Tauri 2，视签名与审核情况）
 
 ---
 

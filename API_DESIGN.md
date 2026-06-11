@@ -358,6 +358,9 @@ pub struct CoreConfig {
 
 ## 9. Tauri 前后端契约
 
+> 本契约同时服务**桌面端与 Android**（同一 Tauri 工程、同一 Vue3 前端）。
+> Android 特有的原生能力（多播锁、MediaStore 导出）由 Kotlin 插件实现，不改变本节的 Command / Event 接口。
+
 ### 9.1 Commands（前端 `invoke`）
 
 | Command | 参数 | 返回 | 说明 |
@@ -407,7 +410,21 @@ JSON 一律使用 **camelCase**（serde `rename_all = "camelCase"` 在 Tauri 层
 | 设备离线判定 | 30 秒 |
 | 临时文件后缀 | `.aa4c-part` |
 
-## 11. 推荐依赖
+## 11. Android 适配（V0.1 实验版）
+
+与桌面端的差异点，全部收敛在平台层，core crate 不感知 Android：
+
+| 关注点 | 方案 |
+|--------|------|
+| mDNS 多播 | Kotlin 插件在 `onCreate` 获取 `WifiManager.MulticastLock`，`onDestroy` 释放；Rust 侧无改动 |
+| 数据目录 | `dirs` 在 Android 上不可用，改用 Tauri `app_handle.path()`（指向应用私有目录）；`CoreConfig.data_dir` 由平台层注入 |
+| 接收保存目录 | 默认应用专属外部存储；"导出到下载"通过插件走 MediaStore（V0.2） |
+| 文件选择 | `tauri-plugin-dialog`（系统文件选择器），替代桌面拖拽 |
+| 网络权限 | `AndroidManifest.xml`：`INTERNET`、`ACCESS_NETWORK_STATE`、`CHANGE_WIFI_MULTICAST_STATE` |
+| 进程存活 | V0.1 接受切后台可能中断；前台服务在 V0.2 实现 |
+| 最低版本 | minSdk 24（Android 7.0） |
+
+## 12. 推荐依赖
 
 | 用途 | crate |
 |------|-------|

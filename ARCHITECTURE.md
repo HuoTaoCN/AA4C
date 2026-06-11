@@ -9,7 +9,7 @@ AA4C 采用 **Core + Service + Plugin + Transport + Storage** 分层架构，目
 1. **Core 只协调，不实现业务** —— 业务能力全部下沉到 Service 与 Plugin
 2. **每个功能独立 Service** —— 低耦合、可独立测试、可独立替换
 3. **高级能力插件化** —— Download / BT / AI / 云盘等通过统一 Plugin API 接入
-4. **UI 与 Core 分离** —— Core 是纯 Rust 库，可被 Tauri、Flutter（FFI）、Docker（HTTP）复用
+4. **UI 与 Core 分离** —— Core 是纯 Rust 库，可被 Tauri（桌面 + 移动）、Docker（HTTP）复用；桌面端与 Android 共享同一 Tauri 工程与 Vue3 前端
 
 ## 整体架构
 
@@ -18,10 +18,10 @@ AA4C 采用 **Core + Service + Plugin + Transport + Storage** 分层架构，目
 │                       AA4C UI                        │
 │  ┌────────────┐   ┌────────────┐   ┌────────────┐    │
 │  │  Desktop   │   │   Mobile   │   │    Web     │    │
-│  │ Tauri+Vue3 │   │  Flutter   │   │  Vue3(可选) │    │
+│  │ Tauri+Vue3 │   │ Tauri+Vue3 │   │  Vue3(可选) │    │
 │  └─────┬──────┘   └─────┬──────┘   └─────┬──────┘    │
 └────────┼────────────────┼────────────────┼───────────┘
-         │ Tauri IPC      │ FFI            │ HTTP API
+         │ Tauri IPC      │ Tauri IPC      │ HTTP API
 ┌────────┴────────────────┴────────────────┴───────────┐
 │                     AA4C Core (Rust)                 │
 │        状态管理 · 生命周期 · 事件总线 · 配置          │
@@ -136,14 +136,21 @@ Plugin（基础生命周期）
 | `aa4c-discovery` | Device Service | mDNS 发现 |
 | `aa4c-transfer` | Transfer Service | 传输协议与引擎 |
 | `aa4c-store` | Storage Service | SQLite 持久化 |
-| `apps/desktop` | Desktop UI | Tauri + Vue3 |
+| `apps/desktop` | Desktop + Android UI | Tauri 2 + Vue3（Android 工程由 Tauri 生成于 `src-tauri/gen/android`） |
 
 详细接口定义见 [API_DESIGN.md](API_DESIGN.md)。
 
 ## Supported Platforms
 
-| 类型 | 平台 |
-|------|------|
-| Desktop | Windows、macOS、Linux |
-| Mobile | Android、iOS |
-| Server | Docker、NAS（ARM64 / x86_64） |
+| 类型 | 平台 | 技术 |
+|------|------|------|
+| Desktop | Windows、macOS、Linux | Tauri 2 + Vue3 |
+| Mobile | Android（V0.1 实验版）、iOS（后续） | Tauri 2（同一工程）；Flutter 为远期备选 |
+| Server | Docker、NAS（ARM64 / x86_64） | Rust（无 UI） |
+
+### Android 适配要点
+
+- mDNS 收发需要持有 `WifiManager.MulticastLock`，通过 Tauri Android 插件（Kotlin）在应用启动时获取
+- 接收目录默认使用应用专属外部存储（`Android/data/...`），导出到系统下载目录走 MediaStore
+- 传输过程需前台服务（Foreground Service）防止系统杀进程（V0.2 完善）
+- UI 响应式适配见 UI_DESIGN_SPEC.md §10

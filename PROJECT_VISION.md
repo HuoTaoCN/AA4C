@@ -124,8 +124,8 @@ AA4C Core → Plugin System → Transport Layer → Storage Layer
 | 层 | 技术 | 理由 |
 |----|------|------|
 | 核心语言 | **Rust** | 性能高、跨平台、内存安全、生态成熟 |
-| 桌面端 | **Tauri + Vue3 + Pinia + TypeScript** | 轻量、跨 Windows / macOS / Linux |
-| 移动端 | **Flutter** | 一套代码支持 Android / iOS |
+| 桌面端 | **Tauri 2 + Vue3 + Pinia + TypeScript** | 轻量、跨 Windows / macOS / Linux |
+| 移动端 | **Tauri 2（与桌面端同一代码库）** | 复用全部 Vue3 前端与 Rust core，Android 先行、iOS 后续；Flutter 保留为远期备选 |
 | NAS / 服务器 | **Docker**（ARM64 / x86_64） | 部署简单 |
 | Web 管理端 | Vue3（可选） | 与桌面端共享技术栈 |
 
@@ -188,8 +188,8 @@ AA4C Core → Plugin System → Transport Layer → Storage Layer
 
 | 版本 | 目标 | 核心功能 |
 |------|------|----------|
-| **V0.1** | 完成 AA 核心闭环 | 设备发现、设备配对、文件发送、局域网传输 |
-| **V0.2** | 持续同步 | 文件夹同步、同步策略、历史记录 |
+| **V0.1** | 完成 AA 核心闭环 | 设备发现、设备配对、文件发送、局域网传输（桌面三平台 + Android 实验版） |
+| **V0.2** | 持续同步 | 文件夹同步、同步策略、历史记录、Android 体验完善 |
 | **V0.3** | 突破局域网 | 广域网同步、NAT 穿透、Relay、分享链接 |
 | **V0.4** | 统一文件入口 | 下载中心、BT 支持、统一任务中心 |
 | **V0.5** | 数字资产管理 | AI 分类、自动归档、知识库 |

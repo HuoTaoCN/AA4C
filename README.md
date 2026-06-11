@@ -56,8 +56,8 @@ AA4C（设备直连，数据属于用户）：
 
 | 平台 | 技术 | 系统 |
 |------|------|------|
-| Desktop | Tauri + Vue3 | Windows / macOS / Linux |
-| Mobile | Flutter | Android / iOS |
+| Desktop | Tauri 2 + Vue3 | Windows / macOS / Linux |
+| Mobile | Tauri 2（与桌面端同一代码库） | Android（开发中）/ iOS（计划） |
 | Server | Docker | NAS / ARM64 / x86_64 |
 
 ## Architecture
@@ -96,7 +96,7 @@ UI (Tauri / Flutter / Web)
 
 **Project Stage: Early Development**
 
-当前目标：完成 V0.1 —— 第一次 AA（设备发现、设备配对、局域网文件发送）。
+当前目标：完成 V0.1 —— 第一次 AA（设备发现、设备配对、局域网文件发送），桌面三平台 + Android 实验版并行开发。
 
 ## License
 

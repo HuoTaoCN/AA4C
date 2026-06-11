@@ -1,7 +1,8 @@
-# AA4C UI Design Spec（V0.1 桌面端）
+# AA4C UI Design Spec（V0.1 桌面端 + Android）
 
-> AA 交互设计规范。技术栈：Tauri 2 + Vue3 + TypeScript + Pinia。
+> AA 交互设计规范。技术栈：Tauri 2 + Vue3 + TypeScript + Pinia，**桌面端与 Android 共享同一前端**。
 > 与 [API_DESIGN.md](API_DESIGN.md) §9 的 Tauri Commands / Events 一一对应。
+> §2–§8 以桌面布局为基准描述；Android 的差异集中在 §10。
 
 ## 1. 设计原则
 
@@ -209,3 +210,32 @@ IMG_2024.jpg（3/5 个文件）
 | `useSettingsStore` | 设置项 | `get_settings` / `update_settings` |
 
 事件监听在 App 根组件统一注册（`onMounted` 时 `listen('aa4c://...')`），分发给对应 store，组件只读 store。
+
+## 10. Android 适配（V0.1 实验版）
+
+同一前端代码，按视口宽度响应式切换，**不写第二套页面**：
+
+### 布局
+
+- 断点：视口宽度 `< 700px` 进入移动布局
+- 侧边导航 → **底部导航栏**（首页 / AA / 记录 / 设置，4 个 tab）
+- 设备网格 → 单列设备列表；全局任务条吸附在底部导航上方
+- 触控目标最小 44×44px；hover 态在触屏上以按压态替代
+
+### 交互差异
+
+| 桌面 | Android |
+|------|---------|
+| 拖拽文件到窗口 | "选择文件 / 选择照片"按钮（系统文件选择器，`tauri-plugin-dialog`） |
+| 点击"打开所在文件夹" | "导出到下载"（V0.2，走 MediaStore）；V0.1 显示保存位置说明 |
+| 系统通知（桌面通知中心） | 系统通知（需 `POST_NOTIFICATIONS` 权限，Android 13+ 运行时请求） |
+| 最小窗口 900×600 | 全屏；适配刘海区（safe-area-inset） |
+
+### V0.1 Android 已知限制（界面需如实告知）
+
+- 应用切到后台传输可能中断（前台服务 V0.2 实现）——传输中显示"请保持 AA4C 在前台"
+- 接收的文件保存在应用专属目录，卸载应用会一并删除（导出功能 V0.2）
+
+### 文案
+
+§6 / §7 的文案与术语表对 Android 同样生效，无平台例外。

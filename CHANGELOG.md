@@ -10,6 +10,10 @@
 - M0 工程脚手架：Cargo workspace（6 个 crate）、Tauri 2 + Vue3 + TypeScript 桌面端工程、tracing 日志、GitHub Actions CI（三平台 fmt / clippy / test / 前端构建 / cargo-audit）与 Release 工作流
 - M1 类型与存储：`aa4c-types` 全部公共类型（设备 / 任务 / 事件 / 错误，API_DESIGN §3）；`aa4c-store` SQLite 持久化（user_version 迁移、专职线程 async 封装、设备 / 任务 / 设置 CRUD、外键级联）
 
+### Changed
+
+- 移动端技术方案：Flutter → **Tauri 2 Android**（与桌面端共享同一工程与前端；Flutter 退为远期备选），Android 实验版纳入 V0.1 并行开发（A0–A3 里程碑）
+
 ### Planned (V0.1)
 
 - 设备发现（mDNS）

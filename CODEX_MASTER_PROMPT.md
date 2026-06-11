@@ -26,7 +26,7 @@
 
 - **Backend**: Rust（edition 2021，tokio）
 - **Desktop**: Tauri 2 + Vue3 + TypeScript + Pinia
-- **Mobile**: Flutter
+- **Mobile**: Tauri 2 Android（与桌面端同一工程；iOS 后续）
 - **Database**: SQLite（后续可选 RocksDB）
 
 ## 代码原则
@@ -43,7 +43,7 @@
 
 实现：设备发现、设备配对、文件发送、局域网传输。
 
-必须支持：Windows、macOS、Linux。
+必须支持：Windows、macOS、Linux；Android 实验版并行推进（A 系列里程碑）。
 
 按 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) 的里程碑顺序执行，每个里程碑完成后运行验收标准再进入下一个。
 
