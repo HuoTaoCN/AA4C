@@ -89,6 +89,7 @@ UI（Tauri 2：桌面 + Android 同一代码库 / Web 可选）
 | [ROADMAP.md](ROADMAP.md) | 开发路线图 |
 | [AGENTS.md](AGENTS.md) | AI Agent 开发规则 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 |
+| [HANDOFF.md](HANDOFF.md) | 开发交接：环境安装、踩坑注意、当前进度与下一步 |
 | [SECURITY.md](SECURITY.md) | 安全策略与威胁模型 |
 | [CHANGELOG.md](CHANGELOG.md) | 变更日志 |
 
