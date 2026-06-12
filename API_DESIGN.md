@@ -18,9 +18,10 @@ AA4C/
 ├── Cargo.toml                 # workspace
 ├── crates/
 │   ├── aa4c-types/            # 公共类型、错误、事件（无 I/O，依赖最少）
+│   ├── aa4c-proto/            # 线路协议：Message 定义 + 帧编解码（配对与传输共用）
 │   ├── aa4c-identity/         # 设备身份、密钥、配对协议
 │   ├── aa4c-discovery/        # mDNS 设备发现
-│   ├── aa4c-transfer/         # 文件传输引擎（协议 + 收发）
+│   ├── aa4c-transfer/         # 文件传输引擎（收发）
 │   ├── aa4c-store/            # SQLite 持久化
 │   └── aa4c-core/             # Core：组装、生命周期、事件总线
 └── apps/
@@ -33,6 +34,8 @@ AA4C/
 
 ```
 aa4c-core → identity / discovery / transfer / store → aa4c-types
+identity / transfer → aa4c-proto → aa4c-types
+identity → aa4c-store（配对成功写库）
 apps/desktop/src-tauri → aa4c-core
 ```
 
@@ -267,6 +270,9 @@ pub struct TransferConfig {
 ### 6.2 线路协议（AA Transfer Protocol v1）
 
 TLS 1.3 之上的消息流。消息帧格式：`[4 字节大端长度][bincode 编码的 Message]`；文件数据帧之后直接跟原始字节。
+
+> `Message` 与帧编解码实现位于 `aa4c-proto`（配对与传输共用），提供
+> `encode_frame / read_message / write_message`（强制 16 MiB 帧长上限）。
 
 ```rust
 #[derive(Serialize, Deserialize)]

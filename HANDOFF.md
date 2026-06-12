@@ -14,8 +14,8 @@
 | M2 设备身份 | ✅ | `62fab6d` | Ed25519 + TLS 1.3 mTLS 证书固定 + 配对 PIN |
 | A0 Android 工程 | ✅ | `8a545b0` | gen/android 入库，本地与 CI APK 构建通过 |
 | M3 设备发现 | ✅ | 见 git log | mDNS 广播/浏览/自身过滤/上下线事件，组播双实例测试本地通过 |
-| **M4 配对协议** | ⬜ 下一个 | — | PairingManager 状态机（帧编解码可与 M5 协调，见 PROTOCOL §3-§6） |
-| M5 传输引擎 | ⬜ | — | ATP 帧/收发/校验/取消（最大里程碑） |
+| M4 配对协议 | ✅ | 见 git log | aa4c-proto 帧编解码 + PairingManager（双向 PIN/超时/写库），4 个 e2e 测试 |
+| **M5 传输引擎** | ⬜ 下一个 | — | 文件收发/BLAKE3 校验/取消/重传（最大里程碑，帧编解码已在 aa4c-proto 备好） |
 | M6 Core + Tauri 桥 | ⬜ | — | 组装 + 11 个 Command + 事件转发 |
 | M7 前端 UI | ⬜ | — | 4 页面 + 弹窗 |
 | M8 / A1–A3 | ⬜ | — | 联调发布 / Android 适配 |
@@ -99,16 +99,17 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：M4 配对协议
+## 四、下一步：M5 传输引擎（最大里程碑）
 
-按 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) M4 节执行，要点：
+按 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) M5 节执行，要点：
 
-- 帧编解码（4 字节大端长度 + bincode，上限 16 MiB）按 [PROTOCOL.md](PROTOCOL.md) §3 实现；M5 传输复用同一编解码，建议放 `aa4c-transfer` 并由 identity 依赖或放公共处协调好
-- `PairingManager`（[API_DESIGN.md](API_DESIGN.md) §4）：会话状态机 Requested → PinShown → BothConfirmed → Done/Failed
-- 配对期 TLS 用 `expect_peer = None`（M2 已支持），握手后用 `device_id_from_cert` 取对端身份，校验"证书公钥 == PairRequest 声明的公钥"
-- PIN 用 `aa4c_identity::derive_pin`（已实现）；60 秒超时、拒绝路径都要有测试
-- 成功后双方写 devices 表 `trusted = 1`（`Store::upsert_device` 已实现）
+- 帧编解码与 `Message`（Offer/Chunk/FileDone/FileAck/TaskDone/Cancel）已在 `aa4c-proto` 备好，`client_hello`/`server_hello` 可直接复用
+- 监听端：TLS accept → 握手校验 trusted（`Store::get_device`）→ 会话循环；与配对共用监听口的分流逻辑放 M6
+- 发送：递归枚举文件（rel_path 规范化）→ 入库 → Offer → 等 OfferAnswer → 4 MiB 顺序分块，边读边算 BLAKE3 → FileDone
+- 接收：落盘 `.aa4c-part` 边写边算哈希 → 校验 → 重命名 → FileAck；路径净化拒绝 `..`/绝对路径；重名加 ` (1)`
+- 哈希失败重传 ≤2 次；进度事件 ≥100ms 节流；CancellationToken 贯穿；断连 → Failed
+- 集成测试清单见计划 M5 节（空文件/深层目录/1GB/取消/断连/篡改重传）
 
-之后顺序：M5 传输 → M6 Core 组装 → M7 UI → A1/A2 Android 适配 → M8/A3 发布。
+之后顺序：M6 Core 组装 → M7 UI → A1/A2 Android 适配 → M8/A3 发布。
 
 对 Agent 直接说"**开始 M3**"即可继续。

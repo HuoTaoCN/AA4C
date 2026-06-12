@@ -9,13 +9,16 @@ rust-version.workspace = true
 
 [dependencies]
 aa4c-types = { workspace = true }
+aa4c-proto = { workspace = true }
+aa4c-store = { workspace = true }
 blake3 = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
-x509-parser = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
+x509-parser = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }
-tokio-rustls = { workspace = true }

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/aa4c-types",
+    "crates/aa4c-proto",
     "crates/aa4c-identity",
     "crates/aa4c-discovery",
     "crates/aa4c-transfer",
@@ -20,6 +21,7 @@ rust-version = "1.77"
 [workspace.dependencies]
 # 内部 crates
 aa4c-types = { path = "crates/aa4c-types" }
+aa4c-proto = { path = "crates/aa4c-proto" }
 aa4c-identity = { path = "crates/aa4c-identity" }
 aa4c-discovery = { path = "crates/aa4c-discovery" }
 aa4c-transfer = { path = "crates/aa4c-transfer" }

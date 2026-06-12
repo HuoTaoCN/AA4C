@@ -11,6 +11,7 @@
 - M1 类型与存储：`aa4c-types` 全部公共类型（设备 / 任务 / 事件 / 错误，API_DESIGN §3）；`aa4c-store` SQLite 持久化（user_version 迁移、专职线程 async 封装、设备 / 任务 / 设置 CRUD、外键级联）
 - M2 设备身份：`aa4c-identity` —— Ed25519 密钥生成与持久化（0600）、rcgen 自签名证书、rustls TLS 1.3 mTLS 证书固定（双向指纹校验，正反向测试）、配对 PIN 推导（PROTOCOL §6.1）
 - M3 设备发现：`aa4c-discovery` —— mDNS 注册（`_aa4c._tcp.local.` + TXT id/name/platform/ver/proto）与浏览、自身过滤、设备上线/更新/下线事件、真实组播双实例测试（#[ignore]，本地验证通过）
+- M4 配对协议：新增 `aa4c-proto`（ATP v1 Message 定义、帧编解码、超长帧/截断防御、Hello 握手协商）；`PairingManager` 状态机（双向 PIN、声明公钥与 TLS 证书一致性校验、60s 超时、成功写库 trusted=1），4 个端到端测试（成功/拒绝请求/PIN 拒绝/超时）
 - A0 Android 工程：`tauri android init` 生成 Android 工程（minSdk 24，com.aa4c.desktop），本地 aarch64 debug/release APK 构建通过；CI 新增 android 编译哨兵 job（不阻塞合并）
 
 ### Changed

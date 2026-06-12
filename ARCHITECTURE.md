@@ -131,6 +131,7 @@ Plugin（基础生命周期）
 | Crate | 对应模块 | 说明 |
 |-------|----------|------|
 | `aa4c-types` | 公共类型 | DeviceInfo、TransferTask、错误类型、事件 |
+| `aa4c-proto` | 线路协议 | Message 定义、帧编解码（配对与传输共用） |
 | `aa4c-core` | Core | 生命周期、事件总线、配置、服务编排 |
 | `aa4c-identity` | Security | 设备密钥、证书、配对协议 |
 | `aa4c-discovery` | Device Service | mDNS 发现 |

@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+mod pairing;
 mod pin;
 mod tls;
 
@@ -16,6 +17,7 @@ use std::path::{Path, PathBuf};
 use aa4c_types::{Aa4cError, DeviceId, Result};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
+pub use pairing::{EventSender, IncomingStream, PairingManager};
 pub use pin::derive_pin;
 pub use tls::device_id_from_cert;
 
