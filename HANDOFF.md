@@ -13,8 +13,8 @@
 | —（文档）移动端改 Tauri 2 Android | ✅ | `c3dd037` | Flutter → Tauri 2 Android，新增 A0–A3 里程碑 |
 | M2 设备身份 | ✅ | `62fab6d` | Ed25519 + TLS 1.3 mTLS 证书固定 + 配对 PIN |
 | A0 Android 工程 | ✅ | `8a545b0` | gen/android 入库，本地与 CI APK 构建通过 |
-| **M3 设备发现** | ⬜ 下一个 | — | mDNS 广播与浏览（`aa4c-discovery`） |
-| M4 配对协议 | ⬜ | — | PairingManager 状态机 |
+| M3 设备发现 | ✅ | 见 git log | mDNS 广播/浏览/自身过滤/上下线事件，组播双实例测试本地通过 |
+| **M4 配对协议** | ⬜ 下一个 | — | PairingManager 状态机（帧编解码可与 M5 协调，见 PROTOCOL §3-§6） |
 | M5 传输引擎 | ⬜ | — | ATP 帧/收发/校验/取消（最大里程碑） |
 | M6 Core + Tauri 桥 | ⬜ | — | 组装 + 11 个 Command + 事件转发 |
 | M7 前端 UI | ⬜ | — | 4 页面 + 弹窗 |
@@ -99,16 +99,16 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：M3 设备发现
+## 四、下一步：M4 配对协议
 
-按 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) M3 节执行，要点：
+按 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) M4 节执行，要点：
 
-- `aa4c-discovery`：用 `mdns-sd` 注册 `_aa4c._tcp.local.` 服务（TXT：id/name/platform/ver/proto，见 [PROTOCOL.md](PROTOCOL.md) §1），浏览同类服务并过滤自身
-- 设备 30 秒无响应判离线，发 `DeviceFound` / `DeviceLost` 事件（`CoreEvent` 已在 aa4c-types 定义好）
-- 端口 42420 被占自动递增，实际端口写进 mDNS
-- 测试：TXT 解析、自身过滤为单元测试；双实例互发现标 `#[ignore]`（CI 无组播）
-- 注意 `DiscoveryService::new/start/stop/devices` 签名以 [API_DESIGN.md](API_DESIGN.md) §5 为准
+- 帧编解码（4 字节大端长度 + bincode，上限 16 MiB）按 [PROTOCOL.md](PROTOCOL.md) §3 实现；M5 传输复用同一编解码，建议放 `aa4c-transfer` 并由 identity 依赖或放公共处协调好
+- `PairingManager`（[API_DESIGN.md](API_DESIGN.md) §4）：会话状态机 Requested → PinShown → BothConfirmed → Done/Failed
+- 配对期 TLS 用 `expect_peer = None`（M2 已支持），握手后用 `device_id_from_cert` 取对端身份，校验"证书公钥 == PairRequest 声明的公钥"
+- PIN 用 `aa4c_identity::derive_pin`（已实现）；60 秒超时、拒绝路径都要有测试
+- 成功后双方写 devices 表 `trusted = 1`（`Store::upsert_device` 已实现）
 
-之后顺序：M4 配对 → M5 传输 → M6 Core 组装 → M7 UI → A1/A2 Android 适配 → M8/A3 发布。
+之后顺序：M5 传输 → M6 Core 组装 → M7 UI → A1/A2 Android 适配 → M8/A3 发布。
 
 对 Agent 直接说"**开始 M3**"即可继续。
