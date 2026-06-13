@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use aa4c_store::Store;
-use aa4c_types::{Aa4cError, Result, Settings, DEFAULT_PORT};
+use aa4c_types::{Aa4cError, Platform, Result, Settings, DEFAULT_PORT};
 
 pub(crate) const KEY_DEVICE_NAME: &str = "device_name";
 pub(crate) const KEY_SAVE_DIR: &str = "save_dir";
@@ -19,13 +19,32 @@ pub(crate) fn default_save_dir() -> PathBuf {
         .join("AA4C")
 }
 
-/// 本机默认设备名：操作系统 hostname；取不到时给一个通用名。
+/// 本机默认设备名：取 hostname 并去掉 mDNS 风格的 `.local` 等后缀；
+/// hostname 缺失或为无意义值（如 Android 的 `localhost`）时，回落到平台名。
 pub(crate) fn default_device_name() -> String {
-    hostname::get()
+    let raw = hostname::get()
         .ok()
         .and_then(|h| h.into_string().ok())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "AA4C 设备".to_string())
+        .unwrap_or_default();
+    // "Huo-MacBook.local" → "Huo-MacBook"；Windows 主机名通常无点，保持不变
+    let trimmed = raw.split('.').next().unwrap_or("").trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("localhost") {
+        return platform_device_name();
+    }
+    trimmed.to_string()
+}
+
+/// 平台兜底名（hostname 不可用时）。
+fn platform_device_name() -> String {
+    match Platform::current() {
+        Platform::Macos => "Mac",
+        Platform::Windows => "Windows 电脑",
+        Platform::Linux => "Linux 电脑",
+        Platform::Android => "Android 手机",
+        Platform::Ios => "iPhone",
+        Platform::Server => "服务器",
+    }
+    .to_string()
 }
 
 /// 读取聚合设置，缺失项用默认值补齐。

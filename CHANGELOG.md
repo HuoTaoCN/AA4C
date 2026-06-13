@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-14
+
+### Fixed
+
+- 设备发现地址选择：`enable_addr_auto` 会广播对端所有网卡地址，其中可能混入代理虚拟网卡的不可达地址（典型为 Clash/代理 TUN 默认 fake-ip 段 `198.18.0.0/16`）。改为按可达性打分，优先私有 LAN IPv4，排除回环 / 链路本地 / `198.18.0.0/15` / `100.64.0.0/10`——修复**开着代理的电脑无法被对端（如 Android）发起配对/传输**的问题
+- 默认设备名：去掉 hostname 的 `.local` 等 mDNS 后缀；hostname 缺失或为 `localhost`（Android 常见）时回落到平台名（Mac / Windows 电脑 / Android 手机 等），不再显示 `localhost` / `xxx.local`
+
 ## [0.1.0] - 2026-06-13
 
 首个版本：第一次 AA —— 局域网内设备发现、配对、加密文件传输。桌面三平台 + Android 实验版。
@@ -34,5 +41,6 @@
 - 桌面端（Tauri + Vue3：Windows / macOS / Linux）
 - Android 实验版（Tauri 2，与桌面端同一代码库）
 
-[Unreleased]: https://github.com/HuoTaoCN/AA4C/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/HuoTaoCN/AA4C/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/HuoTaoCN/AA4C/releases/tag/v0.1.1
 [0.1.0]: https://github.com/HuoTaoCN/AA4C/releases/tag/v0.1.0

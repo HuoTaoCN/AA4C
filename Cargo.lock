@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "aa4c-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aa4c-discovery",
  "aa4c-identity",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aa4c-core",
  "aa4c-types",
@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-discovery"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aa4c-types",
  "blake3",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-identity"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aa4c-proto",
  "aa4c-store",
@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aa4c-types",
  "bincode",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aa4c-types",
  "rusqlite",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-transfer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aa4c-identity",
  "aa4c-proto",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
