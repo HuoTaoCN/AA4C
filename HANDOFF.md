@@ -18,7 +18,7 @@
 | M5 传输引擎 | ✅ | `7fd6c1c` | 文件收发/BLAKE3 校验/路径净化/取消/断连/重传，8 个集成测试 + 1GB（ignored） |
 | M6 Core + Tauri 桥 | ✅ | `fb726e5` | aa4c-core 组装五大组件 + 监听口分流配对/传输 + 11 个 Tauri Command + 事件转发，2 个端到端冒烟测试 |
 | M7 前端 UI | ✅ | `4c94dbd` | Vue3+Router+Pinia 4 页面 + 配对/接收弹窗 + 任务条 + toast；拖拽/文件选择/通知；`pnpm build` 通过 |
-| A1 Android 适配 | ✅ | `f955394` | MulticastLock + Manifest 权限 + 保存目录平台注入；SDK 组件与配置就绪（APK 完整构建待本地复跑确认）；A2 响应式布局 M7 已含 |
+| A1 Android 适配 | ✅ | `f955394` | MulticastLock + Manifest 权限 + 保存目录平台注入；aarch64 debug APK 本地构建通过；A2 响应式布局 M7 已含 |
 | **M8 桌面联调发布 / A3** | ⬜ 下一个 | — | 双真机联调、打包发布、Android 真机互传验收 |
 
 整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通；下一步进入 Android 平台适配（A1，前置 A0+M6 均已就绪）或桌面联调发布（M8）。
@@ -127,6 +127,7 @@ V0.1 桌面端与 Android 编译链路均已闭环。剩余为联调与发布：
 - `MainActivity` 持有/释放 `WifiManager.MulticastLock`（mDNS 组播必需）
 - Manifest 加 `ACCESS_NETWORK_STATE` / `CHANGE_WIFI_MULTICAST_STATE` / `POST_NOTIFICATIONS`
 - 接收目录由 Tauri path resolver 注入（桌面=下载目录，Android 回落应用目录），见 `src-tauri/src/lib.rs` setup 与 `aa4c-core` 的 `save_dir_fallback`
+- aarch64 debug APK 已本地构建通过，产物在 `gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`（约 194 MB，含调试符号）
 
 ### Android 构建环境坑（务必记下）
 
