@@ -28,15 +28,22 @@ pub(crate) fn default_device_name() -> String {
         .unwrap_or_else(|| "AA4C 设备".to_string())
 }
 
-/// 读取聚合设置，缺失项用默认值补齐。`fallback_name` 用于 device_name 缺省。
-pub(crate) async fn load(store: &Store, fallback_name: &str) -> Result<Settings> {
+/// 读取聚合设置，缺失项用默认值补齐。
+///
+/// `fallback_name` / `fallback_save_dir` 为平台注入的缺省值（设备名取 hostname、
+/// 保存目录由 Tauri path resolver 提供，见 API_DESIGN §11）。
+pub(crate) async fn load(
+    store: &Store,
+    fallback_name: &str,
+    fallback_save_dir: &str,
+) -> Result<Settings> {
     Ok(Settings {
         device_name: get_json(store, KEY_DEVICE_NAME)
             .await?
             .unwrap_or_else(|| fallback_name.to_string()),
         save_dir: get_json(store, KEY_SAVE_DIR)
             .await?
-            .unwrap_or_else(|| default_save_dir().to_string_lossy().into_owned()),
+            .unwrap_or_else(|| fallback_save_dir.to_string()),
         auto_accept_from_trusted: get_json(store, KEY_AUTO_ACCEPT).await?.unwrap_or(false),
         listen_port: get_json(store, KEY_LISTEN_PORT)
             .await?

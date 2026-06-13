@@ -52,7 +52,14 @@ pub fn run() {
         .setup(|app| {
             // 数据目录由 Tauri 注入（桌面为应用数据目录，Android 为应用私有目录）
             let data_dir = app.path().app_data_dir()?;
-            let config = CoreConfig::new(data_dir);
+            // 接收目录：优先系统下载目录，取不到（如 Android）回落到应用数据目录
+            let save_dir = app
+                .path()
+                .download_dir()
+                .unwrap_or_else(|_| data_dir.clone())
+                .join("AA4C");
+            let mut config = CoreConfig::new(data_dir);
+            config.transfer.default_save_dir = save_dir;
 
             // 启动序列是异步的；setup 在事件循环前运行，可阻塞等待
             let core = tauri::async_runtime::block_on(Core::start(config))?;

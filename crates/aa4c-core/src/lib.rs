@@ -42,13 +42,19 @@ pub struct CoreConfig {
 }
 
 impl CoreConfig {
-    /// 用平台默认值构造（监听端口 42420、设备名取 hostname、默认传输配置）。
+    /// 用平台默认值构造（监听端口 42420、设备名取 hostname）。
+    ///
+    /// 接收目录缺省为桌面下载目录下的 `AA4C`；Android 等平台应在创建后用
+    /// Tauri path resolver 覆盖 `transfer.default_save_dir`（API_DESIGN §11）。
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
             data_dir,
             device_name: None,
             listen_port: DEFAULT_PORT,
-            transfer: TransferConfig::default(),
+            transfer: TransferConfig {
+                default_save_dir: settings::default_save_dir(),
+                ..TransferConfig::default()
+            },
         }
     }
 }
@@ -63,6 +69,8 @@ pub struct Core {
     events: EventSender,
     self_info: DeviceInfo,
     listen_port: u16,
+    /// 平台注入的缺省接收目录（用户未设置时 get_settings 的回落值）。
+    save_dir_fallback: String,
 }
 
 impl Core {
@@ -87,7 +95,13 @@ impl Core {
             .device_name
             .clone()
             .unwrap_or_else(settings::default_device_name);
-        let current = settings::load(&store, &fallback_name).await?;
+        // 平台注入的缺省接收目录（桌面=下载目录，Android=应用可写目录）
+        let save_dir_fallback = config
+            .transfer
+            .default_save_dir
+            .to_string_lossy()
+            .into_owned();
+        let current = settings::load(&store, &fallback_name, &save_dir_fallback).await?;
 
         let self_info = DeviceInfo {
             id: identity.device_id().clone(),
@@ -149,6 +163,7 @@ impl Core {
             events,
             self_info,
             listen_port: actual_port,
+            save_dir_fallback,
         }))
     }
 

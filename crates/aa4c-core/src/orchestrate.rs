@@ -107,7 +107,7 @@ impl Core {
 
     /// 读取设置（缺省补齐）。
     pub async fn get_settings(&self) -> Result<Settings> {
-        settings::load(&self.store, &self.self_info.name).await
+        settings::load(&self.store, &self.self_info.name, &self.save_dir_fallback).await
     }
 
     /// 保存设置；设备名变更时重新广播 mDNS。
