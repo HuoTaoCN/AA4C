@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-13
+
+首个版本：第一次 AA —— 局域网内设备发现、配对、加密文件传输。桌面三平台 + Android 实验版。
+
 ### Added
 
 - 项目文档体系：愿景白皮书、架构设计、API 设计、协议规范（ATP v1 + v2 草案）、数据库设计、UI 设计规范、V0.1 实现计划、测试指南、贡献指南、安全策略
@@ -30,4 +34,5 @@
 - 桌面端（Tauri + Vue3：Windows / macOS / Linux）
 - Android 实验版（Tauri 2，与桌面端同一代码库）
 
-[Unreleased]: https://github.com/HuoTaoCN/AA4C/commits/main
+[Unreleased]: https://github.com/HuoTaoCN/AA4C/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/HuoTaoCN/AA4C/releases/tag/v0.1.0

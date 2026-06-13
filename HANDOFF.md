@@ -19,7 +19,7 @@
 | M6 Core + Tauri 桥 | ✅ | `fb726e5` | aa4c-core 组装五大组件 + 监听口分流配对/传输 + 11 个 Tauri Command + 事件转发，2 个端到端冒烟测试 |
 | M7 前端 UI | ✅ | `4c94dbd` | Vue3+Router+Pinia 4 页面 + 配对/接收弹窗 + 任务条 + toast；拖拽/文件选择/通知；`pnpm build` 通过 |
 | A1 Android 适配 | ✅ | `f955394` | MulticastLock + Manifest 权限 + 保存目录平台注入；aarch64 debug APK 本地构建通过；A2 响应式布局 M7 已含 |
-| **M8 桌面联调发布 / A3** | ⬜ 下一个 | — | 双真机联调、打包发布、Android 真机互传验收 |
+| **M8 / A3 发布** | 🚀 进行中 | — | `v0.1.0` tag 触发 Release：三平台桌面包 + Android arm64 APK 自动构建并发布；真机互传验收待测 |
 
 整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通；下一步进入 Android 平台适配（A1，前置 A0+M6 均已就绪）或桌面联调发布（M8）。
 
