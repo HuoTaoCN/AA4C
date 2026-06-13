@@ -21,8 +21,10 @@ use tokio::sync::broadcast;
 pub type EventSender = broadcast::Sender<CoreEvent>;
 
 struct RunState {
-    /// 已注册服务的 fullname，用于 stop 时注销。
+    /// 已注册服务的 fullname，用于 stop / rebroadcast 时注销。
     fullname: String,
+    /// 实际监听端口，rebroadcast 重新注册时复用。
+    port: u16,
     /// 浏览事件处理任务。
     task: tokio::task::JoinHandle<()>,
 }
@@ -30,7 +32,8 @@ struct RunState {
 /// mDNS 设备发现服务。
 pub struct DiscoveryService {
     daemon: ServiceDaemon,
-    self_info: DeviceInfo,
+    /// 本机信息（设备名可经 [`rebroadcast`](DiscoveryService::rebroadcast) 变更）。
+    self_info: Mutex<DeviceInfo>,
     events: EventSender,
     /// 当前在线设备快照：DeviceId → DeviceInfo
     devices: Arc<Mutex<HashMap<DeviceId, DeviceInfo>>>,
@@ -44,7 +47,7 @@ impl DiscoveryService {
         let daemon = ServiceDaemon::new().map_err(mdns_err)?;
         Ok(Self {
             daemon,
-            self_info,
+            self_info: Mutex::new(self_info),
             events,
             devices: Arc::new(Mutex::new(HashMap::new())),
             names: Arc::new(Mutex::new(HashMap::new())),
@@ -57,6 +60,7 @@ impl DiscoveryService {
     /// `listen_port` 为传输服务实际监听端口（端口递增逻辑在传输层，
     /// 此处只负责把真实端口写进 mDNS）。
     pub async fn start(&self, listen_port: u16) -> Result<()> {
+        let snapshot = self.self_info.lock().expect("self_info lock").clone();
         {
             let state = self.state.lock().expect("discovery state lock");
             if state.is_some() {
@@ -64,14 +68,62 @@ impl DiscoveryService {
             }
         }
 
+        let fullname = self.register_service(&snapshot, listen_port)?;
+        tracing::info!(port = listen_port, "mdns service registered");
+
+        let receiver = self.daemon.browse(SERVICE_TYPE).map_err(mdns_err)?;
+        let task = tokio::spawn(browse_loop(
+            receiver,
+            snapshot.id.clone(),
+            self.devices.clone(),
+            self.names.clone(),
+            self.events.clone(),
+        ));
+
+        let mut state = self.state.lock().expect("discovery state lock");
+        *state = Some(RunState {
+            fullname,
+            port: listen_port,
+            task,
+        });
+        Ok(())
+    }
+
+    /// 变更本机设备名并重新广播（设置页改名时调用）。
+    ///
+    /// 未运行时只更新内部名称，下次 [`start`](DiscoveryService::start) 生效；
+    /// 名称未变化为 no-op。
+    pub async fn rebroadcast(&self, name: String) -> Result<()> {
+        let snapshot = {
+            let mut info = self.self_info.lock().expect("self_info lock");
+            if info.name == name {
+                return Ok(());
+            }
+            info.name = name;
+            info.clone()
+        };
+        let mut state = self.state.lock().expect("discovery state lock");
+        let Some(run) = state.as_mut() else {
+            return Ok(());
+        };
+        if let Err(e) = self.daemon.unregister(&run.fullname) {
+            tracing::warn!(error = %e, "mdns unregister (rebroadcast) failed");
+        }
+        run.fullname = self.register_service(&snapshot, run.port)?;
+        tracing::info!(name = %snapshot.name, "mdns service re-registered");
+        Ok(())
+    }
+
+    /// 用当前信息注册 mDNS 服务，返回 fullname。
+    fn register_service(&self, info: &DeviceInfo, listen_port: u16) -> Result<String> {
         // 实例名取 DeviceId 前 16 位 hex（PROTOCOL.md §1），足够唯一且可读
-        let instance = &self.self_info.id[..16];
+        let instance = &info.id[..16];
         let hostname = format!("{instance}.local.");
         let props = [
-            (parse::TXT_ID, self.self_info.id.as_str()),
-            (parse::TXT_NAME, self.self_info.name.as_str()),
-            (parse::TXT_PLATFORM, self.self_info.platform.as_str()),
-            (parse::TXT_VERSION, self.self_info.version.as_str()),
+            (parse::TXT_ID, info.id.as_str()),
+            (parse::TXT_NAME, info.name.as_str()),
+            (parse::TXT_PLATFORM, info.platform.as_str()),
+            (parse::TXT_VERSION, info.version.as_str()),
             (parse::TXT_PROTO, "1"),
         ];
         let service = ServiceInfo::new(
@@ -86,20 +138,7 @@ impl DiscoveryService {
         .enable_addr_auto();
         let fullname = service.get_fullname().to_string();
         self.daemon.register(service).map_err(mdns_err)?;
-        tracing::info!(port = listen_port, "mdns service registered");
-
-        let receiver = self.daemon.browse(SERVICE_TYPE).map_err(mdns_err)?;
-        let task = tokio::spawn(browse_loop(
-            receiver,
-            self.self_info.id.clone(),
-            self.devices.clone(),
-            self.names.clone(),
-            self.events.clone(),
-        ));
-
-        let mut state = self.state.lock().expect("discovery state lock");
-        *state = Some(RunState { fullname, task });
-        Ok(())
+        Ok(fullname)
     }
 
     /// 注销服务并停止浏览。已停止时为幂等 no-op。

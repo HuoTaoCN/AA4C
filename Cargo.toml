@@ -53,6 +53,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "5"
+hostname = "0.4"
 uuid = { version = "1", features = ["v4"] }
 
 # 测试

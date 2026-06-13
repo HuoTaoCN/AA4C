@@ -86,13 +86,35 @@ impl PairingManager {
 
     /// 接收方：处理一条已完成 TLS 握手的入站配对连接，返回 session_id。
     ///
-    /// V0.1 中由传输监听器在读到 `PairRequest` 前按首消息分流（M6 接线），
-    /// 测试与配对场景可直接将 accept 到的流交给本方法。
+    /// 自行读取 Hello 与 `PairRequest`。配对专用监听器（测试）走此路径。
     pub fn handle_incoming(&self, stream: IncomingStream) -> Result<String> {
         let (session_id, decisions) = self.new_session();
         let ctx = self.session_ctx(&session_id, decisions);
         tokio::spawn(async move {
             let result = responder_session(&ctx, stream).await;
+            ctx.finish(result, None);
+        });
+        Ok(session_id)
+    }
+
+    /// 接收方：处理由统一传输监听器分流过来的配对连接（M6 接线）。
+    ///
+    /// 监听器已完成 TLS 握手、Hello 校验并读出首条 `PairRequest`，此处从
+    /// "用户决策"环节继续。`cert_id` 为对端证书指纹（与声明公钥比对）。
+    pub fn handle_dispatched(
+        &self,
+        stream: IncomingStream,
+        cert_id: DeviceId,
+        peer_device: DeviceInfo,
+        peer_key: [u8; 32],
+    ) -> Result<String> {
+        let (session_id, decisions) = self.new_session();
+        let ctx = self.session_ctx(&session_id, decisions);
+        tokio::spawn(async move {
+            let peer_addr = stream.get_ref().0.peer_addr().ok();
+            let result =
+                responder_after_request(&ctx, stream, &cert_id, peer_device, peer_key, peer_addr)
+                    .await;
             ctx.finish(result, None);
         });
         Ok(session_id)
@@ -297,7 +319,8 @@ async fn initiator_session(ctx: &SessionCtx, addr: SocketAddr) -> Result<DeviceI
     Ok(peer_device.id)
 }
 
-/// 接收方会话（PROTOCOL.md §6 右列）。成功返回对端 DeviceId。
+/// 接收方会话（PROTOCOL.md §6 右列）：读取 Hello + `PairRequest`，再进入
+/// 用户决策环节。成功返回对端 DeviceId。
 async fn responder_session(ctx: &SessionCtx, mut stream: IncomingStream) -> Result<DeviceId> {
     let peer_addr = stream.get_ref().0.peer_addr().ok();
     let cert_id = peer_cert_id(stream.get_ref().1)?;
@@ -311,7 +334,20 @@ async fn responder_session(ctx: &SessionCtx, mut stream: IncomingStream) -> Resu
         Message::PairRequest { device, public_key } => (device, public_key),
         other => return Err(unexpected(&other)),
     };
-    verify_claimed_key(&cert_id, &peer_device, &peer_key)?;
+    responder_after_request(ctx, stream, &cert_id, peer_device, peer_key, peer_addr).await
+}
+
+/// 接收方会话的用户决策段（PROTOCOL.md §6 右列后半）：声明公钥校验、双向
+/// 确认、写库。Hello 与首条 `PairRequest` 已由调用方读出。
+async fn responder_after_request(
+    ctx: &SessionCtx,
+    mut stream: IncomingStream,
+    cert_id: &DeviceId,
+    peer_device: DeviceInfo,
+    peer_key: [u8; 32],
+    peer_addr: Option<SocketAddr>,
+) -> Result<DeviceId> {
+    verify_claimed_key(cert_id, &peer_device, &peer_key)?;
 
     // 第一次用户决策：是否接受配对请求
     ctx.emit(CoreEvent::PairingRequest {

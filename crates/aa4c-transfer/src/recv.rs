@@ -66,19 +66,23 @@ pub(crate) async fn run_incoming(
             svc.finish_task(&task_id, result).await;
             Ok(())
         }
-        // 配对连接的分流在 M6 接线（PairingManager::handle_incoming）
-        Message::PairRequest { .. } => {
-            let _ = write_message(
-                &mut stream,
-                &Message::PairReject {
-                    reason: "pairing dispatch not wired".into(),
-                },
-            )
-            .await;
-            Err(Aa4cError::Protocol(
-                "pairing not dispatched here yet".into(),
-            ))
-        }
+        // 配对连接：交给 Core 注入的分流钩子（PairingManager 适配器）
+        Message::PairRequest { device, public_key } => match svc.pair_dispatch.get() {
+            Some(dispatch) => {
+                dispatch.dispatch(stream, cert_id, device, public_key);
+                Ok(())
+            }
+            None => {
+                let _ = write_message(
+                    &mut stream,
+                    &Message::PairReject {
+                        reason: "pairing not available".into(),
+                    },
+                )
+                .await;
+                Err(Aa4cError::Protocol("pairing dispatch not wired".into()))
+            }
+        },
         other => Err(unexpected(&other)),
     }
 }

@@ -252,6 +252,29 @@ impl Store {
         .await
     }
 
+    /// 启动清理：把上次运行遗留的未完成任务（等待确认 / 传输中）标记为失败。
+    /// 返回被改写的任务数。
+    pub async fn fail_incomplete_tasks(&self) -> Result<u64> {
+        self.call(move |conn| {
+            let n = conn
+                .execute(
+                    "UPDATE transfer_tasks
+                     SET status = ?1, error = ?2, updated_at = ?3
+                     WHERE status IN (?4, ?5)",
+                    params![
+                        TransferStatus::Failed.as_str(),
+                        "应用已重启，任务中断",
+                        now_ms(),
+                        TransferStatus::WaitingAccept.as_str(),
+                        TransferStatus::Transferring.as_str(),
+                    ],
+                )
+                .map_err(db_err)?;
+            Ok(n as u64)
+        })
+        .await
+    }
+
     /// 按创建时间倒序分页列出任务（含文件明细）。
     pub async fn list_tasks(&self, limit: u32, offset: u32) -> Result<Vec<TransferTask>> {
         self.call(move |conn| {

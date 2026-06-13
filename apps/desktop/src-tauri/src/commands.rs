@@ -1,0 +1,144 @@
+//! Tauri Command 集（API_DESIGN.md §9.1）与事件 payload 映射（§9.2）。
+//!
+//! 每个 Command 仅做参数转换并委托给 `Core`；错误统一映射为 `{ code, message }`。
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use aa4c_core::Core;
+use aa4c_types::{Aa4cError, CoreEvent, DeviceInfo, Settings, TransferTask};
+use serde::Serialize;
+use serde_json::{json, Value};
+use tauri::State;
+
+/// Command 失败时返回给前端的统一形状（错误码取 `Aa4cError` 变体名）。
+#[derive(Debug, Serialize)]
+pub struct CommandError {
+    pub code: String,
+    pub message: String,
+}
+
+impl From<Aa4cError> for CommandError {
+    fn from(e: Aa4cError) -> Self {
+        Self {
+            code: e.code().to_string(),
+            message: e.to_string(),
+        }
+    }
+}
+
+type CmdResult<T> = Result<T, CommandError>;
+
+#[tauri::command]
+pub async fn get_self_device(core: State<'_, Arc<Core>>) -> CmdResult<DeviceInfo> {
+    Ok(core.self_info())
+}
+
+#[tauri::command]
+pub async fn list_devices(core: State<'_, Arc<Core>>) -> CmdResult<Vec<DeviceInfo>> {
+    Ok(core.list_devices().await?)
+}
+
+#[tauri::command]
+pub async fn start_pairing(core: State<'_, Arc<Core>>, device_id: String) -> CmdResult<String> {
+    Ok(core.start_pairing(&device_id).await?)
+}
+
+#[tauri::command]
+pub async fn confirm_pairing(
+    core: State<'_, Arc<Core>>,
+    session_id: String,
+    accept: bool,
+) -> CmdResult<()> {
+    Ok(core.confirm_pairing(&session_id, accept).await?)
+}
+
+#[tauri::command]
+pub async fn unpair_device(core: State<'_, Arc<Core>>, device_id: String) -> CmdResult<()> {
+    Ok(core.unpair_device(&device_id).await?)
+}
+
+#[tauri::command]
+pub async fn send_files(
+    core: State<'_, Arc<Core>>,
+    device_id: String,
+    paths: Vec<String>,
+) -> CmdResult<String> {
+    let paths = paths.into_iter().map(PathBuf::from).collect();
+    Ok(core.send_files(&device_id, paths).await?)
+}
+
+#[tauri::command]
+pub async fn accept_transfer(
+    core: State<'_, Arc<Core>>,
+    task_id: String,
+    accept: bool,
+    save_dir: Option<String>,
+) -> CmdResult<()> {
+    Ok(core
+        .accept_transfer(&task_id, accept, save_dir.map(PathBuf::from))
+        .await?)
+}
+
+#[tauri::command]
+pub async fn cancel_transfer(core: State<'_, Arc<Core>>, task_id: String) -> CmdResult<()> {
+    Ok(core.cancel_transfer(&task_id).await?)
+}
+
+#[tauri::command]
+pub async fn list_transfers(
+    core: State<'_, Arc<Core>>,
+    limit: u32,
+    offset: u32,
+) -> CmdResult<Vec<TransferTask>> {
+    Ok(core.list_transfers(limit, offset).await?)
+}
+
+#[tauri::command]
+pub async fn get_settings(core: State<'_, Arc<Core>>) -> CmdResult<Settings> {
+    Ok(core.get_settings().await?)
+}
+
+#[tauri::command]
+pub async fn update_settings(core: State<'_, Arc<Core>>, settings: Settings) -> CmdResult<()> {
+    Ok(core.update_settings(settings).await?)
+}
+
+/// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。
+pub fn event_payload(event: &CoreEvent) -> Value {
+    match event {
+        CoreEvent::DeviceFound(d) | CoreEvent::DeviceUpdated(d) => {
+            serde_json::to_value(d).unwrap_or(Value::Null)
+        }
+        CoreEvent::DeviceLost { id } => json!({ "id": id }),
+        CoreEvent::PairingRequest { session_id, peer } => {
+            json!({ "sessionId": session_id, "peer": peer })
+        }
+        CoreEvent::PairingPin { session_id, pin } => {
+            json!({ "sessionId": session_id, "pin": pin })
+        }
+        CoreEvent::PairingResult {
+            session_id,
+            peer,
+            success,
+        } => json!({ "sessionId": session_id, "peer": peer, "success": success }),
+        CoreEvent::TransferRequest { task } => json!({ "task": task }),
+        CoreEvent::TransferProgress {
+            task_id,
+            transferred_bytes,
+            total_bytes,
+            speed_bps,
+            current_file,
+        } => json!({
+            "taskId": task_id,
+            "transferredBytes": transferred_bytes,
+            "totalBytes": total_bytes,
+            "speedBps": speed_bps,
+            "currentFile": current_file,
+        }),
+        CoreEvent::TransferDone { task_id } => json!({ "taskId": task_id }),
+        CoreEvent::TransferFailed { task_id, error } => {
+            json!({ "taskId": task_id, "error": error })
+        }
+    }
+}

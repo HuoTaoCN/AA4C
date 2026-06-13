@@ -11,14 +11,14 @@ mod send;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aa4c_identity::Identity;
 use aa4c_store::Store;
 use aa4c_types::{
-    Aa4cError, CoreEvent, DeviceInfo, Direction, FileStatus, Result, TaskId, TransferFile,
-    TransferStatus, TransferTask, CHUNK_SIZE, DEFAULT_PORT,
+    Aa4cError, CoreEvent, DeviceId, DeviceInfo, Direction, FileStatus, Result, TaskId,
+    TransferFile, TransferStatus, TransferTask, CHUNK_SIZE, DEFAULT_PORT,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot, Semaphore};
@@ -27,6 +27,25 @@ use tokio_util::sync::CancellationToken;
 
 /// 事件发送端（与 aa4c-core 的事件总线同型）。
 pub type EventSender = broadcast::Sender<CoreEvent>;
+
+/// 已完成 TLS 握手的入站服务端流（与配对模块同型）。
+pub type IncomingTlsStream = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+
+/// 统一监听器读到 `PairRequest` 后的配对分流钩子。
+///
+/// 由 aa4c-core 注入 `PairingManager` 适配器，使传输层不感知配对语义
+/// （AGENTS.md：服务间低耦合，编排归 Core）。实现内部应自行 spawn 处理。
+pub trait IncomingPairDispatch: Send + Sync + 'static {
+    /// 接管一条已读出 Hello + `PairRequest` 的入站连接。
+    /// `cert_id` 为对端证书指纹，`device`/`public_key` 取自 `PairRequest`。
+    fn dispatch(
+        &self,
+        stream: IncomingTlsStream,
+        cert_id: DeviceId,
+        device: DeviceInfo,
+        public_key: [u8; 32],
+    );
+}
 
 /// 接收方用户决定：（是否接收，保存目录覆盖）。
 type AcceptDecision = (bool, Option<PathBuf>);
@@ -62,6 +81,8 @@ pub struct TransferService {
     pending_accepts: Mutex<HashMap<TaskId, oneshot::Sender<AcceptDecision>>>,
     cancels: Mutex<HashMap<TaskId, CancellationToken>>,
     send_permits: Arc<Semaphore>,
+    /// 配对分流钩子（Core 注入；未注入时入站 `PairRequest` 直接拒绝）。
+    pub(crate) pair_dispatch: OnceLock<Arc<dyn IncomingPairDispatch>>,
 }
 
 impl TransferService {
@@ -80,7 +101,13 @@ impl TransferService {
             pending_accepts: Mutex::new(HashMap::new()),
             cancels: Mutex::new(HashMap::new()),
             send_permits: Arc::new(Semaphore::new(permits)),
+            pair_dispatch: OnceLock::new(),
         })
+    }
+
+    /// 注入配对分流钩子（Core 在装配阶段调用一次）。重复设置无效。
+    pub fn set_pair_dispatch(&self, dispatch: Arc<dyn IncomingPairDispatch>) {
+        let _ = self.pair_dispatch.set(dispatch);
     }
 
     /// 启动 TLS 监听。`port` 被占用时自动向后递增（最多 16 个），返回实际端口。

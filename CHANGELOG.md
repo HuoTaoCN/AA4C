@@ -14,6 +14,7 @@
 - M4 配对协议：新增 `aa4c-proto`（ATP v1 Message 定义、帧编解码、超长帧/截断防御、Hello 握手协商）；`PairingManager` 状态机（双向 PIN、声明公钥与 TLS 证书一致性校验、60s 超时、成功写库 trusted=1），4 个端到端测试（成功/拒绝请求/PIN 拒绝/超时）
 - M5 传输引擎：`aa4c-transfer` —— TLS 监听 + 握手 trusted 校验、文件/文件夹流式收发（4 MiB 分块、BLAKE3 边传边校验）、路径净化（拒绝穿越/绝对路径）、重名自动加后缀、`.aa4c-part` 临时落盘、进度节流事件、取消与断连处理、哈希失败重传（≤2 次，放弃时发 Cancel 通知对端，符合 PROTOCOL §7）；8 个集成测试（单文件/空文件/深层目录+重名/中等文件/拒绝/取消/断连/未配对拒绝）+ 1GB 大文件测试（ignored）
 - A0 Android 工程：`tauri android init` 生成 Android 工程（minSdk 24，com.aa4c.desktop），本地 aarch64 debug/release APK 构建通过；CI 新增 android 编译哨兵 job（不阻塞合并）
+- M6 Core 组装 + Tauri 桥：`aa4c-core` 装配五大组件（identity / store / discovery / transfer / pairing）并以 broadcast 事件总线串联；启动序列含遗留任务清理（waiting_accept / transferring → failed）；统一监听端口分流（`Offer` 走传输、`PairRequest` 经 `IncomingPairDispatch` 钩子转交配对，传输层不感知配对语义）；`Settings` 类型 + 设置读写（device_name 变更重新广播 mDNS）；Tauri 层实现 API_DESIGN §9 全部 11 个 Command（`{ code, message }` 错误映射）与 `CoreEvent → aa4c://` 事件转发（扁平 camelCase payload）；2 个端到端冒烟测试（双 Core 配对+传输、重启清理遗留任务）
 
 ### Changed
 

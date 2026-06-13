@@ -349,21 +349,34 @@ pub type EventSender = tokio::sync::broadcast::Sender<CoreEvent>;
 
 pub struct Core {
     pub identity: Arc<Identity>,
-    pub store: Arc<Store>,
+    pub store: Store,            // Store 自身已是廉价克隆句柄，无需再包 Arc
     pub discovery: Arc<DiscoveryService>,
     pub transfer: Arc<TransferService>,
     pub pairing: Arc<PairingManager>,
     events: EventSender,
+    self_info: DeviceInfo,
+    listen_port: u16,
 }
 
 impl Core {
-    /// 完整启动序列：身份 → 数据库 → 传输监听 → mDNS 广播
+    /// 完整启动序列：身份 → 数据库 → 遗留任务清理 → 配对/传输装配
+    /// → 传输监听 → mDNS 广播
     pub async fn start(config: CoreConfig) -> Result<Arc<Core>>;
     pub async fn shutdown(&self) -> Result<()>;
     /// UI 订阅事件
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<CoreEvent>;
     pub fn self_info(&self) -> DeviceInfo;
+    pub fn listen_port(&self) -> u16;
+
+    // §9 的 11 个 Command 在 Core 上有一一对应的编排方法，Tauri 层只做转发：
+    // list_devices / start_pairing / confirm_pairing / unpair_device /
+    // send_files / accept_transfer / cancel_transfer / list_transfers /
+    // get_settings / update_settings
 }
+
+// 入站连接分流（M6）：传输与配对共用同一监听端口。传输监听器读到首条消息后，
+// `Offer` 走接收会话，`PairRequest` 经 `aa4c-transfer::IncomingPairDispatch`
+// 钩子转交 `PairingManager`；该钩子由 Core 在装配阶段注入（传输层不感知配对）。
 
 pub struct CoreConfig {
     pub data_dir: PathBuf,      // 默认：dirs::data_dir()/aa4c
