@@ -1,6 +1,6 @@
 # AA4C 开发交接（换机指南）
 
-> 最后更新：2026-06-12。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
+> 最后更新：2026-06-13。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
 > 给 AI Agent：开工前先读本文档"当前进度"与"下一步"，再按 [AGENTS.md](AGENTS.md) 的必读清单工作。
 
 ## 一、当前进度
@@ -16,11 +16,11 @@
 | M3 设备发现 | ✅ | `af68939` | mDNS 广播/浏览/自身过滤/上下线事件，组播双实例测试本地通过 |
 | M4 配对协议 | ✅ | `49dea79` | aa4c-proto 帧编解码 + PairingManager（双向 PIN/超时/写库），4 个 e2e 测试 |
 | M5 传输引擎 | ✅ | `7fd6c1c` | 文件收发/BLAKE3 校验/路径净化/取消/断连/重传，8 个集成测试 + 1GB（ignored） |
-| **M6 Core + Tauri 桥** | ⬜ 下一个 | — | aa4c-core 组装（生命周期/事件总线/监听口分流配对与传输）+ 11 个 Tauri Command + 事件转发 |
-| M7 前端 UI | ⬜ | — | 4 页面 + 弹窗 |
+| M6 Core + Tauri 桥 | ✅ | `fb726e5` | aa4c-core 组装五大组件 + 监听口分流配对/传输 + 11 个 Tauri Command + 事件转发，2 个端到端冒烟测试 |
+| **M7 前端 UI** | ⬜ 下一个 | — | 4 页面 + 弹窗（Vue Router/Pinia，监听 aa4c:// 事件） |
 | M8 / A1–A3 | ⬜ | — | 联调发布 / Android 适配 |
 
-最近 6 次 CI 全绿（三平台 fmt/clippy/test + 前端 + audit + Android 哨兵）。整个核心协议链路 **发现 → 配对 → 传输** 已打通并有测试覆盖。
+整个核心链路 **发现 → 配对 → 传输** 已打通，并经 Core 装配 + Tauri 11 个 Command 暴露给前端；前端 UI（M7）尚未实现。
 
 ### 已实现 crate 概览（`crates/`）
 
@@ -31,8 +31,8 @@
 | `aa4c-identity` | 身份 + 配对 | `Identity::load_or_generate`、`tls_server_config`/`tls_client_config`（mTLS 证书固定）、`derive_pin`、`PairingManager`（`start_pairing`/`handle_incoming`/`confirm`） |
 | `aa4c-discovery` | mDNS | `DiscoveryService::new/start/stop/devices` |
 | `aa4c-store` | SQLite | `Store::open`、设备/任务/设置 CRUD（`Store` 是廉价克隆句柄，内部专职线程） |
-| `aa4c-transfer` | 传输 | `TransferService::new`（返回 `Arc<Self>`）、`start_listener`/`send`/`accept`/`cancel`；`recv.rs::run_incoming` 已留 PairRequest 分流占位待 M6 接线 |
-| `aa4c-core` | 组装 | **空壳，M6 实现**：`Core::start`/`shutdown`/`subscribe` |
+| `aa4c-transfer` | 传输 | `TransferService::new`（返回 `Arc<Self>`）、`start_listener`/`send`/`accept`/`cancel`；`set_pair_dispatch` 注入配对分流钩子（`IncomingPairDispatch` trait）|
+| `aa4c-core` | 组装 | `Core::start`/`shutdown`/`subscribe`/`self_info`/`listen_port`；§9 的 11 个 Command 在 Core 上有同名编排方法；`CoreConfig`、`Settings` 读写 |
 
 CI 现状：7 个 job 全绿（lint、三平台 test、frontend、audit、android 哨兵）。
 
@@ -113,17 +113,22 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：M6 Core 组装 + Tauri 桥
+## 四、下一步：M7 前端 UI
 
-按 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) M6 节执行，要点：
+后端契约已就绪：11 个 Tauri Command（[API_DESIGN.md](API_DESIGN.md) §9.1）+ `aa4c://` 事件（§9.2，扁平 camelCase payload）。按 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) M7 节与 [UI_DESIGN_SPEC.md](UI_DESIGN_SPEC.md) 实现 Vue3 前端：
 
-- `aa4c-core`：`Core::start` 启动序列（identity → store → transfer listener → discovery），`shutdown` 逆序优雅关闭，broadcast 事件总线接通所有服务
-- **监听口分流**（M5 留的接口）：入站 TLS 连接握手后按首消息分流——`PairRequest` → `PairingManager::handle_incoming`，`Offer` → 传输会话。目前 `aa4c-transfer/src/recv.rs` 的 `run_incoming` 里 PairRequest 分支是占位（返回 reject），M6 要把它接到 PairingManager
-- 启动时清理遗留任务（`waiting_accept/transferring` → `failed`）
-- `src-tauri`：实现 [API_DESIGN.md](API_DESIGN.md) §9 全部 11 个 Command；`Core` 放入 Tauri `State`；`Core::subscribe()` → `app_handle.emit("aa4c://…")`，JSON camelCase
-- Command 错误统一映射为 `{ code, message }`（`Aa4cError::code()` 已备好）
+- 基建：Vue Router（首页 / AA 发送 / 记录 / 设置 4 页）、Pinia stores（UI_DESIGN_SPEC §9）、根组件统一 `listen('aa4c://…')` 并更新 store
+- 首页：本机卡片（`get_self_device`）、设备网格（`list_devices`）、最近传输、空状态
+- AA 页：拖拽区（Tauri `onDragDrop`）、文件列表、设备选择、`send_files`、进度视图（`transfer_progress` 事件 → TransferCard）
+- 配对：发起（`start_pairing`）、接受弹窗 + PIN 大数字弹窗（`pairing_request`/`pairing_pin` 事件 → `confirm_pairing`）、结果 toast
+- 接收确认弹窗（`transfer_request` 事件 → `accept_transfer`）、系统通知（tauri-plugin-notification）
+- 记录页：`list_transfers`、打开所在文件夹（tauri-plugin-opener）、失败重试；设置页：`get_settings`/`update_settings` + 已配对设备管理（`unpair_device`）
+- 全部文案过 UI_DESIGN_SPEC §7 术语表，禁词检查（不暴露 mDNS/TLS/RPC 等）
 
-之后顺序：M7 UI → A1/A2 Android 适配 → M8/A3 发布。
+验收：`pnpm tauri dev` 后走通最终验收场景 1–7；`pnpm build` 无 TS 错误。
+快速自测：devtools 里 `await __TAURI__.core.invoke('get_self_device')` 应返回本机信息。
+
+之后顺序：A1/A2 Android 适配 → M8/A3 发布。
 
 ## 五、本次会话的教训（务必遵守）
 
@@ -131,4 +136,4 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - **`cargo test --workspace` 会跨 crate 并行跑测试二进制**，单独 `cargo test -p X` 过不代表 workspace 过。提交前务必跑一次完整 `cargo test --workspace`。
 - **lib 内联单测 ≠ 集成测试**：`cargo test -p X --test Y` 只跑集成测试，漏掉 `src/*.rs` 里的 `#[cfg(test)]`。要 `--lib` 或直接 `--workspace` 覆盖全部。
 
-对 Agent 直接说"**开始 M6**"即可继续。
+对 Agent 直接说"**开始 M7**"即可继续。
