@@ -13,12 +13,26 @@
 | —（文档）移动端改 Tauri 2 Android | ✅ | `c3dd037` | Flutter → Tauri 2 Android，新增 A0–A3 里程碑 |
 | M2 设备身份 | ✅ | `62fab6d` | Ed25519 + TLS 1.3 mTLS 证书固定 + 配对 PIN |
 | A0 Android 工程 | ✅ | `8a545b0` | gen/android 入库，本地与 CI APK 构建通过 |
-| M3 设备发现 | ✅ | 见 git log | mDNS 广播/浏览/自身过滤/上下线事件，组播双实例测试本地通过 |
-| M4 配对协议 | ✅ | 见 git log | aa4c-proto 帧编解码 + PairingManager（双向 PIN/超时/写库），4 个 e2e 测试 |
-| M5 传输引擎 | ✅ | 见 git log | 文件收发/BLAKE3 校验/路径净化/取消/断连/重传，8 个集成测试 + 1GB（ignored） |
+| M3 设备发现 | ✅ | `af68939` | mDNS 广播/浏览/自身过滤/上下线事件，组播双实例测试本地通过 |
+| M4 配对协议 | ✅ | `49dea79` | aa4c-proto 帧编解码 + PairingManager（双向 PIN/超时/写库），4 个 e2e 测试 |
+| M5 传输引擎 | ✅ | `7fd6c1c` | 文件收发/BLAKE3 校验/路径净化/取消/断连/重传，8 个集成测试 + 1GB（ignored） |
 | **M6 Core + Tauri 桥** | ⬜ 下一个 | — | aa4c-core 组装（生命周期/事件总线/监听口分流配对与传输）+ 11 个 Tauri Command + 事件转发 |
 | M7 前端 UI | ⬜ | — | 4 页面 + 弹窗 |
 | M8 / A1–A3 | ⬜ | — | 联调发布 / Android 适配 |
+
+最近 6 次 CI 全绿（三平台 fmt/clippy/test + 前端 + audit + Android 哨兵）。整个核心协议链路 **发现 → 配对 → 传输** 已打通并有测试覆盖。
+
+### 已实现 crate 概览（`crates/`）
+
+| crate | 职责 | 关键公共 API |
+|-------|------|--------------|
+| `aa4c-types` | 公共类型 | `DeviceInfo` `TransferTask` `CoreEvent` `Aa4cError`（含 `code()`）；常量 `DEFAULT_PORT=42420` `CHUNK_SIZE` `MAX_FRAME_LEN` |
+| `aa4c-proto` | 线路协议 | `Message` 枚举、`read_message`/`write_message`/`encode_frame`、`client_hello`/`server_hello` |
+| `aa4c-identity` | 身份 + 配对 | `Identity::load_or_generate`、`tls_server_config`/`tls_client_config`（mTLS 证书固定）、`derive_pin`、`PairingManager`（`start_pairing`/`handle_incoming`/`confirm`） |
+| `aa4c-discovery` | mDNS | `DiscoveryService::new/start/stop/devices` |
+| `aa4c-store` | SQLite | `Store::open`、设备/任务/设置 CRUD（`Store` 是廉价克隆句柄，内部专职线程） |
+| `aa4c-transfer` | 传输 | `TransferService::new`（返回 `Arc<Self>`）、`start_listener`/`send`/`accept`/`cancel`；`recv.rs::run_incoming` 已留 PairRequest 分流占位待 M6 接线 |
+| `aa4c-core` | 组装 | **空壳，M6 实现**：`Core::start`/`shutdown`/`subscribe` |
 
 CI 现状：7 个 job 全绿（lint、三平台 test、frontend、audit、android 哨兵）。
 
