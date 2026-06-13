@@ -1,0 +1,124 @@
+/* AA4C 全局样式（UI_DESIGN_SPEC §8：简洁、留白、圆角、跟随系统深色）。 */
+
+:root {
+  --aa-primary: #2f6bff;
+  --aa-primary-dim: #2f6bff22;
+
+  --aa-bg: #f5f6f8;
+  --aa-surface: #ffffff;
+  --aa-surface-2: #f0f2f5;
+  --aa-text: #1b1d21;
+  --aa-text-dim: #6b7280;
+  --aa-border: #e3e6ea;
+  --aa-success: #1aa251;
+  --aa-danger: #e0483d;
+  --aa-online: #1aa251;
+
+  --aa-radius: 14px;
+  --aa-radius-sm: 9px;
+
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui,
+    "Segoe UI", Roboto, sans-serif;
+  color: var(--aa-text);
+  background: var(--aa-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --aa-bg: #16181d;
+    --aa-surface: #20242b;
+    --aa-surface-2: #272c34;
+    --aa-text: #e7e9ee;
+    --aa-text-dim: #9aa3b2;
+    --aa-border: #313742;
+    --aa-primary-dim: #2f6bff33;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--aa-bg);
+  color: var(--aa-text);
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* —— 通用按钮 —— */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 16px;
+  border-radius: var(--aa-radius-sm);
+  font-size: 0.9rem;
+  font-weight: 600;
+  background: var(--aa-surface-2);
+  color: var(--aa-text);
+  transition: filter 0.15s, background 0.15s;
+  min-height: 38px;
+}
+.btn:hover {
+  filter: brightness(0.97);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--aa-primary);
+  color: #fff;
+}
+.btn-danger {
+  background: transparent;
+  color: var(--aa-danger);
+  border: 1px solid var(--aa-border);
+}
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--aa-border);
+}
+
+.card {
+  background: var(--aa-surface);
+  border: 1px solid var(--aa-border);
+  border-radius: var(--aa-radius);
+}
+
+.muted {
+  color: var(--aa-text-dim);
+}
+
+.online-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--aa-online);
+}
+.online-dot.off {
+  background: var(--aa-text-dim);
+}

@@ -47,6 +47,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // 数据目录由 Tauri 注入（桌面为应用数据目录，Android 为应用私有目录）
             let data_dir = app.path().app_data_dir()?;
