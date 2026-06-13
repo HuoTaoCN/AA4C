@@ -17,10 +17,11 @@
 | M4 配对协议 | ✅ | `49dea79` | aa4c-proto 帧编解码 + PairingManager（双向 PIN/超时/写库），4 个 e2e 测试 |
 | M5 传输引擎 | ✅ | `7fd6c1c` | 文件收发/BLAKE3 校验/路径净化/取消/断连/重传，8 个集成测试 + 1GB（ignored） |
 | M6 Core + Tauri 桥 | ✅ | `fb726e5` | aa4c-core 组装五大组件 + 监听口分流配对/传输 + 11 个 Tauri Command + 事件转发，2 个端到端冒烟测试 |
-| **M7 前端 UI** | ⬜ 下一个 | — | 4 页面 + 弹窗（Vue Router/Pinia，监听 aa4c:// 事件） |
-| M8 / A1–A3 | ⬜ | — | 联调发布 / Android 适配 |
+| M7 前端 UI | ✅ | `4c94dbd` | Vue3+Router+Pinia 4 页面 + 配对/接收弹窗 + 任务条 + toast；拖拽/文件选择/通知；`pnpm build` 通过 |
+| **A1 Android 适配** | ⬜ 下一个 | — | 多播锁 Kotlin 插件、数据目录注入、Manifest 权限、文件选择 |
+| M8 / A2–A3 | ⬜ | — | 联调发布 / Android 适配收尾 |
 
-整个核心链路 **发现 → 配对 → 传输** 已打通，并经 Core 装配 + Tauri 11 个 Command 暴露给前端；前端 UI（M7）尚未实现。
+整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通；下一步进入 Android 平台适配（A1，前置 A0+M6 均已就绪）或桌面联调发布（M8）。
 
 ### 已实现 crate 概览（`crates/`）
 
@@ -113,22 +114,29 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：M7 前端 UI
+## 四、下一步：A1 Android 适配 或 M8 桌面联调发布
 
-后端契约已就绪：11 个 Tauri Command（[API_DESIGN.md](API_DESIGN.md) §9.1）+ `aa4c://` 事件（§9.2，扁平 camelCase payload）。按 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) M7 节与 [UI_DESIGN_SPEC.md](UI_DESIGN_SPEC.md) 实现 Vue3 前端：
+V0.1 桌面端功能已闭环（前端 + 后端）。两条路任选其一推进：
 
-- 基建：Vue Router（首页 / AA 发送 / 记录 / 设置 4 页）、Pinia stores（UI_DESIGN_SPEC §9）、根组件统一 `listen('aa4c://…')` 并更新 store
-- 首页：本机卡片（`get_self_device`）、设备网格（`list_devices`）、最近传输、空状态
-- AA 页：拖拽区（Tauri `onDragDrop`）、文件列表、设备选择、`send_files`、进度视图（`transfer_progress` 事件 → TransferCard）
-- 配对：发起（`start_pairing`）、接受弹窗 + PIN 大数字弹窗（`pairing_request`/`pairing_pin` 事件 → `confirm_pairing`）、结果 toast
-- 接收确认弹窗（`transfer_request` 事件 → `accept_transfer`）、系统通知（tauri-plugin-notification）
-- 记录页：`list_transfers`、打开所在文件夹（tauri-plugin-opener）、失败重试；设置页：`get_settings`/`update_settings` + 已配对设备管理（`unpair_device`）
-- 全部文案过 UI_DESIGN_SPEC §7 术语表，禁词检查（不暴露 mDNS/TLS/RPC 等）
+### 选项一：A1 Android 平台适配（前置 A0+M6 已就绪）
 
-验收：`pnpm tauri dev` 后走通最终验收场景 1–7；`pnpm build` 无 TS 错误。
-快速自测：devtools 里 `await __TAURI__.core.invoke('get_self_device')` 应返回本机信息。
+按 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) A1 节与 [API_DESIGN.md](API_DESIGN.md) §11：
 
-之后顺序：A1/A2 Android 适配 → M8/A3 发布。
+- **多播锁**：Kotlin 插件在 `onCreate` 获取 `WifiManager.MulticastLock`、`onDestroy` 释放（否则 Android 收不到 mDNS 组播）；Rust 侧无改动
+- **数据目录**：`CoreConfig.data_dir` 已由 Tauri `app.path().app_data_dir()` 注入（桌面/Android 同源），Android 指向应用私有目录——这部分 M6 已做对，确认即可
+- **Manifest 权限**：`INTERNET`、`ACCESS_NETWORK_STATE`、`CHANGE_WIFI_MULTICAST_STATE`、（Android 13+）`POST_NOTIFICATIONS`
+- **文件选择**：前端 AA 页已用 `tauri-plugin-dialog`（拖拽在移动端不可用，按钮已就位）；底部导航 < 700px 已切换
+- 验收：真机 APK 与桌面端互相发现、配对、传输
+
+### 选项二：M8 桌面联调、打包、发布
+
+双真机联调（macOS ↔ Windows）、修联调 bug、`pnpm tauri build` 出三平台包、写发布说明。
+
+### M7 前端自测要点（联调时用）
+
+- `pnpm tauri dev` 启动；两实例应在首页互相出现，可配对、传输
+- 前端代码在 `apps/desktop/src/`：`lib/`（api/events/format/types）、`stores/`（4 个 Pinia）、`pages/`（4 页）、`components/`（卡片/弹窗/任务条/toast）
+- 新增依赖：vue-router、pinia、@tauri-apps/plugin-dialog、plugin-notification；对应 Rust 插件已在 `src-tauri` 注册，能力在 `capabilities/default.json`
 
 ## 五、本次会话的教训（务必遵守）
 
@@ -136,4 +144,4 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - **`cargo test --workspace` 会跨 crate 并行跑测试二进制**，单独 `cargo test -p X` 过不代表 workspace 过。提交前务必跑一次完整 `cargo test --workspace`。
 - **lib 内联单测 ≠ 集成测试**：`cargo test -p X --test Y` 只跑集成测试，漏掉 `src/*.rs` 里的 `#[cfg(test)]`。要 `--lib` 或直接 `--workspace` 覆盖全部。
 
-对 Agent 直接说"**开始 M7**"即可继续。
+对 Agent 直接说"**开始 A1**"（Android 适配）或"**开始 M8**"（桌面联调发布）即可继续。
