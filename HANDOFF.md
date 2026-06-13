@@ -18,8 +18,8 @@
 | M5 传输引擎 | ✅ | `7fd6c1c` | 文件收发/BLAKE3 校验/路径净化/取消/断连/重传，8 个集成测试 + 1GB（ignored） |
 | M6 Core + Tauri 桥 | ✅ | `fb726e5` | aa4c-core 组装五大组件 + 监听口分流配对/传输 + 11 个 Tauri Command + 事件转发，2 个端到端冒烟测试 |
 | M7 前端 UI | ✅ | `4c94dbd` | Vue3+Router+Pinia 4 页面 + 配对/接收弹窗 + 任务条 + toast；拖拽/文件选择/通知；`pnpm build` 通过 |
-| **A1 Android 适配** | ⬜ 下一个 | — | 多播锁 Kotlin 插件、数据目录注入、Manifest 权限、文件选择 |
-| M8 / A2–A3 | ⬜ | — | 联调发布 / Android 适配收尾 |
+| A1 Android 适配 | ✅ | `f955394` | MulticastLock + Manifest 权限 + 保存目录平台注入；SDK 组件与配置就绪（APK 完整构建待本地复跑确认）；A2 响应式布局 M7 已含 |
+| **M8 桌面联调发布 / A3** | ⬜ 下一个 | — | 双真机联调、打包发布、Android 真机互传验收 |
 
 整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通；下一步进入 Android 平台适配（A1，前置 A0+M6 均已就绪）或桌面联调发布（M8）。
 
@@ -114,29 +114,35 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：A1 Android 适配 或 M8 桌面联调发布
+## 四、下一步：M8 桌面联调发布 / A3 Android 真机验收
 
-V0.1 桌面端功能已闭环（前端 + 后端）。两条路任选其一推进：
+V0.1 桌面端与 Android 编译链路均已闭环。剩余为联调与发布：
 
-### 选项一：A1 Android 平台适配（前置 A0+M6 已就绪）
+- **M8**：双真机联调（macOS ↔ Windows）、修联调 bug、`pnpm tauri build` 出三平台包、写发布说明
+- **A3**：Android 真机装 APK，与桌面互相发现/配对/传输；Release 工作流追加 debug APK 产物；README 加 Android 安装说明
+- **A2（响应式 UI）**：M7 已实现 < 700px 底部导航 + 单列；真机上确认即可
 
-按 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) A1 节与 [API_DESIGN.md](API_DESIGN.md) §11：
+### A1 已完成要点（Android 适配）
 
-- **多播锁**：Kotlin 插件在 `onCreate` 获取 `WifiManager.MulticastLock`、`onDestroy` 释放（否则 Android 收不到 mDNS 组播）；Rust 侧无改动
-- **数据目录**：`CoreConfig.data_dir` 已由 Tauri `app.path().app_data_dir()` 注入（桌面/Android 同源），Android 指向应用私有目录——这部分 M6 已做对，确认即可
-- **Manifest 权限**：`INTERNET`、`ACCESS_NETWORK_STATE`、`CHANGE_WIFI_MULTICAST_STATE`、（Android 13+）`POST_NOTIFICATIONS`
-- **文件选择**：前端 AA 页已用 `tauri-plugin-dialog`（拖拽在移动端不可用，按钮已就位）；底部导航 < 700px 已切换
-- 验收：真机 APK 与桌面端互相发现、配对、传输
+- `MainActivity` 持有/释放 `WifiManager.MulticastLock`（mDNS 组播必需）
+- Manifest 加 `ACCESS_NETWORK_STATE` / `CHANGE_WIFI_MULTICAST_STATE` / `POST_NOTIFICATIONS`
+- 接收目录由 Tauri path resolver 注入（桌面=下载目录，Android 回落应用目录），见 `src-tauri/src/lib.rs` setup 与 `aa4c-core` 的 `save_dir_fallback`
 
-### 选项二：M8 桌面联调、打包、发布
+### Android 构建环境坑（务必记下）
 
-双真机联调（macOS ↔ Windows）、修联调 bug、`pnpm tauri build` 出三平台包、写发布说明。
+- `gen/android/app/build.gradle.kts` 用 `compileSdk=36`（androidx lifecycle 2.10/webkit 1.14 要求），**必须装 `platforms;android-36`**；AGP 默认 buildTools 为 **35.0.0**，也要装：
+  ```bash
+  sdkmanager "platforms;android-36" "build-tools;35.0.0" "build-tools;36.0.0"
+  ```
+- 本地 Gradle 自动安装 SDK 组件会报 "SDK directory is not writable"（已知怪癖，目录其实可写）——**用 sdkmanager 手动预装**即可绕过
+- 经代理下载 SDK 包常在 33% 截断（`Error reading Zip content`）——**删除半成品目录重试**，一般 1–2 次成功
+- 构建：`cd apps/desktop && pnpm tauri android build --apk --target aarch64 --debug`（先 `export JAVA_HOME/ANDROID_HOME/NDK_HOME`）
+- CI android 哨兵已对齐 `platforms;android-36` + `build-tools;35.0.0`
 
-### M7 前端自测要点（联调时用）
+### 前端自测要点（联调时用）
 
 - `pnpm tauri dev` 启动；两实例应在首页互相出现，可配对、传输
 - 前端代码在 `apps/desktop/src/`：`lib/`（api/events/format/types）、`stores/`（4 个 Pinia）、`pages/`（4 页）、`components/`（卡片/弹窗/任务条/toast）
-- 新增依赖：vue-router、pinia、@tauri-apps/plugin-dialog、plugin-notification；对应 Rust 插件已在 `src-tauri` 注册，能力在 `capabilities/default.json`
 
 ## 五、本次会话的教训（务必遵守）
 
@@ -144,4 +150,4 @@ V0.1 桌面端功能已闭环（前端 + 后端）。两条路任选其一推进
 - **`cargo test --workspace` 会跨 crate 并行跑测试二进制**，单独 `cargo test -p X` 过不代表 workspace 过。提交前务必跑一次完整 `cargo test --workspace`。
 - **lib 内联单测 ≠ 集成测试**：`cargo test -p X --test Y` 只跑集成测试，漏掉 `src/*.rs` 里的 `#[cfg(test)]`。要 `--lib` 或直接 `--workspace` 覆盖全部。
 
-对 Agent 直接说"**开始 A1**"（Android 适配）或"**开始 M8**"（桌面联调发布）即可继续。
+对 Agent 直接说"**开始 M8**"（桌面联调发布）或"**开始 A3**"（Android 真机验收）即可继续。
