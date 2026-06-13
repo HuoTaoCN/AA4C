@@ -60,6 +60,46 @@ AA4C（设备直连，数据属于用户）：
 | Mobile | Tauri 2（与桌面端同一代码库） | Android（开发中）/ iOS（计划） |
 | Server | Docker | NAS / ARM64 / x86_64 |
 
+## 安装与运行
+
+### 安装包（推荐）
+
+从 [Releases](https://github.com/HuoTaoCN/AA4C/releases) 下载对应平台的安装包：
+
+| 平台 | 文件 | 说明 |
+|------|------|------|
+| macOS | `.dmg` | 通用包（Apple Silicon + Intel）。未签名，首次打开右键「打开」或在「系统设置 → 隐私与安全性」中放行 |
+| Windows | `.msi` | 双击安装 |
+| Linux | `.AppImage` | `chmod +x` 后直接运行 |
+| Android（实验版） | `.apk` | 需在系统设置中允许「安装未知来源应用」 |
+
+### 首次使用
+
+1. 两台设备连接**同一个 WiFi / 局域网**
+2. 都打开 AA4C，在首页即可看到彼此
+3. 点对方卡片「配对」，两台屏幕核对 6 位确认码一致后确认
+4. 在「AA」页选文件、选设备、点 AA
+
+### 防火墙放行（找不到设备时先查这里）
+
+AA4C 在局域网用 **TCP 42420**（传输）与 **UDP 5353**（mDNS 设备发现）通信：
+
+- **Windows**：首次运行会弹防火墙询问，勾选 **「专用网络」** 放行；若误点取消，到「Windows Defender 防火墙 → 允许应用」里为 AA4C 勾选专用网络
+- **macOS**：首次运行弹「是否允许接受传入连接」，点 **允许**
+- **Linux（ufw 为例）**：`sudo ufw allow 42420/tcp && sudo ufw allow 5353/udp`
+- 部分路由器 / 公司网络会隔离客户端或屏蔽组播，导致互相发现不到——换一个普通家用 WiFi 重试
+
+### 从源码运行（开发）
+
+环境与踩坑见 [HANDOFF.md](HANDOFF.md)。
+
+```bash
+cargo test --workspace                 # Rust 全绿
+cd apps/desktop && pnpm install
+pnpm tauri dev                         # 启动桌面端
+pnpm tauri build                       # 打本平台安装包
+```
+
 ## Architecture
 
 ```
