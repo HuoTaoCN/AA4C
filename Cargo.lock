@@ -82,8 +82,17 @@ dependencies = [
 name = "aa4c-transfer"
 version = "0.1.0"
 dependencies = [
+ "aa4c-identity",
+ "aa4c-proto",
+ "aa4c-store",
  "aa4c-types",
+ "blake3",
  "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

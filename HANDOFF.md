@@ -15,8 +15,8 @@
 | A0 Android 工程 | ✅ | `8a545b0` | gen/android 入库，本地与 CI APK 构建通过 |
 | M3 设备发现 | ✅ | 见 git log | mDNS 广播/浏览/自身过滤/上下线事件，组播双实例测试本地通过 |
 | M4 配对协议 | ✅ | 见 git log | aa4c-proto 帧编解码 + PairingManager（双向 PIN/超时/写库），4 个 e2e 测试 |
-| **M5 传输引擎** | ⬜ 下一个 | — | 文件收发/BLAKE3 校验/取消/重传（最大里程碑，帧编解码已在 aa4c-proto 备好） |
-| M6 Core + Tauri 桥 | ⬜ | — | 组装 + 11 个 Command + 事件转发 |
+| M5 传输引擎 | ✅ | 见 git log | 文件收发/BLAKE3 校验/路径净化/取消/断连/重传，8 个集成测试 + 1GB（ignored） |
+| **M6 Core + Tauri 桥** | ⬜ 下一个 | — | aa4c-core 组装（生命周期/事件总线/监听口分流配对与传输）+ 11 个 Tauri Command + 事件转发 |
 | M7 前端 UI | ⬜ | — | 4 页面 + 弹窗 |
 | M8 / A1–A3 | ⬜ | — | 联调发布 / Android 适配 |
 
@@ -99,17 +99,22 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：M5 传输引擎（最大里程碑）
+## 四、下一步：M6 Core 组装 + Tauri 桥
 
-按 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) M5 节执行，要点：
+按 [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) M6 节执行，要点：
 
-- 帧编解码与 `Message`（Offer/Chunk/FileDone/FileAck/TaskDone/Cancel）已在 `aa4c-proto` 备好，`client_hello`/`server_hello` 可直接复用
-- 监听端：TLS accept → 握手校验 trusted（`Store::get_device`）→ 会话循环；与配对共用监听口的分流逻辑放 M6
-- 发送：递归枚举文件（rel_path 规范化）→ 入库 → Offer → 等 OfferAnswer → 4 MiB 顺序分块，边读边算 BLAKE3 → FileDone
-- 接收：落盘 `.aa4c-part` 边写边算哈希 → 校验 → 重命名 → FileAck；路径净化拒绝 `..`/绝对路径；重名加 ` (1)`
-- 哈希失败重传 ≤2 次；进度事件 ≥100ms 节流；CancellationToken 贯穿；断连 → Failed
-- 集成测试清单见计划 M5 节（空文件/深层目录/1GB/取消/断连/篡改重传）
+- `aa4c-core`：`Core::start` 启动序列（identity → store → transfer listener → discovery），`shutdown` 逆序优雅关闭，broadcast 事件总线接通所有服务
+- **监听口分流**（M5 留的接口）：入站 TLS 连接握手后按首消息分流——`PairRequest` → `PairingManager::handle_incoming`，`Offer` → 传输会话。目前 `aa4c-transfer/src/recv.rs` 的 `run_incoming` 里 PairRequest 分支是占位（返回 reject），M6 要把它接到 PairingManager
+- 启动时清理遗留任务（`waiting_accept/transferring` → `failed`）
+- `src-tauri`：实现 [API_DESIGN.md](API_DESIGN.md) §9 全部 11 个 Command；`Core` 放入 Tauri `State`；`Core::subscribe()` → `app_handle.emit("aa4c://…")`，JSON camelCase
+- Command 错误统一映射为 `{ code, message }`（`Aa4cError::code()` 已备好）
 
-之后顺序：M6 Core 组装 → M7 UI → A1/A2 Android 适配 → M8/A3 发布。
+之后顺序：M7 UI → A1/A2 Android 适配 → M8/A3 发布。
 
-对 Agent 直接说"**开始 M3**"即可继续。
+## 五、本次会话的教训（务必遵守）
+
+- **一次只跑一个后台测试任务**：之前同时挂多个重叠的 `cargo test` 后台任务，被 harness 标记 killed 后留下僵尸测试二进制（占 TCP 端口 / Store 线程），导致后续测试互相抢占、越来越慢甚至卡死。跑测试前先 `ps -eo pid,etime,command | grep aa4c_` 确认无残留。
+- **`cargo test --workspace` 会跨 crate 并行跑测试二进制**，单独 `cargo test -p X` 过不代表 workspace 过。提交前务必跑一次完整 `cargo test --workspace`。
+- **lib 内联单测 ≠ 集成测试**：`cargo test -p X --test Y` 只跑集成测试，漏掉 `src/*.rs` 里的 `#[cfg(test)]`。要 `--lib` 或直接 `--workspace` 覆盖全部。
+
+对 Agent 直接说"**开始 M6**"即可继续。

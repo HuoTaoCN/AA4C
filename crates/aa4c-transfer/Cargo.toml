@@ -1,6 +1,6 @@
 [package]
 name = "aa4c-transfer"
-description = "AA4C 传输引擎：ATP 协议、文件收发、哈希校验"
+description = "AA4C 传输引擎：ATP 文件收发、BLAKE3 校验、取消与重传"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,15 @@ rust-version.workspace = true
 
 [dependencies]
 aa4c-types = { workspace = true }
+aa4c-proto = { workspace = true }
+aa4c-identity = { workspace = true }
+aa4c-store = { workspace = true }
+blake3 = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

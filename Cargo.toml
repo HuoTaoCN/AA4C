@@ -30,6 +30,7 @@ aa4c-core = { path = "crates/aa4c-core" }
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 
 # 网络与安全
 mdns-sd = "0.13"

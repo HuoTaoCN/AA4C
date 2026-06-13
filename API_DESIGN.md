@@ -242,10 +242,10 @@ pub struct TransferService { /* ... */ }
 impl TransferService {
     pub fn new(
         identity: Arc<Identity>,
-        store: Arc<Store>,
+        store: Store,            // Store 内部已是廉价克隆的句柄
         events: EventSender,
         config: TransferConfig,
-    ) -> Self;
+    ) -> Arc<Self>;
 
     /// 启动 TLS 监听（接收端），返回实际监听端口
     pub async fn start_listener(&self, port: u16) -> Result<u16>;
@@ -262,8 +262,9 @@ impl TransferService {
 
 pub struct TransferConfig {
     pub chunk_size: usize,        // 默认 4 MiB
-    pub default_save_dir: PathBuf,// 默认 ~/Downloads/AA4C
-    pub max_concurrent_tasks: usize, // 默认 4
+    pub default_save_dir: PathBuf,// 默认 ~/Downloads/AA4C（由 Core 注入平台目录）
+    pub max_concurrent_tasks: usize, // 默认 4（发送端信号量）
+    pub timeout: Duration,        // 协议等待超时，默认 60s（PROTOCOL §8）
 }
 ```
 
