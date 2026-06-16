@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- V0.2 设计文档：新增 [SYNC_DESIGN.md](SYNC_DESIGN.md) —— 设备信任分级（完全信任/朋友/临时/陌生）、跨设备文件索引、文件状态可视化（🟢 本地有 / 🟡 可下载 / 🔴 设备离线）、元数据优先+按需获取、Inbox「收到的」纳入索引；同步更新 PROJECT_VISION（权限分级 + 同步）、DATABASE_SCHEMA（V0.2 表：`devices.trust_level` / `sync_scopes` / `sync_file_index` / `remote_index` / `sync_conflicts`）、UI_DESIGN_SPEC（同步页统一文件视图 + 设置页信任层级）、ROADMAP。仅设计，未实现。
+
 ## [0.1.1] - 2026-06-14
 
 ### Fixed

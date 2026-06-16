@@ -120,15 +120,83 @@ devices 1 ──── n transfer_tasks 1 ──── n transfer_files
                       settings（独立 KV）
 ```
 
-## 4. 未来版本预留（不在 V0.1 建表）
+## 4. V0.2 表结构（信任分级 + 跨设备索引设计）
 
-仅作设计预告，等对应版本再写迁移：
+> 设计定稿、**尚未建表**，等 V0.2 实现时随迁移 `002` 落地。完整设计见 [SYNC_DESIGN.md](SYNC_DESIGN.md)。
+
+### 4.1 devices 增列 —— 信任分级
+
+```sql
+ALTER TABLE devices ADD COLUMN trust_level TEXT NOT NULL DEFAULT 'friend'
+    CHECK (trust_level IN ('full','friend'));   -- 临时/陌生不入库
+```
+
+- 旧数据回填：`trusted=1` 的行 → `trust_level='friend'`，用户可在设置升级为 `full`。
+- 仅 `full`（完全信任）设备参与跨设备索引与同步。
+
+### 4.2 sync_scopes —— 共享范围
+
+```sql
+CREATE TABLE sync_scopes (
+    id          TEXT PRIMARY KEY,                -- UUID
+    kind        TEXT NOT NULL CHECK (kind IN ('folder','inbox')),
+    local_path  TEXT NOT NULL,                   -- 本机绝对路径
+    mode        TEXT NOT NULL DEFAULT 'ondemand'
+                CHECK (mode IN ('ondemand','mirror')),  -- V0.2 首版只用 ondemand
+    created_at  INTEGER NOT NULL
+);
+```
+
+### 4.3 sync_file_index —— 本机文件索引
+
+```sql
+CREATE TABLE sync_file_index (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_id      TEXT NOT NULL REFERENCES sync_scopes(id) ON DELETE CASCADE,
+    rel_path      TEXT NOT NULL,
+    size          INTEGER NOT NULL,
+    mtime         INTEGER NOT NULL,              -- unix 毫秒
+    hash          TEXT,                          -- BLAKE3 hex
+    present_local INTEGER NOT NULL DEFAULT 1,    -- 内容是否在本机磁盘（绿）
+    updated_at    INTEGER NOT NULL,
+    UNIQUE (scope_id, rel_path)
+);
+```
+
+### 4.4 remote_index —— 远端设备广播来的条目
+
+```sql
+CREATE TABLE remote_index (
+    device_id  TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    rel_path   TEXT NOT NULL,
+    size       INTEGER NOT NULL,
+    hash       TEXT,
+    seen_at    INTEGER NOT NULL,                 -- 最近一次收到该条目的时间
+    PRIMARY KEY (device_id, rel_path)
+);
+```
+
+> 黄/红判定：某 `rel_path` 本机 `present_local=0` 时，看持有它的 `device_id` 是否在线（`devices.last_seen_at` 30s 内）——在线为黄、仅离线为红。`remote_index` 可常驻内存 + 落库缓存。
+> 解除配对（`DELETE devices`）经外键级联清空其 `remote_index`；**完全信任降为朋友**会保留设备行，需在应用层**显式 `DELETE FROM remote_index WHERE device_id=?`**（见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §2）。
+
+### 4.5 sync_conflicts —— 冲突记录（占位）
+
+```sql
+CREATE TABLE sync_conflicts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    rel_path    TEXT NOT NULL,
+    local_hash  TEXT,
+    remote_hash TEXT,
+    status      TEXT NOT NULL DEFAULT 'open'
+                CHECK (status IN ('open','resolved')),
+    created_at  INTEGER NOT NULL
+);
+```
+
+## 4b. 更远期预留（设计预告）
 
 | 版本 | 表 | 用途 |
 |------|----|------|
-| V0.2 | `sync_folders` | 同步目录配置（路径、模式、对端设备、忽略规则） |
-| V0.2 | `sync_file_index` | 文件块索引（路径、mtime、块哈希列表，参考 Syncthing） |
-| V0.2 | `sync_conflicts` | 冲突记录 |
 | V0.3 | `shares` | 分享链接（token、权限、过期时间、访问记录） |
 | V0.4 | `download_tasks` | 下载任务（url、协议、引擎、状态） |
 | V0.5 | `tags` / `file_tags` | AI 标签 |
@@ -143,7 +211,8 @@ devices 1 ──── n transfer_tasks 1 ──── n transfer_files
 ```rust
 const MIGRATIONS: &[&str] = &[
     /* v1: */ include_str!("migrations/001_init.sql"),
-    // v2: 002_sync.sql （V0.2 时追加）
+    // v2: 002_trust_and_sync.sql（V0.2：devices.trust_level + sync_scopes
+    //      + sync_file_index + remote_index + sync_conflicts，见 §4）
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {
