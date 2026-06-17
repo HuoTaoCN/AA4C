@@ -11,6 +11,8 @@
 ### Added
 
 - V0.2 设计文档：新增 [SYNC_DESIGN.md](SYNC_DESIGN.md) —— 设备信任分级（完全信任/朋友/临时/陌生）、跨设备文件索引、文件状态可视化（🟢 本地有 / 🟡 可下载 / 🔴 设备离线）、元数据优先+按需获取、Inbox「收到的」纳入索引；同步更新 PROJECT_VISION（权限分级 + 同步）、DATABASE_SCHEMA（V0.2 表：`devices.trust_level` / `sync_scopes` / `sync_file_index` / `remote_index` / `sync_conflicts`）、UI_DESIGN_SPEC（同步页统一文件视图 + 设置页信任层级）、ROADMAP。仅设计，未实现。
+- 前端能力架构：导航围绕五大能力（传输/同步/分享/下载/归档）重构，首页能力卡片 + 建设中页 + PC 侧栏/移动底栏两套外壳；界面品牌改为「AA连接」。
+- UI 设计预览（示例数据，后端 V0.2 接）：同步页跨设备文件的绿/黄/红状态视图（本地有 / 可下载 / 设备离线）+ 图例 + 筛选 + Inbox 分组；设置页「我的设备 ⇄ 朋友」信任分级分段切换。
 
 ## [0.1.1] - 2026-06-14
 

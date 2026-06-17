@@ -24,6 +24,21 @@ watchEffect(() => {
 
 const paired = computed(() => devices.devices.filter((d) => d.trusted));
 
+// 信任分级（预览）：后端 trust_level 尚未实现（见 SYNC_DESIGN.md），
+// 这里仅本地演示交互，配对设备默认「朋友」，可标记为「我的设备」。
+type Tier = "full" | "friend";
+const tierPreview = reactive<Record<string, Tier>>({});
+const tierOf = (id: string): Tier => tierPreview[id] ?? "friend";
+function setTier(id: string, t: Tier) {
+  tierPreview[id] = t;
+  toast.push(
+    "info",
+    t === "full"
+      ? "已标记为「我的设备」——同步功能 V0.2 上线后将参与跨设备文件同步"
+      : "已设为「朋友」（预览）",
+  );
+}
+
 async function changeDir() {
   const picked = await settings.pickSaveDir();
   if (picked) form.saveDir = picked;
@@ -84,16 +99,40 @@ async function unpair(id: string) {
       <p class="lock muted">🔒 所有传输均已加密</p>
     </div>
 
-    <h3>已配对设备</h3>
+    <h3>已配对设备 <span class="tag">含信任分级预览</span></h3>
     <div v-if="paired.length" class="card list">
       <div v-for="d in paired" :key="d.id" class="prow">
         <span class="ico">{{ platformIcon(d.platform) }}</span>
-        <span class="nm">{{ d.name }}</span>
-        <span class="online-dot" :class="{ off: !d.online }"></span>
+        <div class="pinfo">
+          <div class="pname">
+            <span class="nm">{{ d.name }}</span>
+            <span class="online-dot" :class="{ off: !d.online }"></span>
+          </div>
+          <!-- 信任分级（预览）：我的设备 ⇄ 朋友 -->
+          <div class="seg">
+            <button
+              class="seg-btn"
+              :class="{ on: tierOf(d.id) === 'full' }"
+              @click="setTier(d.id, 'full')"
+            >
+              我的设备
+            </button>
+            <button
+              class="seg-btn"
+              :class="{ on: tierOf(d.id) === 'friend' }"
+              @click="setTier(d.id, 'friend')"
+            >
+              朋友
+            </button>
+          </div>
+        </div>
         <button class="btn btn-danger small" @click="unpair(d.id)">解除配对</button>
       </div>
     </div>
     <div v-else class="empty card muted">还没有已配对的设备。</div>
+    <p class="hint muted">
+      标记为「我的设备」的，V0.2 起会和本机同步文件（绿/黄/红 状态见「同步」页）；「朋友」只收发、不同步。
+    </p>
   </div>
 </template>
 
@@ -169,15 +208,62 @@ input[type="text"] {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 16px;
+  padding: 12px 16px;
 }
 .prow + .prow {
   border-top: 1px solid var(--aa-border);
 }
-.nm {
+.pinfo {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.pname {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.nm {
   font-weight: 600;
   font-size: 0.9rem;
+}
+.tag {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #9a6a00;
+  background: #ffedcc;
+  padding: 1px 8px;
+  border-radius: 999px;
+  vertical-align: middle;
+}
+@media (prefers-color-scheme: dark) {
+  .tag {
+    color: #ffce80;
+    background: #4a3a16;
+  }
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--aa-border);
+  border-radius: 999px;
+  overflow: hidden;
+  width: fit-content;
+}
+.seg-btn {
+  font-size: 0.76rem;
+  padding: 4px 12px;
+  color: var(--aa-text-dim);
+}
+.seg-btn.on {
+  background: var(--aa-primary);
+  color: #fff;
+  font-weight: 600;
+}
+.hint {
+  font-size: 0.78rem;
+  line-height: 1.6;
+  margin: 10px 2px 0;
 }
 .empty {
   padding: 24px;
