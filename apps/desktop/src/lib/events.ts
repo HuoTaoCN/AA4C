@@ -61,14 +61,11 @@ export async function startEventBridge(): Promise<UnlistenFn> {
       pairing.onPin(e.payload.sessionId, e.payload.pin),
     ),
     listen<PairingResultPayload>("aa4c://pairing_result", (e) => {
-      pairing.onResult(e.payload.sessionId, e.payload.success);
+      pairing.onResult(e.payload.sessionId, e.payload.success, e.payload.peer);
       void devices.loadDevices(); // 配对成功后刷新 trusted 标记
-      const r = pairing.lastResult;
-      if (r) {
-        toast.push(
-          r.success ? "success" : "error",
-          r.success ? `已和 ${r.peerName} 配对成功 🎉` : "配对未完成，可以重新发起",
-        );
+      // 成功后由「这是你自己的设备吗？」弹窗收尾，不再单独 toast；失败才提示
+      if (!e.payload.success) {
+        toast.push("error", "配对未完成，可以重新发起");
       }
     }),
 

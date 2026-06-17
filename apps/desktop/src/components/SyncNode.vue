@@ -1,0 +1,152 @@
+<script setup lang="ts">
+import { ref } from "vue";
+import { useToastStore } from "../stores/toast";
+import { humanBytes } from "../lib/format";
+import { statusLabel, type SyncNode } from "../lib/sync-preview";
+
+const props = defineProps<{ node: SyncNode; depth: number }>();
+defineOptions({ name: "SyncNode" });
+
+const toast = useToastStore();
+const open = ref(props.depth < 1); // 顶层目录默认展开
+
+const indent = (d: number) => ({ paddingLeft: `${12 + d * 18}px` });
+
+function onFile() {
+  if (props.node.kind !== "file") return;
+  const f = props.node;
+  if (f.status === "online") {
+    const msg =
+      f.owners.length > 1
+        ? `将同时从「${f.owners.join("、")}」取回 ${f.name}（多设备并行，更快）`
+        : `将从「${f.owners[0]}」取回 ${f.name}`;
+    toast.push("info", `${msg}（同步功能 V0.2 上线）`);
+  } else if (f.status === "offline") {
+    toast.push("info", `「${f.owners[0]}」当前离线，等它上线后即可取回`);
+  } else {
+    toast.push("info", `${f.name} 已在本机`);
+  }
+}
+</script>
+
+<template>
+  <!-- 目录：可展开 -->
+  <template v-if="node.kind === 'dir'">
+    <div class="row dir" :style="indent(depth)" @click="open = !open">
+      <span class="caret" :class="{ open }">▸</span>
+      <span class="fic">📁</span>
+      <span class="nm">{{ node.name }}</span>
+      <span class="cnt muted">{{ node.children.length }}</span>
+    </div>
+    <template v-if="open">
+      <SyncNode
+        v-for="(c, i) in node.children"
+        :key="i"
+        :node="c"
+        :depth="depth + 1"
+      />
+    </template>
+  </template>
+
+  <!-- 文件：状态点 + 文字标签 -->
+  <div v-else class="row file" :style="indent(depth)" @click="onFile">
+    <span class="fic">📄</span>
+    <span class="nm">{{ node.name }}</span>
+    <span class="pill" :class="node.status">
+      <span class="dot"></span>{{ statusLabel(node.status) }}
+    </span>
+    <span class="sz muted">{{ humanBytes(node.size) }}</span>
+    <span class="ow muted">{{ node.owners.join("、") }}</span>
+  </div>
+</template>
+
+<style scoped>
+.row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 14px 8px 12px;
+  cursor: pointer;
+}
+.row:hover {
+  background: var(--aa-surface-2);
+}
+.row + .row {
+  border-top: 1px solid var(--aa-border);
+}
+.caret {
+  display: inline-block;
+  width: 12px;
+  font-size: 0.7rem;
+  color: var(--aa-text-dim);
+  transition: transform 0.12s;
+}
+.caret.open {
+  transform: rotate(90deg);
+}
+.fic {
+  font-size: 1rem;
+}
+.dir .nm {
+  font-weight: 600;
+}
+.nm {
+  flex: 1;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cnt {
+  font-size: 0.78rem;
+}
+.sz {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+.ow {
+  font-size: 0.8rem;
+  min-width: 96px;
+  text-align: right;
+}
+
+/* 状态标签：彩点 + 文字 */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+}
+.pill .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.pill.local {
+  color: var(--aa-success);
+  background: color-mix(in srgb, var(--aa-success) 14%, transparent);
+}
+.pill.online {
+  color: #9a6a00;
+  background: #ffedcc;
+}
+.pill.offline {
+  color: var(--aa-danger);
+  background: color-mix(in srgb, var(--aa-danger) 14%, transparent);
+}
+@media (prefers-color-scheme: dark) {
+  .pill.online {
+    color: #ffce80;
+    background: #4a3a16;
+  }
+}
+@media (max-width: 700px) {
+  .ow {
+    display: none;
+  }
+}
+</style>

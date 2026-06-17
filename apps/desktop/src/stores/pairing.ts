@@ -19,10 +19,12 @@ export interface PairingSession {
 interface State {
   sessions: Record<string, PairingSession>;
   lastResult: { success: boolean; peerName: string } | null;
+  /** 配对成功后追问「这是你自己的设备吗？」（信任分级，预览）。 */
+  trustPrompt: { peerId: string; peerName: string } | null;
 }
 
 export const usePairingStore = defineStore("pairing", {
-  state: (): State => ({ sessions: {}, lastResult: null }),
+  state: (): State => ({ sessions: {}, lastResult: null, trustPrompt: null }),
 
   getters: {
     /** 需要展示确认码的会话（优先级高于接受请求）。 */
@@ -68,11 +70,16 @@ export const usePairingStore = defineStore("pairing", {
         if (s) this.sessions[sessionId] = { ...s, needsAccept: false };
       }
     },
-    /** 双方：配对结束。 */
-    onResult(sessionId: string, success: boolean) {
+    /** 双方：配对结束。成功则追问信任分级。 */
+    onResult(sessionId: string, success: boolean, peerId: string) {
       const peerName = this.sessions[sessionId]?.peerName ?? "对方设备";
       delete this.sessions[sessionId];
       this.lastResult = { success, peerName };
+      if (success) this.trustPrompt = { peerId, peerName };
+    },
+    /** 用户回答「这是你自己的设备吗？」（preview：暂只本地，trust_level 后端 V0.2）。 */
+    resolveTrust(_tier: "full" | "friend") {
+      this.trustPrompt = null;
     },
     clearResult() {
       this.lastResult = null;

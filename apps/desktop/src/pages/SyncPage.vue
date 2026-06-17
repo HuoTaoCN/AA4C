@@ -1,15 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { useToastStore } from "../stores/toast";
-import { humanBytes } from "../lib/format";
+import SyncNode from "../components/SyncNode.vue";
 import {
-  SAMPLE_GROUPS,
+  SAMPLE_TREE,
   STATUS_LEGEND,
-  type SyncEntry,
-  type SyncStatus,
+  pruneTree,
+  type SyncFile,
 } from "../lib/sync-preview";
-
-const toast = useToastStore();
 
 type Filter = "all" | "online" | "local";
 const filter = ref<Filter>("all");
@@ -20,35 +17,13 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: "local", label: "本地有" },
 ];
 
-function keep(e: SyncEntry): boolean {
-  if (filter.value === "online") return e.status === "online";
-  if (filter.value === "local") return e.status === "local";
+function keep(f: SyncFile): boolean {
+  if (filter.value === "online") return f.status === "online";
+  if (filter.value === "local") return f.status === "local";
   return true;
 }
 
-const groups = computed(() =>
-  SAMPLE_GROUPS.map((g) => ({ title: g.title, entries: g.entries.filter(keep) })).filter(
-    (g) => g.entries.length > 0,
-  ),
-);
-
-function statusLabel(s: SyncStatus): string {
-  return STATUS_LEGEND.find((x) => x.status === s)!.label;
-}
-
-function onClick(e: SyncEntry) {
-  switch (e.status) {
-    case "online":
-      toast.push("info", `演示：将从「${e.owner}」取回 ${e.name}（同步功能 V0.2 上线）`);
-      break;
-    case "offline":
-      toast.push("info", `「${e.owner}」当前离线，等它上线后即可取回`);
-      break;
-    case "local":
-      toast.push("info", `${e.name} 已在本机`);
-      break;
-  }
-}
+const tree = computed(() => pruneTree(SAMPLE_TREE, keep));
 </script>
 
 <template>
@@ -83,19 +58,11 @@ function onClick(e: SyncEntry) {
       </div>
     </div>
 
-    <!-- 统一文件视图 -->
-    <section v-for="g in groups" :key="g.title" class="group">
-      <h3>{{ g.title }}</h3>
-      <ul class="card">
-        <li v-for="e in g.entries" :key="g.title + e.name" @click="onClick(e)">
-          <span class="dot" :class="e.status" :title="statusLabel(e.status)"></span>
-          <span class="fn">{{ e.name }}</span>
-          <span class="sz muted">{{ humanBytes(e.size) }}</span>
-          <span class="ow muted">{{ e.owner }}</span>
-        </li>
-      </ul>
-    </section>
-    <div v-if="groups.length === 0" class="empty card muted">该筛选下没有文件。</div>
+    <!-- 目录树 -->
+    <div v-if="tree.length" class="tree card">
+      <SyncNode v-for="(n, i) in tree" :key="i" :node="n" :depth="0" />
+    </div>
+    <div v-else class="empty card muted">该筛选下没有文件。</div>
   </div>
 </template>
 
@@ -131,14 +98,13 @@ h2 {
   line-height: 1.6;
   margin: 0 0 16px;
 }
-
 .bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 10px 14px;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
   flex-wrap: wrap;
 }
 .legend {
@@ -151,6 +117,20 @@ h2 {
   gap: 6px;
   font-size: 0.82rem;
   color: var(--aa-text-dim);
+}
+.legend .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.legend .dot.local {
+  background: var(--aa-success);
+}
+.legend .dot.online {
+  background: #e0a400;
+}
+.legend .dot.offline {
+  background: var(--aa-danger);
 }
 .filters {
   display: flex;
@@ -167,72 +147,12 @@ h2 {
   color: var(--aa-primary);
   font-weight: 600;
 }
-
-.group h3 {
-  font-size: 0.82rem;
-  color: var(--aa-text-dim);
-  margin: 16px 0 8px;
-}
-ul {
-  list-style: none;
-  margin: 0;
-  padding: 4px 0;
-}
-li {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  cursor: pointer;
-}
-li:hover {
-  background: var(--aa-surface-2);
-}
-li + li {
-  border-top: 1px solid var(--aa-border);
-}
-.fn {
-  flex: 1;
-  font-size: 0.9rem;
-  white-space: nowrap;
+.tree {
+  padding: 2px 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-}
-.sz {
-  font-size: 0.8rem;
-  font-variant-numeric: tabular-nums;
-}
-.ow {
-  font-size: 0.8rem;
-  min-width: 88px;
-  text-align: right;
-}
-
-/* 状态点 */
-.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  display: inline-block;
-}
-.dot.local {
-  background: var(--aa-success);
-}
-.dot.online {
-  background: #e0a400;
-}
-.dot.offline {
-  background: var(--aa-danger);
 }
 .empty {
   padding: 24px;
   text-align: center;
-}
-
-@media (max-width: 700px) {
-  .ow {
-    display: none;
-  }
 }
 </style>
