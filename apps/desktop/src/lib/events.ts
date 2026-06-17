@@ -86,7 +86,7 @@ export async function startEventBridge(): Promise<UnlistenFn> {
         const n = before.files.length;
         const msg = `已收到来自 ${peer} 的 ${n} 个文件`;
         toast.push("success", msg, settings.settings?.saveDir);
-        notify("AA4C", msg);
+        notify("AA连接", msg);
       } else if (before?.direction === "send") {
         const peer = devices.nameOf(before.peer);
         toast.push("success", `已发送到 ${peer}`);

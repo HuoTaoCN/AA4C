@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "AA4C",
+        "title": "AA连接",
         "width": 1080,
         "height": 720,
         "minWidth": 900,

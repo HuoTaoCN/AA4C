@@ -4,6 +4,7 @@ import { storeToRefs } from "pinia";
 import { useDeviceStore } from "../stores/devices";
 import { useTransferStore } from "../stores/transfer";
 import DeviceCard from "../components/DeviceCard.vue";
+import { CAPABILITIES } from "../lib/nav";
 import { baseName, platformIcon, statusText, timeText } from "../lib/format";
 
 const devices = useDeviceStore();
@@ -31,6 +32,28 @@ function summary(files: { relPath: string }[]): string {
       </div>
     </section>
 
+    <!-- 能力入口 -->
+    <section>
+      <h2>能力</h2>
+      <div class="caps">
+        <router-link
+          v-for="c in CAPABILITIES"
+          :key="c.path"
+          :to="c.path"
+          class="cap card"
+        >
+          <div class="cap-top">
+            <span class="cap-ic">{{ c.icon }}</span>
+            <span class="cap-pill" :class="c.built ? 'ok' : 'soon'">
+              {{ c.built ? "可用" : "建设中" }}
+            </span>
+          </div>
+          <div class="cap-nm">{{ c.name }}</div>
+          <div class="cap-ds muted">{{ c.desc }}</div>
+        </router-link>
+      </div>
+    </section>
+
     <!-- 附近设备 -->
     <section>
       <h2>附近设备</h2>
@@ -39,7 +62,7 @@ function summary(files: { relPath: string }[]): string {
       </div>
       <div v-else class="empty card">
         <p>附近还没有发现设备。</p>
-        <p class="muted">在另一台设备上打开 AA4C，并连接同一个 WiFi。</p>
+        <p class="muted">在另一台设备上打开 AA连接，并连接同一个 WiFi。</p>
       </div>
     </section>
 
@@ -67,7 +90,7 @@ function summary(files: { relPath: string }[]): string {
   display: flex;
   flex-direction: column;
   gap: 26px;
-  max-width: 860px;
+  max-width: 880px;
 }
 h2 {
   font-size: 1rem;
@@ -102,6 +125,59 @@ h2 {
   align-items: center;
   gap: 6px;
 }
+
+.caps {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+.cap {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.15s;
+}
+.cap:hover {
+  border-color: var(--aa-primary);
+}
+.cap-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.cap-ic {
+  font-size: 1.5rem;
+}
+.cap-pill {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.cap-pill.ok {
+  color: var(--aa-success);
+  background: color-mix(in srgb, var(--aa-success) 14%, transparent);
+}
+.cap-pill.soon {
+  color: #9a6a00;
+  background: #ffedcc;
+}
+@media (prefers-color-scheme: dark) {
+  .cap-pill.soon {
+    color: #ffce80;
+    background: #4a3a16;
+  }
+}
+.cap-nm {
+  font-weight: 700;
+  font-size: 1rem;
+}
+.cap-ds {
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
