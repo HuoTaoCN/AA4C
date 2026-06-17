@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 产品定位升级为「**AA连接（AA4C）—— 开源跨平台设备连接平台**」（设备 → 连接 → 能力，连接优先）：明确不做社区/资源平台/中心化云盘；Slogan 改为"连接你的所有设备"；新增"连接优先"五阶段路线（AA Nearby → Sync → Connect → Touch → Direct）与 D2D 未来方向；移动端确认沿用 Tauri 2（iOS/iPad/平板由同一构建+响应式覆盖，Flutter 仅远期备选）。同步更新 README / PROJECT_VISION / ROADMAP / ARCHITECTURE / AGENTS / CONTRIBUTING / UI_DESIGN_SPEC / CODEX_MASTER_PROMPT。
+
 ### Added
 
 - V0.2 设计文档：新增 [SYNC_DESIGN.md](SYNC_DESIGN.md) —— 设备信任分级（完全信任/朋友/临时/陌生）、跨设备文件索引、文件状态可视化（🟢 本地有 / 🟡 可下载 / 🔴 设备离线）、元数据优先+按需获取、Inbox「收到的」纳入索引；同步更新 PROJECT_VISION（权限分级 + 同步）、DATABASE_SCHEMA（V0.2 表：`devices.trust_level` / `sync_scopes` / `sync_file_index` / `remote_index` / `sync_conflicts`）、UI_DESIGN_SPEC（同步页统一文件视图 + 设置页信任层级）、ROADMAP。仅设计，未实现。

@@ -1,20 +1,23 @@
-# AA4C Roadmap
+# AA连接（AA4C）Roadmap
 
 ## Vision
 
-让所有设备成为一个空间。
+连接你的所有设备。
+
+> **连接优先，功能其次。** 能力围绕"连接方式"分阶段演进：
+> AA Nearby（近场）→ AA Sync（同步）→ AA Connect（远程）→ AA Touch（碰一碰 / NFC）→ AA Direct（脱网 / WiFi Direct·蓝牙·蓝牙 Mesh）。详见 [PROJECT_VISION.md](PROJECT_VISION.md) 连接优先路线。
 
 ## 总览
 
-| 版本 | 代号 | 目标 | 预计周期 |
-|------|------|------|----------|
-| V0.1 | Alpha | 完成第一次 AA | 4 周 |
-| V0.2 | Beta | 完成持续同步 | +4 周（累计 8 周） |
-| V0.3 | Connect | 突破局域网 | +4 周（累计 12 周） |
-| V0.4 | Download | 统一文件入口 | +4 周（累计 16 周） |
-| V0.5 | AI | 数字资产管理 | +4 周（累计 20 周） |
-| V0.6 | Community | 社区共享网络 | +4 周（累计 24 周） |
-| V1.0 | Ecosystem | 开放生态 | 持续演进 |
+| 版本 | 代号 | 连接阶段 | 目标 | 预计周期 |
+|------|------|----------|------|----------|
+| V0.1 | Alpha | AA Nearby | 完成第一次 AA（局域网） | 4 周 |
+| V0.2 | Beta | AA Sync | 完成持续同步 + 信任分级 + 跨设备索引 | +4 周（累计 8 周） |
+| V0.3 | Connect | AA Connect | 突破局域网（NAT 穿透 / P2P / Relay）+ 好友分享 | +4 周（累计 12 周） |
+| V0.4 | Download | — | 统一文件入口（下载中心） | +4 周（累计 16 周） |
+| V0.5 | AI | — | AI 归档（分类 / 标签 / 知识库） | +4 周（累计 20 周） |
+| V0.6 | Touch/Direct | AA Touch / AA Direct | 碰一碰连接 / 脱网连接 | +4 周（累计 24 周） |
+| V1.0 | Ecosystem | — | 完整连接平台（桌面 + 移动/iPad + NAS + Docker + 插件） | 持续演进 |
 
 ---
 
@@ -91,28 +94,28 @@
 
 ---
 
-## V0.6 — Community
+## V0.6 — Touch / Direct
 
-**目标：社区共享网络。**
+**目标：更自然、更极端的连接方式。**
 
 功能：
 
-- 资源发现
-- 社区节点
-- 共享目录
-- 兴趣社区、知识共享
+- **AA Touch（碰一碰）**：NFC —— 设备 A 碰设备 B → 自动连接配对
+- **AA Direct（脱网连接）**：WiFi Direct、蓝牙、蓝牙 Mesh —— 没有互联网、没有基站也能连
+- 面向 Device-to-Device（D2D）设备直连的演进（手机↔手机/电脑/NAS/车机/无人机）
+
+> 不做社区 / 资源平台 / 中心化云盘——见 [PROJECT_VISION.md](PROJECT_VISION.md) 产品边界。
 
 ---
 
 ## V1.0 — Ecosystem
 
-**目标：开放生态。**
+**目标：完整连接平台 + 开放生态。**
 
 功能：
 
-- 插件市场
-- 开发者 SDK
-- 开放 API
+- 桌面 + 移动端（含 iOS / iPad / 平板）+ NAS + Docker 全平台
+- 插件市场、开发者 SDK、开放 API
 - 第三方扩展
 
 持续演进。

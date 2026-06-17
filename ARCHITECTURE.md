@@ -1,8 +1,10 @@
-# AA4C Architecture
+# AA连接（AA4C）Architecture
 
 ## Overview
 
-AA4C 采用 **Core + Service + Plugin + Transport + Storage** 分层架构，目标是支持未来十年以上的持续扩展。
+AA连接（AA4C）是一个**跨平台设备连接平台**——架构遵循"设备 → 连接 → 能力"：连接层是地基，文件传输 / 同步 / 分享 / 下载 / AI 归档都是连接之上的能力（Service / Plugin）。
+
+采用 **Core + Service + Plugin + Transport + Storage** 分层架构，目标是支持未来十年以上的持续扩展。
 
 核心设计原则：
 
