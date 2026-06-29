@@ -53,8 +53,12 @@ jobs:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: "AA4C ${{ github.ref_name }}"
-          releaseBody: "桌面安装包（.dmg / .msi / .AppImage）与 Android APK（arm64，实验版）见下方 Assets。安装与防火墙说明见 README。"
+          releaseBody: |
+            桌面安装包（.dmg / .msi / .AppImage）与 Android APK（arm64，实验版）见下方 Assets。安装与防火墙说明见 README。
+
+            ${{ contains(github.ref_name, '-') && '⚠️ 预览版：配对协议与早期版本不兼容，互相配对的设备需都升级到本版本。' || '' }}
           releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           args: ${{ matrix.args }}
 
   android:
@@ -101,4 +105,5 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: dist-apk/*.apk

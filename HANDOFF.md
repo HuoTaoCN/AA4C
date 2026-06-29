@@ -1,6 +1,6 @@
 # AA4C 开发交接（换机指南）
 
-> 最后更新：2026-06-13。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
+> 最后更新：2026-06-29。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
 > 给 AI Agent：开工前先读本文档"当前进度"与"下一步"，再按 [AGENTS.md](AGENTS.md) 的必读清单工作。
 
 ## 一、当前进度
@@ -20,9 +20,14 @@
 | M7 前端 UI | ✅ | `4c94dbd` | Vue3+Router+Pinia 4 页面 + 配对/接收弹窗 + 任务条 + toast；拖拽/文件选择/通知；`pnpm build` 通过 |
 | A1 Android 适配 | ✅ | `f955394` | MulticastLock + Manifest 权限 + 保存目录平台注入；aarch64 debug APK 本地构建通过；A2 响应式布局 M7 已含 |
 | M8 / A3 发布 | ✅ | `e0557b7` | `v0.1.0` 已发布：三平台桌面包 + Android arm64 APK（CI tag 触发自动出包） |
-| **v0.1.1 联调修复** | 🚀 进行中 | — | 修代理(Clash fake-ip)环境下对端无法被发起配对的地址选择 bug + 默认设备名优化；发 `v0.1.1` |
+| v0.1.1 联调修复 | ✅ | `9199f50` | 修代理(Clash fake-ip)环境下对端无法被发起配对的地址选择 bug + 默认设备名优化；已发 `v0.1.1` |
+| V0.2 设计 | ✅ | `6d56ed5` | 新增 [SYNC_DESIGN.md](SYNC_DESIGN.md)：信任分级 + 跨设备文件索引 + 绿/黄/红状态可视化设计 |
+| 产品重新定位 | ✅ | `8e02b27` | 品牌改「AA连接（AA4C）」、设备连接平台定位、连接优先五阶段路线；移动端确认沿用 Tauri 2 |
+| 前端能力架构 + UI 预览 | ✅ | `2e78590`/`194286e`/`148e326` | 五大能力导航（传输/同步/分享/下载/归档）+ PC/移动两套外壳；同步页目录树预览 + 信任分级前移到配对成功弹窗 |
+| **V0.2 信任分级（第一步）** | ✅ | `b12d739` | `devices.trust_level` 落库（迁移 `002_trust.sql`）+ `set_trust_level` 命令端到端打通，配对默认 friend，「我的设备/朋友」UI 接真实后端 |
+| **v0.2.0-preview 发布** | 🚀 进行中 | — | 打包预览版：品牌 + 新 UI + 信任分级随安装包/APK 发布 |
 
-整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通；下一步进入 Android 平台适配（A1，前置 A0+M6 均已就绪）或桌面联调发布（M8）。
+整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。V0.2 进行中：信任分级数据模型已落地，跨设备文件索引/同步（SYNC_DESIGN.md §10 里程碑 2–5）待续。
 
 ### 已实现 crate 概览（`crates/`）
 
@@ -115,13 +120,16 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：M8 桌面联调发布 / A3 Android 真机验收
+## 四、下一步：V0.2 同步 —— 共享范围 + 本地索引 + Inbox
 
-V0.1 桌面端与 Android 编译链路均已闭环。剩余为联调与发布：
+`v0.2.0-preview` 已发：品牌重塑、五能力导航 UI、信任分级（`devices.trust_level`）端到端打通。下一步按 [SYNC_DESIGN.md](SYNC_DESIGN.md) §10 里程碑 2 继续：
 
-- **M8**：双真机联调（macOS ↔ Windows）、修联调 bug、`pnpm tauri build` 出三平台包、写发布说明
-- **A3**：Android 真机装 APK，与桌面互相发现/配对/传输；Release 工作流追加 debug APK 产物；README 加 Android 安装说明
-- **A2（响应式 UI）**：M7 已实现 < 700px 底部导航 + 单列；真机上确认即可
+- **里程碑 2**：`sync_scopes` 共享范围 + 本地文件索引（`notify` 监听 + 定时扫描兜底，哈希惰性计算）+ Inbox 落点（见 §5）
+- **里程碑 3**：索引摘要交换协议（`IndexSummary`/`IndexEntries`）+ `remote_index` + 统一视图（绿/黄/红，只读）
+- **里程碑 4**：按需拉取（复用现有 ATP `Offer`/分块传输）
+- **里程碑 5**：冲突标记（同名不同 hash 加序号）与人工解决
+
+> ⚠️ v0.2.0-preview 与 v0.1.x 配对协议不兼容（`DeviceInfo` 新增 `trust_level` 字段）。真机联调请确保两端都是 v0.2.0-preview 起的版本。
 
 ### A1 已完成要点（Android 适配）
 
@@ -152,4 +160,4 @@ V0.1 桌面端与 Android 编译链路均已闭环。剩余为联调与发布：
 - **`cargo test --workspace` 会跨 crate 并行跑测试二进制**，单独 `cargo test -p X` 过不代表 workspace 过。提交前务必跑一次完整 `cargo test --workspace`。
 - **lib 内联单测 ≠ 集成测试**：`cargo test -p X --test Y` 只跑集成测试，漏掉 `src/*.rs` 里的 `#[cfg(test)]`。要 `--lib` 或直接 `--workspace` 覆盖全部。
 
-对 Agent 直接说"**开始 M8**"（桌面联调发布）或"**开始 A3**"（Android 真机验收）即可继续。
+对 Agent 直接说"**开始 V0.2 里程碑 2**"（共享范围 + 本地索引 + Inbox）即可继续，详见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §10。

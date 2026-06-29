@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.2.0-preview] - 2026-06-29
+
+> **预览版**：品牌重塑 + 新能力导航 UI + 信任分级（第一步）已落地，跨设备文件索引/同步仍是设计稿（见 [SYNC_DESIGN.md](SYNC_DESIGN.md)），尚未实现。
+>
+> ⚠️ **配对协议不兼容**：`DeviceInfo` 新增 `trust_level` 字段改变了配对阶段交换的数据结构，本版本与 v0.1.x 之间**无法互相配对**——升级请确保参与配对的设备都更新到本版本（同版本之间不受影响）。
+
 ### Changed
 
 - 产品定位升级为「**AA连接（AA4C）—— 开源跨平台设备连接平台**」（设备 → 连接 → 能力，连接优先）：明确不做社区/资源平台/中心化云盘；Slogan 改为"连接你的所有设备"；新增"连接优先"五阶段路线（AA Nearby → Sync → Connect → Touch → Direct）与 D2D 未来方向；移动端确认沿用 Tauri 2（iOS/iPad/平板由同一构建+响应式覆盖，Flutter 仅远期备选）。同步更新 README / PROJECT_VISION / ROADMAP / ARCHITECTURE / AGENTS / CONTRIBUTING / UI_DESIGN_SPEC / CODEX_MASTER_PROMPT。
@@ -14,7 +20,7 @@
 - V0.2 设计文档：新增 [SYNC_DESIGN.md](SYNC_DESIGN.md) —— 设备信任分级（完全信任/朋友/临时/陌生）、跨设备文件索引、文件状态可视化（🟢 本地有 / 🟡 可下载 / 🔴 设备离线）、元数据优先+按需获取、Inbox「收到的」纳入索引；同步更新 PROJECT_VISION（权限分级 + 同步）、DATABASE_SCHEMA（V0.2 表：`devices.trust_level` / `sync_scopes` / `sync_file_index` / `remote_index` / `sync_conflicts`）、UI_DESIGN_SPEC（同步页统一文件视图 + 设置页信任层级）、ROADMAP。仅设计，未实现。
 - 前端能力架构：导航围绕五大能力（传输/同步/分享/下载/归档）重构，首页能力卡片 + 建设中页 + PC 侧栏/移动底栏两套外壳；界面品牌改为「AA连接」。
 - UI 设计预览（示例数据，后端 V0.2 接）：同步页跨设备文件**目录树**（可展开）+ 文字状态标签（本地有 / 可下载 / 设备离线）+ 图例 + 筛选 + Inbox 分组；文件被多台在线设备持有时提示「同时取回（更快）」。
-- 信任分级入口前移：配对成功即弹「这是你自己的设备吗？（是，我的设备 / 不是，朋友）」；设置页保留「我的设备 ⇄ 朋友」分段切换。以上信任分级为预览交互，`trust_level` 后端随 V0.2 落地。
+- 信任分级入口前移：配对成功即弹「这是你自己的设备吗？（是，我的设备 / 不是，朋友）」；设置页保留「我的设备 ⇄ 朋友」分段切换。
 
 ## [0.1.1] - 2026-06-14
 
@@ -53,6 +59,7 @@
 - 桌面端（Tauri + Vue3：Windows / macOS / Linux）
 - Android 实验版（Tauri 2，与桌面端同一代码库）
 
-[Unreleased]: https://github.com/HuoTaoCN/AA4C/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/HuoTaoCN/AA4C/compare/v0.2.0-preview...HEAD
+[0.2.0-preview]: https://github.com/HuoTaoCN/AA4C/releases/tag/v0.2.0-preview
 [0.1.1]: https://github.com/HuoTaoCN/AA4C/releases/tag/v0.1.1
 [0.1.0]: https://github.com/HuoTaoCN/AA4C/releases/tag/v0.1.0
