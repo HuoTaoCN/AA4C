@@ -74,6 +74,7 @@ pub fn run() {
             commands::start_pairing,
             commands::confirm_pairing,
             commands::unpair_device,
+            commands::set_trust_level,
             commands::send_files,
             commands::accept_transfer,
             commands::cancel_transfer,

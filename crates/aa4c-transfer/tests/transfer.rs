@@ -11,7 +11,7 @@ use std::time::Duration;
 use aa4c_identity::Identity;
 use aa4c_store::{DeviceRecord, Store};
 use aa4c_transfer::{TransferConfig, TransferService};
-use aa4c_types::{CoreEvent, DeviceInfo, Platform, TransferStatus};
+use aa4c_types::{CoreEvent, DeviceInfo, Platform, TransferStatus, TrustLevel};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast;
 use tokio::time::timeout;
@@ -54,6 +54,7 @@ async fn spawn_node(name: &str) -> Node {
         addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
         online: true,
         trusted: true,
+        trust_level: Some(TrustLevel::Friend),
     };
     Node {
         identity,
@@ -75,6 +76,7 @@ async fn trust(node: &Node, peer: &Node) {
             platform: peer.device.platform,
             public_key: peer.identity.public_key().to_vec(),
             trusted: true,
+            trust_level: TrustLevel::Friend,
             paired_at: Some(1),
             last_seen_at: Some(1),
             last_addr: peer.device.addr.map(|a| a.to_string()),

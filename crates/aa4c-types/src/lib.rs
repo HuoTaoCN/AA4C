@@ -11,7 +11,7 @@ mod event;
 mod settings;
 mod transfer;
 
-pub use device::{DeviceId, DeviceInfo, Platform};
+pub use device::{DeviceId, DeviceInfo, Platform, TrustLevel};
 pub use error::{Aa4cError, Result};
 pub use event::CoreEvent;
 pub use settings::Settings;

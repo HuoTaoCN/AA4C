@@ -5,7 +5,7 @@ import { useSettingsStore } from "../stores/settings";
 import { useToastStore } from "../stores/toast";
 import { api, asCommandError } from "../lib/api";
 import { platformIcon } from "../lib/format";
-import type { Settings } from "../lib/types";
+import type { Settings, TrustLevel } from "../lib/types";
 
 const devices = useDeviceStore();
 const settings = useSettingsStore();
@@ -24,19 +24,23 @@ watchEffect(() => {
 
 const paired = computed(() => devices.devices.filter((d) => d.trusted));
 
-// 信任分级（预览）：后端 trust_level 尚未实现（见 SYNC_DESIGN.md），
-// 这里仅本地演示交互，配对设备默认「朋友」，可标记为「我的设备」。
-type Tier = "full" | "friend";
-const tierPreview = reactive<Record<string, Tier>>({});
-const tierOf = (id: string): Tier => tierPreview[id] ?? "friend";
-function setTier(id: string, t: Tier) {
-  tierPreview[id] = t;
-  toast.push(
-    "info",
-    t === "full"
-      ? "已标记为「我的设备」——同步功能 V0.2 上线后将参与跨设备文件同步"
-      : "已设为「朋友」（预览）",
-  );
+// 信任分级：真实 trust_level（配对默认 friend，可标记为「我的设备」full）。
+const tierOf = (d: { trustLevel: TrustLevel | null }): TrustLevel =>
+  d.trustLevel ?? "friend";
+
+async function setTier(id: string, t: TrustLevel) {
+  try {
+    await api.setTrustLevel(id, t);
+    await devices.loadDevices();
+    toast.push(
+      "info",
+      t === "full"
+        ? "已标记为「我的设备」——同步功能 V0.2 上线后将参与跨设备文件同步"
+        : "已设为「朋友」",
+    );
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
 }
 
 async function changeDir() {
@@ -99,7 +103,7 @@ async function unpair(id: string) {
       <p class="lock muted">🔒 所有传输均已加密</p>
     </div>
 
-    <h3>已配对设备 <span class="tag">含信任分级预览</span></h3>
+    <h3>已配对设备</h3>
     <div v-if="paired.length" class="card list">
       <div v-for="d in paired" :key="d.id" class="prow">
         <span class="ico">{{ platformIcon(d.platform) }}</span>
@@ -112,14 +116,14 @@ async function unpair(id: string) {
           <div class="seg">
             <button
               class="seg-btn"
-              :class="{ on: tierOf(d.id) === 'full' }"
+              :class="{ on: tierOf(d) === 'full' }"
               @click="setTier(d.id, 'full')"
             >
               我的设备
             </button>
             <button
               class="seg-btn"
-              :class="{ on: tierOf(d.id) === 'friend' }"
+              :class="{ on: tierOf(d) === 'friend' }"
               @click="setTier(d.id, 'friend')"
             >
               朋友

@@ -1,7 +1,9 @@
 //! aa4c-store 集成测试（V0.1_IMPLEMENTATION_PLAN.md M1）。
 
 use aa4c_store::{DeviceRecord, Store};
-use aa4c_types::{Direction, FileStatus, Platform, TransferFile, TransferStatus, TransferTask};
+use aa4c_types::{
+    Direction, FileStatus, Platform, TransferFile, TransferStatus, TransferTask, TrustLevel,
+};
 
 fn sample_device(id: &str, trusted: bool) -> DeviceRecord {
     DeviceRecord {
@@ -10,6 +12,7 @@ fn sample_device(id: &str, trusted: bool) -> DeviceRecord {
         platform: Platform::Macos,
         public_key: vec![7u8; 32],
         trusted,
+        trust_level: TrustLevel::Friend,
         paired_at: trusted.then_some(1_750_000_000_000),
         last_seen_at: Some(1_750_000_000_000),
         last_addr: Some("192.168.1.10:42420".into()),
@@ -59,7 +62,7 @@ async fn migration_is_idempotent_across_reopens() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2); // 001_init + 002_trust
 }
 
 #[tokio::test]
@@ -75,8 +78,21 @@ async fn device_crud_roundtrip() {
     assert_eq!(got.platform, Platform::Macos);
     assert_eq!(got.public_key, device.public_key);
     assert!(got.trusted);
+    assert_eq!(got.trust_level, TrustLevel::Friend); // 配对默认朋友
     assert!(got.created_at > 0);
     assert_eq!(got.created_at, got.updated_at);
+
+    // 升级 / 降级信任分级
+    store
+        .set_trust_level(&device.id, TrustLevel::Full)
+        .await
+        .unwrap();
+    let upgraded = store.get_device(&device.id).await.unwrap().unwrap();
+    assert_eq!(upgraded.trust_level, TrustLevel::Full);
+    assert!(store
+        .set_trust_level(&"missing".repeat(8), TrustLevel::Full)
+        .await
+        .is_err());
 
     // upsert 更新：name 变化，created_at 保持
     let mut renamed = device.clone();

@@ -21,6 +21,9 @@ export type TransferStatus =
 
 export type FileStatus = "pending" | "transferring" | "done" | "failed";
 
+/** 信任分级：full=我的设备（参与同步）/ friend=朋友（仅收发）。 */
+export type TrustLevel = "full" | "friend";
+
 export interface DeviceInfo {
   id: string;
   name: string;
@@ -30,6 +33,8 @@ export interface DeviceInfo {
   addr: string | null;
   online: boolean;
   trusted: boolean;
+  /** 信任分级；未配对（仅发现）的设备为 null。 */
+  trustLevel: TrustLevel | null;
 }
 
 export interface TransferFile {

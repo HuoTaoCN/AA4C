@@ -1,6 +1,6 @@
 //! 数据库记录类型（DATABASE_SCHEMA.md §2.1）。
 
-use aa4c_types::{DeviceId, Platform};
+use aa4c_types::{DeviceId, Platform, TrustLevel};
 
 /// devices 表的一行。
 ///
@@ -14,6 +14,8 @@ pub struct DeviceRecord {
     /// Ed25519 公钥（32 字节）。
     pub public_key: Vec<u8>,
     pub trusted: bool,
+    /// 信任分级（配对默认 `Friend`，可升级为 `Full`）。
+    pub trust_level: TrustLevel,
     /// 配对完成时间（unix 毫秒）。
     pub paired_at: Option<i64>,
     /// 最近一次在线时间（unix 毫秒）。

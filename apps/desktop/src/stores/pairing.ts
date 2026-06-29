@@ -77,9 +77,11 @@ export const usePairingStore = defineStore("pairing", {
       this.lastResult = { success, peerName };
       if (success) this.trustPrompt = { peerId, peerName };
     },
-    /** 用户回答「这是你自己的设备吗？」（preview：暂只本地，trust_level 后端 V0.2）。 */
-    resolveTrust(_tier: "full" | "friend") {
+    /** 用户回答「这是你自己的设备吗？」→ 落库 trust_level（配对默认 friend）。 */
+    async resolveTrust(tier: "full" | "friend") {
+      const p = this.trustPrompt;
       this.trustPrompt = null;
+      if (p) await api.setTrustLevel(p.peerId, tier);
     },
     clearResult() {
       this.lastResult = null;

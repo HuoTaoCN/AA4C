@@ -2,7 +2,13 @@
 // 失败时 invoke 会 reject 一个 CommandError（{ code, message }）。
 
 import { invoke } from "@tauri-apps/api/core";
-import type { CommandError, DeviceInfo, Settings, TransferTask } from "./types";
+import type {
+  CommandError,
+  DeviceInfo,
+  Settings,
+  TransferTask,
+  TrustLevel,
+} from "./types";
 
 export const api = {
   getSelfDevice: () => invoke<DeviceInfo>("get_self_device"),
@@ -14,6 +20,8 @@ export const api = {
     invoke<void>("confirm_pairing", { sessionId, accept }),
   unpairDevice: (deviceId: string) =>
     invoke<void>("unpair_device", { deviceId }),
+  setTrustLevel: (deviceId: string, level: TrustLevel) =>
+    invoke<void>("set_trust_level", { deviceId, level }),
 
   sendFiles: (deviceId: string, paths: string[]) =>
     invoke<string>("send_files", { deviceId, paths }),

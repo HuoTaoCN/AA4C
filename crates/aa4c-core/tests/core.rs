@@ -157,6 +157,7 @@ async fn restart_marks_stale_tasks_failed() {
                 platform: aa4c_types::Platform::Macos,
                 public_key: vec![0u8; 32],
                 trusted: true,
+                trust_level: aa4c_types::TrustLevel::Friend,
                 paired_at: Some(1),
                 last_seen_at: Some(1),
                 last_addr: None,

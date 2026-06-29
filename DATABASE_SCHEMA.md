@@ -122,9 +122,9 @@ devices 1 ──── n transfer_tasks 1 ──── n transfer_files
 
 ## 4. V0.2 表结构（信任分级 + 跨设备索引设计）
 
-> 设计定稿、**尚未建表**，等 V0.2 实现时随迁移 `002` 落地。完整设计见 [SYNC_DESIGN.md](SYNC_DESIGN.md)。
+> §4.1 `devices.trust_level` **已实现**（迁移 `002_trust.sql`，user_version=2）；§4.2–4.5 仍为设计定稿、尚未建表，随后续阶段落地。完整设计见 [SYNC_DESIGN.md](SYNC_DESIGN.md)。
 
-### 4.1 devices 增列 —— 信任分级
+### 4.1 devices 增列 —— 信任分级（已实现）
 
 ```sql
 ALTER TABLE devices ADD COLUMN trust_level TEXT NOT NULL DEFAULT 'friend'

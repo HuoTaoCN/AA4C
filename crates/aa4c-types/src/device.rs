@@ -66,6 +66,39 @@ impl FromStr for Platform {
     }
 }
 
+/// 设备信任分级（DATABASE_SCHEMA §4 / SYNC_DESIGN §2）。
+///
+/// 只有已配对设备入库，故库内只有这两级；"临时"不入库、"陌生"仅在内存。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrustLevel {
+    /// 完全信任：自己的多台设备，参与跨设备索引 / 同步。
+    Full,
+    /// 朋友 / 家庭 / 团队：仅收发与手动分享，不参与同步。
+    Friend,
+}
+
+impl TrustLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Friend => "friend",
+        }
+    }
+}
+
+impl FromStr for TrustLevel {
+    type Err = Aa4cError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "full" => Ok(Self::Full),
+            "friend" => Ok(Self::Friend),
+            other => Err(Aa4cError::Protocol(format!("invalid trust level: {other}"))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceInfo {
@@ -80,6 +113,8 @@ pub struct DeviceInfo {
     pub online: bool,
     /// 是否已配对。
     pub trusted: bool,
+    /// 信任分级；未配对（仅发现）的设备为 `None`。
+    pub trust_level: Option<TrustLevel>,
 }
 
 #[cfg(test)]
@@ -111,10 +146,12 @@ mod tests {
             addr: Some("192.168.1.2:42420".parse().unwrap()),
             online: true,
             trusted: false,
+            trust_level: None,
         };
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["platform"], "macos");
         assert_eq!(json["addr"], "192.168.1.2:42420");
+        assert_eq!(json["trustLevel"], serde_json::Value::Null);
         let back: DeviceInfo = serde_json::from_value(json).unwrap();
         assert_eq!(back, info);
     }

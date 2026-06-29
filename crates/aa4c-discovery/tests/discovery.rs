@@ -19,6 +19,7 @@ fn make_info(seed: u8, name: &str) -> DeviceInfo {
         addr: None,
         online: true,
         trusted: false,
+        trust_level: None,
     }
 }
 

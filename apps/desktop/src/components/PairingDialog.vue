@@ -1,25 +1,32 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { usePairingStore } from "../stores/pairing";
+import { useDeviceStore } from "../stores/devices";
 import { useToastStore } from "../stores/toast";
 import { asCommandError } from "../lib/api";
 
 const pairing = usePairingStore();
+const devices = useDeviceStore();
 const toast = useToastStore();
 
 const pinSession = computed(() => pairing.pinSession);
 const requestSession = computed(() => pairing.requestSession);
 const trustPrompt = computed(() => pairing.trustPrompt);
 
-function resolveTrust(tier: "full" | "friend") {
+async function resolveTrust(tier: "full" | "friend") {
   const name = pairing.trustPrompt?.peerName ?? "对方设备";
-  pairing.resolveTrust(tier);
-  toast.push(
-    "success",
-    tier === "full"
-      ? `已把「${name}」设为你的设备——同步功能 V0.2 上线后将参与跨设备文件同步`
-      : `已和「${name}」配对（朋友）`,
-  );
+  try {
+    await pairing.resolveTrust(tier);
+    await devices.loadDevices();
+    toast.push(
+      "success",
+      tier === "full"
+        ? `已把「${name}」设为你的设备——同步功能 V0.2 上线后将参与跨设备文件同步`
+        : `已和「${name}」配对（朋友）`,
+    );
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
 }
 
 // 确认码分两组（3+3）便于目视比对

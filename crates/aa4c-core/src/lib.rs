@@ -111,6 +111,7 @@ impl Core {
             addr: None,
             online: true,
             trusted: true,
+            trust_level: None,
         };
 
         // 事件总线：发送端常驻，订阅端由 UI / 内部任务按需创建

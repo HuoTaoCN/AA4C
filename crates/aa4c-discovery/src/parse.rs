@@ -36,6 +36,7 @@ pub(crate) fn parse_service(info: &ServiceInfo) -> Option<DeviceInfo> {
         addr,
         online: true,
         trusted: false,
+        trust_level: None,
     })
 }
 

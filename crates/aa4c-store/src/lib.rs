@@ -14,7 +14,9 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aa4c_types::{Aa4cError, DeviceId, Result, TaskId, TransferFile, TransferStatus, TransferTask};
+use aa4c_types::{
+    Aa4cError, DeviceId, Result, TaskId, TransferFile, TransferStatus, TransferTask, TrustLevel,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use migrate::db_err;
@@ -85,14 +87,15 @@ impl Store {
             let now = now_ms();
             conn.execute(
                 "INSERT INTO devices
-                   (id, name, platform, public_key, trusted,
+                   (id, name, platform, public_key, trusted, trust_level,
                     paired_at, last_seen_at, last_addr, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
                  ON CONFLICT(id) DO UPDATE SET
                    name = excluded.name,
                    platform = excluded.platform,
                    public_key = excluded.public_key,
                    trusted = excluded.trusted,
+                   trust_level = excluded.trust_level,
                    paired_at = excluded.paired_at,
                    last_seen_at = excluded.last_seen_at,
                    last_addr = excluded.last_addr,
@@ -103,6 +106,7 @@ impl Store {
                     d.platform.as_str(),
                     d.public_key,
                     d.trusted,
+                    d.trust_level.as_str(),
                     d.paired_at,
                     d.last_seen_at,
                     d.last_addr,
@@ -120,7 +124,8 @@ impl Store {
         self.call(move |conn| {
             conn.query_row(
                 "SELECT id, name, platform, public_key, trusted,
-                        paired_at, last_seen_at, last_addr, created_at, updated_at
+                        paired_at, last_seen_at, last_addr, created_at, updated_at,
+                        trust_level
                  FROM devices WHERE id = ?1",
                 params![id],
                 row_to_device,
@@ -136,7 +141,8 @@ impl Store {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, name, platform, public_key, trusted,
-                            paired_at, last_seen_at, last_addr, created_at, updated_at
+                            paired_at, last_seen_at, last_addr, created_at, updated_at,
+                            trust_level
                      FROM devices WHERE trusted = 1 ORDER BY name",
                 )
                 .map_err(db_err)?;
@@ -146,6 +152,24 @@ impl Store {
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(db_err)?;
             Ok(rows)
+        })
+        .await
+    }
+
+    /// 变更设备信任分级（完全信任 ⇄ 朋友）。设备不存在时报错。
+    pub async fn set_trust_level(&self, id: &DeviceId, level: TrustLevel) -> Result<()> {
+        let id = id.clone();
+        self.call(move |conn| {
+            let n = conn
+                .execute(
+                    "UPDATE devices SET trust_level = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![id, level.as_str(), now_ms()],
+                )
+                .map_err(db_err)?;
+            if n == 0 {
+                return Err(Aa4cError::DeviceNotFound(id));
+            }
+            Ok(())
         })
         .await
     }
@@ -378,6 +402,7 @@ fn row_to_device(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRecord> {
         last_addr: row.get(7)?,
         created_at: row.get(8)?,
         updated_at: row.get(9)?,
+        trust_level: parse_col(row, 10)?,
     })
 }
 

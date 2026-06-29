@@ -40,6 +40,7 @@ async fn spawn_node(name: &str, session_timeout: Duration) -> Node {
         addr: Some(addr),
         online: true,
         trusted: false,
+        trust_level: None,
     };
 
     let manager = Arc::new(

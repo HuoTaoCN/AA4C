@@ -197,6 +197,7 @@ mod tests {
             addr: Some("192.168.1.7:42420".parse().unwrap()),
             online: true,
             trusted: false,
+            trust_level: None,
         }
     }
 

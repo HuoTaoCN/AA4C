@@ -4,7 +4,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use aa4c_types::{Aa4cError, DeviceId, DeviceInfo, Result, Settings, TaskId, TransferTask};
+use aa4c_types::{
+    Aa4cError, DeviceId, DeviceInfo, Result, Settings, TaskId, TransferTask, TrustLevel,
+};
 
 use crate::{settings, Core};
 
@@ -26,6 +28,7 @@ impl Core {
                     addr,
                     online: false,
                     trusted: true,
+                    trust_level: Some(rec.trust_level),
                 },
             );
         }
@@ -69,6 +72,14 @@ impl Core {
     /// 解除配对（删除设备及其级联记录）。
     pub async fn unpair_device(&self, device_id: &DeviceId) -> Result<()> {
         self.store.remove_device(device_id).await
+    }
+
+    /// 变更设备信任分级（「我的设备」full ⇄「朋友」friend）。
+    ///
+    /// 降级出 full 时，按 SYNC_DESIGN §2 应清理该设备的远端索引缓存——
+    /// `remote_index` 表 V0.2 后续阶段才落地，此处先只改 trust_level。
+    pub async fn set_trust_level(&self, device_id: &DeviceId, level: TrustLevel) -> Result<()> {
+        self.store.set_trust_level(device_id, level).await
     }
 
     /// 发起 AA 发送，返回 task_id。
@@ -144,6 +155,7 @@ impl Core {
             addr: rec.last_addr.as_deref().and_then(|s| s.parse().ok()),
             online: false,
             trusted: rec.trusted,
+            trust_level: Some(rec.trust_level),
         })
     }
 }

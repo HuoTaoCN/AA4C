@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aa4c_proto::{client_hello, read_message, server_hello, unexpected, write_message, Message};
 use aa4c_store::{DeviceRecord, Store};
-use aa4c_types::{Aa4cError, CoreEvent, DeviceId, DeviceInfo, Result};
+use aa4c_types::{Aa4cError, CoreEvent, DeviceId, DeviceInfo, Result, TrustLevel};
 use rustls::pki_types::ServerName;
 use tokio::io::AsyncRead;
 use tokio::net::TcpStream;
@@ -232,6 +232,13 @@ impl SessionCtx {
         addr: Option<SocketAddr>,
     ) -> Result<()> {
         let now = now_ms();
+        // 配对默认「朋友」；若该设备此前已被标记为「完全信任」，重新配对时保留，不降级。
+        let trust_level = self
+            .store
+            .get_device(&device.id)
+            .await?
+            .map(|r| r.trust_level)
+            .unwrap_or(TrustLevel::Friend);
         self.store
             .upsert_device(&DeviceRecord {
                 id: device.id.clone(),
@@ -239,6 +246,7 @@ impl SessionCtx {
                 platform: device.platform,
                 public_key: public_key.to_vec(),
                 trusted: true,
+                trust_level,
                 paired_at: Some(now),
                 last_seen_at: Some(now),
                 last_addr: addr.map(|a| a.to_string()),

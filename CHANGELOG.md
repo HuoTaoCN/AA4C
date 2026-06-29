@@ -10,6 +10,7 @@
 
 ### Added
 
+- V0.2 信任分级（数据模型，第一步落地）：`TrustLevel`（full / friend）类型；`devices.trust_level` 列 + 迁移 `002_trust.sql`（旧已配对设备回填 friend）；`Store::set_trust_level`、`Core::set_trust_level` 与 Tauri `set_trust_level` 命令；配对成功默认 friend（重配对保留已有 full），`DeviceInfo.trustLevel` 贯穿到前端；配对成功即弹「这是你自己的设备吗？」与设置页「我的设备 ⇄ 朋友」均已接真实后端。索引/同步（full 设备间）属后续阶段。
 - V0.2 设计文档：新增 [SYNC_DESIGN.md](SYNC_DESIGN.md) —— 设备信任分级（完全信任/朋友/临时/陌生）、跨设备文件索引、文件状态可视化（🟢 本地有 / 🟡 可下载 / 🔴 设备离线）、元数据优先+按需获取、Inbox「收到的」纳入索引；同步更新 PROJECT_VISION（权限分级 + 同步）、DATABASE_SCHEMA（V0.2 表：`devices.trust_level` / `sync_scopes` / `sync_file_index` / `remote_index` / `sync_conflicts`）、UI_DESIGN_SPEC（同步页统一文件视图 + 设置页信任层级）、ROADMAP。仅设计，未实现。
 - 前端能力架构：导航围绕五大能力（传输/同步/分享/下载/归档）重构，首页能力卡片 + 建设中页 + PC 侧栏/移动底栏两套外壳；界面品牌改为「AA连接」。
 - UI 设计预览（示例数据，后端 V0.2 接）：同步页跨设备文件**目录树**（可展开）+ 文字状态标签（本地有 / 可下载 / 设备离线）+ 图例 + 筛选 + Inbox 分组；文件被多台在线设备持有时提示「同时取回（更快）」。

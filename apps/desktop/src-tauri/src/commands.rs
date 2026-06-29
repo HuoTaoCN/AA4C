@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use aa4c_core::Core;
-use aa4c_types::{Aa4cError, CoreEvent, DeviceInfo, Settings, TransferTask};
+use aa4c_types::{Aa4cError, CoreEvent, DeviceInfo, Settings, TransferTask, TrustLevel};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::State;
@@ -56,6 +56,16 @@ pub async fn confirm_pairing(
 #[tauri::command]
 pub async fn unpair_device(core: State<'_, Arc<Core>>, device_id: String) -> CmdResult<()> {
     Ok(core.unpair_device(&device_id).await?)
+}
+
+#[tauri::command]
+pub async fn set_trust_level(
+    core: State<'_, Arc<Core>>,
+    device_id: String,
+    level: String,
+) -> CmdResult<()> {
+    let level: TrustLevel = level.parse()?;
+    Ok(core.set_trust_level(&device_id, level).await?)
 }
 
 #[tauri::command]
