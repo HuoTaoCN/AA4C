@@ -2,8 +2,8 @@
 
 use aa4c_store::{DeviceRecord, Store};
 use aa4c_types::{
-    Direction, FileStatus, Platform, ScopeKind, SyncFileEntry, TransferFile, TransferStatus,
-    TransferTask, TrustLevel,
+    Direction, FileStatus, Platform, RemoteIndexEntry, ScopeKind, SyncFileEntry, TransferFile,
+    TransferStatus, TransferTask, TrustLevel,
 };
 
 fn sample_device(id: &str, trusted: bool) -> DeviceRecord {
@@ -63,7 +63,7 @@ async fn migration_is_idempotent_across_reopens() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 3); // 001_init + 002_trust + 003_sync
+    assert_eq!(version, 4); // 001_init + 002_trust + 003_sync + 004_remote_index
 }
 
 #[tokio::test]
@@ -289,6 +289,52 @@ async fn ensure_inbox_scope_is_singleton_and_path_mutable() {
     let scopes = store.list_sync_scopes().await.unwrap();
     assert_eq!(scopes.len(), 1);
     assert_eq!(scopes[0].local_path, "/Users/x/AA4C-Inbox");
+}
+
+#[tokio::test]
+async fn remote_index_replace_clear_and_cascade() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    let device = sample_device("e", true);
+    store.upsert_device(&device).await.unwrap();
+
+    let entry = |rel: &str, size: u64| RemoteIndexEntry {
+        device_id: device.id.clone(),
+        rel_path: rel.into(),
+        size,
+        hash: Some("h".into()),
+        seen_at: 1000,
+    };
+    store
+        .replace_remote_index(
+            &device.id,
+            vec![entry("收到的/a.jpg", 1), entry("项目/b.rs", 2)],
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.list_remote_index().await.unwrap().len(), 2);
+
+    // 再次交换：整体替换（旧条目消失）
+    store
+        .replace_remote_index(&device.id, vec![entry("收到的/a.jpg", 9)])
+        .await
+        .unwrap();
+    let idx = store.list_remote_index().await.unwrap();
+    assert_eq!(idx.len(), 1);
+    assert_eq!(idx[0].size, 9);
+
+    // 降级清理
+    store.clear_remote_index(&device.id).await.unwrap();
+    assert!(store.list_remote_index().await.unwrap().is_empty());
+
+    // 解除配对级联清空
+    store
+        .replace_remote_index(&device.id, vec![entry("收到的/a.jpg", 1)])
+        .await
+        .unwrap();
+    store.remove_device(&device.id).await.unwrap();
+    assert!(store.list_remote_index().await.unwrap().is_empty());
 }
 
 #[tokio::test]

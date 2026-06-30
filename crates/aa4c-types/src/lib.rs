@@ -16,7 +16,7 @@ pub use device::{DeviceId, DeviceInfo, Platform, TrustLevel};
 pub use error::{Aa4cError, Result};
 pub use event::CoreEvent;
 pub use settings::Settings;
-pub use sync::{ScopeKind, SyncFileEntry, SyncScope};
+pub use sync::{RemoteIndexEntry, ScopeKind, SyncFileEntry, SyncScope, SyncStatus, UnifiedFile};
 pub use transfer::{Direction, FileStatus, TaskId, TransferFile, TransferStatus, TransferTask};
 
 /// 协议版本（PROTOCOL.md §0）。

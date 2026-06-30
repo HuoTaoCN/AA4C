@@ -9,7 +9,9 @@
 mod dispatch;
 mod orchestrate;
 mod settings;
+mod sync_exchange;
 mod sync_index;
+mod unified;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -136,6 +138,7 @@ impl Core {
             transfer_config,
         );
         transfer.set_pair_dispatch(Arc::new(dispatch::PairDispatch::new(pairing.clone())));
+        transfer.set_index_dispatch(Arc::new(dispatch::IndexServe::new(store.clone())));
 
         // 6. 启动监听（端口占用自动递增，返回真实端口）
         //    端口优先级：显式覆盖（config 非默认值，如测试用 0）> 已保存设置
@@ -160,6 +163,14 @@ impl Core {
             Err(e) => tracing::warn!(error = %e, "ensure inbox scope failed"),
         }
         sync_index::spawn_background_scan(store.clone(), events.clone());
+
+        // 9. 跨设备索引交换：上线即与在线的完全信任设备交换索引摘要（里程碑 3）
+        sync_exchange::spawn_exchange_loop(
+            store.clone(),
+            transfer.clone(),
+            discovery.clone(),
+            events.clone(),
+        );
 
         tracing::info!(
             device = %self_info.name,

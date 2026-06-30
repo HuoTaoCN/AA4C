@@ -8,6 +8,7 @@ use std::sync::Arc;
 use aa4c_core::Core;
 use aa4c_types::{
     Aa4cError, CoreEvent, DeviceInfo, Settings, SyncFileEntry, SyncScope, TransferTask, TrustLevel,
+    UnifiedFile,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -139,6 +140,16 @@ pub async fn list_sync_files(core: State<'_, Arc<Core>>) -> CmdResult<Vec<SyncFi
 #[tauri::command]
 pub async fn rescan_sync(core: State<'_, Arc<Core>>) -> CmdResult<()> {
     Ok(core.rescan_sync().await?)
+}
+
+#[tauri::command]
+pub async fn list_unified_files(core: State<'_, Arc<Core>>) -> CmdResult<Vec<UnifiedFile>> {
+    Ok(core.list_unified_files().await?)
+}
+
+#[tauri::command]
+pub async fn refresh_remote_index(core: State<'_, Arc<Core>>) -> CmdResult<()> {
+    Ok(core.refresh_remote_index().await?)
 }
 
 /// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。

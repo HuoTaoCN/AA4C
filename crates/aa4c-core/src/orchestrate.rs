@@ -1,15 +1,15 @@
 //! Core 编排方法：Tauri §9 的 11 个 Command 在此有一一对应的实现，
 //! 使 Tauri 层只做参数搬运与错误映射，端到端冒烟测试可直接驱动 Core。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use aa4c_types::{
     Aa4cError, CoreEvent, DeviceId, DeviceInfo, Result, ScopeKind, Settings, SyncFileEntry,
-    SyncScope, TaskId, TransferTask, TrustLevel,
+    SyncScope, TaskId, TransferTask, TrustLevel, UnifiedFile,
 };
 
-use crate::{settings, sync_index, Core};
+use crate::{settings, sync_exchange, sync_index, unified, Core};
 
 impl Core {
     /// 已发现（在线）+ 已配对（可能离线）设备合并，按 id 去重。
@@ -77,10 +77,29 @@ impl Core {
 
     /// 变更设备信任分级（「我的设备」full ⇄「朋友」friend）。
     ///
-    /// 降级出 full 时，按 SYNC_DESIGN §2 应清理该设备的远端索引缓存——
-    /// `remote_index` 表 V0.2 后续阶段才落地，此处先只改 trust_level。
+    /// 降级出 full 时按 SYNC_DESIGN §2 立即清空该设备的远端索引缓存（其条目从统一视图消失），
+    /// 本机已落地文件不动；升级为 full 则立即尝试拉一次对端索引。
     pub async fn set_trust_level(&self, device_id: &DeviceId, level: TrustLevel) -> Result<()> {
-        self.store.set_trust_level(device_id, level).await
+        self.store.set_trust_level(device_id, level).await?;
+        match level {
+            TrustLevel::Friend => {
+                self.store.clear_remote_index(device_id).await?;
+                let _ = self.events.send(CoreEvent::SyncIndexUpdated);
+            }
+            TrustLevel::Full => {
+                if let Some(dev) = self
+                    .discovery
+                    .devices()
+                    .into_iter()
+                    .find(|d| &d.id == device_id)
+                {
+                    let _ =
+                        sync_exchange::fetch_one(&self.store, &self.transfer, &self.events, &dev)
+                            .await;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// 发起 AA 发送，返回 task_id。
@@ -169,15 +188,72 @@ impl Core {
         Ok(())
     }
 
-    /// 统一文件视图（V0.2 里程碑 2：仅本机索引，跨设备黄/红状态留待后续里程碑）。
+    /// 本机扫描出的原始文件索引（不含跨设备归并；调试/兼容用）。
     pub async fn list_sync_files(&self) -> Result<Vec<SyncFileEntry>> {
         self.store.list_all_sync_files().await
+    }
+
+    /// 统一文件视图（SYNC_DESIGN.md §3.4 / §4，里程碑 3）：
+    /// 本机索引 + 远端索引按限定路径归并，每条带 🟢/🟡/🔴 状态与持有设备。
+    pub async fn list_unified_files(&self) -> Result<Vec<UnifiedFile>> {
+        // 本机：按范围分组名限定路径
+        let scopes = self.store.list_sync_scopes().await?;
+        let groups: HashMap<String, String> = scopes
+            .iter()
+            .map(|s| (s.id.clone(), unified::group_name(s)))
+            .collect();
+        let local: Vec<unified::LocalEntry> = self
+            .store
+            .list_all_sync_files()
+            .await?
+            .into_iter()
+            .filter_map(|f| {
+                groups.get(&f.scope_id).map(|g| unified::LocalEntry {
+                    rel_path: unified::qualify(g, &f.rel_path),
+                    size: f.size,
+                    hash: f.hash,
+                })
+            })
+            .collect();
+
+        // 远端：device_id → (在线?, 设备名)
+        let remote: Vec<unified::RemoteEntry> = self
+            .store
+            .list_remote_index()
+            .await?
+            .into_iter()
+            .map(|r| unified::RemoteEntry {
+                device_id: r.device_id,
+                rel_path: r.rel_path,
+                size: r.size,
+                hash: r.hash,
+            })
+            .collect();
+
+        let mut names: HashMap<DeviceId, String> = HashMap::new();
+        for rec in self.store.list_paired_devices().await? {
+            names.insert(rec.id, rec.name);
+        }
+        let mut online: HashSet<DeviceId> = HashSet::new();
+        for dev in self.discovery.devices() {
+            online.insert(dev.id.clone());
+            names.insert(dev.id, dev.name);
+        }
+
+        Ok(unified::merge(local, remote, &online, &names))
     }
 
     /// 手动触发全部共享范围重新扫描。
     pub async fn rescan_sync(&self) -> Result<()> {
         sync_index::rescan_all(&self.store).await?;
         let _ = self.events.send(CoreEvent::SyncIndexUpdated);
+        Ok(())
+    }
+
+    /// 手动与当前在线的完全信任设备刷新一次跨设备索引（里程碑 3）。
+    pub async fn refresh_remote_index(&self) -> Result<()> {
+        sync_exchange::refresh_online(&self.store, &self.transfer, &self.discovery, &self.events)
+            .await;
         Ok(())
     }
 

@@ -75,7 +75,7 @@ export interface SyncScope {
   createdAt: number;
 }
 
-/** 本机文件索引条目（V0.2 里程碑 2：跨设备黄/红状态留待后续里程碑）。 */
+/** 本机文件索引条目（本机扫描出的原始条目，调试/兼容用）。 */
 export interface SyncFileEntry {
   scopeId: string;
   relPath: string;
@@ -83,6 +83,20 @@ export interface SyncFileEntry {
   mtime: number;
   hash: string | null;
   presentLocal: boolean;
+}
+
+/** 文件可获取状态（SYNC_DESIGN §4）：🟢 本地有 / 🟡 可下载 / 🔴 设备离线。 */
+export type SyncStatusCode = "local" | "online" | "offline";
+
+/** 统一文件视图条目（里程碑 3）：本机 + 跨设备索引归并后的结果。 */
+export interface UnifiedFile {
+  /** 限定路径，`/` 分隔；顶层段是来源分组（「收到的」或共享文件夹名）。 */
+  relPath: string;
+  size: number;
+  hash: string | null;
+  status: SyncStatusCode;
+  /** 持有该文件的设备名（本机用「这台设备」）。 */
+  holders: string[];
 }
 
 /** Command 失败时后端返回的形状（API_DESIGN §9.1）。 */

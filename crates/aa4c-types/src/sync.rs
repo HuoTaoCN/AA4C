@@ -1,7 +1,8 @@
-//! 同步范围与本机文件索引类型（SYNC_DESIGN.md §3 / §6，DATABASE_SCHEMA.md §4.2-4.3）。
+//! 同步范围与本机文件索引类型（SYNC_DESIGN.md §3 / §6，DATABASE_SCHEMA.md §4.2-4.4）。
 //!
-//! V0.2 里程碑 2：只有本机扫描出的条目（`present_local` 恒为 true）；
-//! 跨设备摘要交换、`remote_index`、黄/红状态留给后续里程碑。
+//! V0.2 里程碑 2 落地了本机索引（`SyncScope` / `SyncFileEntry`）；里程碑 3 在此基础上
+//! 加入跨设备索引交换：`RemoteIndexEntry`（远端广播来的条目）与归并后的统一视图
+//! `UnifiedFile`（按 `SyncStatus` 着色 🟢/🟡/🔴）。
 
 use std::str::FromStr;
 
@@ -61,8 +62,49 @@ pub struct SyncFileEntry {
     pub mtime: i64,
     /// BLAKE3 hex；惰性计算，mtime/size 未变时复用旧值。
     pub hash: Option<String>,
-    /// 内容是否在本机磁盘（V0.2 里程碑 2 恒为 true，本机扫描出的条目）。
+    /// 内容是否在本机磁盘（本机扫描出的条目恒为 true）。
     pub present_local: bool,
+}
+
+/// 文件可获取状态（SYNC_DESIGN.md §4）。前端按此着色：
+/// 🟢 本地有 / 🟡 可下载（在线设备有）/ 🔴 设备离线。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncStatus {
+    /// 🟢 本机已有内容（`present_local = 1`）。
+    Local,
+    /// 🟡 本机没有，但至少一台**在线**完全信任设备有。
+    Online,
+    /// 🔴 本机没有，且仅**离线**完全信任设备有。
+    Offline,
+}
+
+/// 远端完全信任设备广播来的索引条目（DATABASE_SCHEMA.md §4.4 `remote_index`）。
+///
+/// `rel_path` 是**已限定的展示路径**（顶层段为来源分组，如「收到的」或共享文件夹名），
+/// 与本机统一视图同命名空间，便于按路径归并（SYNC_DESIGN.md §3.4）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteIndexEntry {
+    pub device_id: String,
+    pub rel_path: String,
+    pub size: u64,
+    pub hash: Option<String>,
+    /// 最近一次收到该条目的时间（unix 毫秒）。
+    pub seen_at: i64,
+}
+
+/// 统一文件视图条目：本机索引 + 远端索引按 `rel_path` 归并后的结果（SYNC_DESIGN.md §3.4 / §4）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifiedFile {
+    /// 限定展示路径，`/` 分隔；顶层段是来源分组（「收到的」或共享文件夹名）。
+    pub rel_path: String,
+    pub size: u64,
+    pub hash: Option<String>,
+    pub status: SyncStatus,
+    /// 持有此文件的设备名（本机用「这台设备」），可多台。
+    pub holders: Vec<String>,
 }
 
 #[cfg(test)]
@@ -93,5 +135,34 @@ mod tests {
         assert_eq!(json["presentLocal"], true);
         let back: SyncFileEntry = serde_json::from_value(json).unwrap();
         assert_eq!(back, e);
+    }
+
+    #[test]
+    fn sync_status_serializes_to_lowercase() {
+        assert_eq!(
+            serde_json::to_value(SyncStatus::Online).unwrap(),
+            serde_json::json!("online")
+        );
+        assert_eq!(
+            serde_json::to_value(SyncStatus::Offline).unwrap(),
+            serde_json::json!("offline")
+        );
+    }
+
+    #[test]
+    fn unified_file_json_is_camel_case() {
+        let f = UnifiedFile {
+            rel_path: "收到的/a.jpg".into(),
+            size: 100,
+            hash: Some("ab".repeat(32)),
+            status: SyncStatus::Online,
+            holders: vec!["客厅电脑".into()],
+        };
+        let json = serde_json::to_value(&f).unwrap();
+        assert_eq!(json["relPath"], "收到的/a.jpg");
+        assert_eq!(json["status"], "online");
+        assert_eq!(json["holders"][0], "客厅电脑");
+        let back: UnifiedFile = serde_json::from_value(json).unwrap();
+        assert_eq!(back, f);
     }
 }

@@ -47,6 +47,15 @@ pub trait IncomingPairDispatch: Send + Sync + 'static {
     );
 }
 
+/// 统一监听器读到 `IndexRequest` 后的索引分流钩子（SYNC_DESIGN.md §3.3，里程碑 3）。
+///
+/// 与配对钩子同构：传输层只负责把已握手的入站连接交出去，索引语义（完全信任过滤、
+/// 共享范围限定路径）全部归 Core。实现内部应自行 spawn 处理并写回 `IndexEntries`。
+pub trait IncomingIndexDispatch: Send + Sync + 'static {
+    /// 接管一条已读出 Hello + `IndexRequest` 的入站连接；`peer_id` 为对端证书指纹。
+    fn dispatch(&self, stream: IncomingTlsStream, peer_id: DeviceId);
+}
+
 /// 接收方用户决定：（是否接收，保存目录覆盖）。
 type AcceptDecision = (bool, Option<PathBuf>);
 
@@ -83,6 +92,8 @@ pub struct TransferService {
     send_permits: Arc<Semaphore>,
     /// 配对分流钩子（Core 注入；未注入时入站 `PairRequest` 直接拒绝）。
     pub(crate) pair_dispatch: OnceLock<Arc<dyn IncomingPairDispatch>>,
+    /// 索引分流钩子（Core 注入；未注入时入站 `IndexRequest` 直接断开）。
+    pub(crate) index_dispatch: OnceLock<Arc<dyn IncomingIndexDispatch>>,
 }
 
 impl TransferService {
@@ -102,12 +113,18 @@ impl TransferService {
             cancels: Mutex::new(HashMap::new()),
             send_permits: Arc::new(Semaphore::new(permits)),
             pair_dispatch: OnceLock::new(),
+            index_dispatch: OnceLock::new(),
         })
     }
 
     /// 注入配对分流钩子（Core 在装配阶段调用一次）。重复设置无效。
     pub fn set_pair_dispatch(&self, dispatch: Arc<dyn IncomingPairDispatch>) {
         let _ = self.pair_dispatch.set(dispatch);
+    }
+
+    /// 注入索引分流钩子（Core 在装配阶段调用一次）。重复设置无效。
+    pub fn set_index_dispatch(&self, dispatch: Arc<dyn IncomingIndexDispatch>) {
+        let _ = self.index_dispatch.set(dispatch);
     }
 
     /// 启动 TLS 监听。`port` 被占用时自动向后递增（最多 16 个），返回实际端口。
@@ -193,6 +210,60 @@ impl TransferService {
             send::run(svc, job, cancel).await;
         });
         Ok(task_id)
+    }
+
+    /// 向某完全信任设备拉取共享索引（SYNC_DESIGN.md §3.3，里程碑 3）。
+    ///
+    /// 建连 → 握手（校验证书指纹）→ `IndexRequest` → 分批读 `IndexEntries` 直至 `last`。
+    /// 只取元数据、不取内容；调用方（Core）负责落 `remote_index` 并判定黄/红。
+    pub async fn fetch_index(
+        &self,
+        peer_id: &DeviceId,
+        addr: std::net::SocketAddr,
+    ) -> Result<Vec<aa4c_proto::IndexItem>> {
+        use aa4c_proto::{client_hello, read_message, write_message, Message};
+        use tokio::net::TcpStream;
+        use tokio::time::timeout;
+        use tokio_rustls::TlsConnector;
+
+        let t = self.config.timeout;
+        let tcp = timeout(t, TcpStream::connect(addr))
+            .await
+            .map_err(|_| Aa4cError::Network("connect timeout".into()))??;
+        let config = self.identity.tls_client_config(Some(peer_id))?;
+        let mut stream = TlsConnector::from(Arc::new(config))
+            .connect(
+                tokio_rustls::rustls::pki_types::ServerName::try_from("aa4c").expect("static name"),
+                tcp,
+            )
+            .await?;
+
+        let (hello_id, _proto) = client_hello(&mut stream, self.identity.device_id()).await?;
+        if &hello_id != peer_id {
+            return Err(Aa4cError::Protocol("hello id != expected peer".into()));
+        }
+        write_message(&mut stream, &Message::IndexRequest).await?;
+
+        let mut items = Vec::new();
+        // 上限保护：避免对端发送无限批次（每批最多 INDEX_BATCH 条，见 Core serve 端）
+        for _ in 0..100_000u32 {
+            match timeout(t, read_message(&mut stream))
+                .await
+                .map_err(|_| Aa4cError::Network("index entries timeout".into()))??
+            {
+                Message::IndexEntries { entries, last } => {
+                    items.extend(entries);
+                    if last {
+                        return Ok(items);
+                    }
+                }
+                Message::Cancel { reason, .. } => {
+                    return Err(Aa4cError::Network(format!("peer refused index: {reason}")));
+                }
+                other => return Err(aa4c_proto::unexpected(&other)),
+            }
+        }
+        Err(Aa4cError::Protocol("index stream too long".into()))
     }
 
     /// 接收端用户确认（save_dir 为空使用默认目录）。

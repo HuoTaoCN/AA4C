@@ -6,6 +6,7 @@
 
 ### Added
 
+- V0.2 同步里程碑 3：跨设备索引摘要交换 + `remote_index` + 统一文件视图（绿/黄/红，只读）。`aa4c-proto` 新增 `IndexRequest` / `IndexEntries` 消息（向后兼容追加变体，旧版优雅降级）；设备上线即与**在线的完全信任设备**交换索引摘要（只传元数据 rel_path/size/hash，不传内容），整体落 `remote_index`（迁移 `004_remote_index.sql`，user_version=4）。完全信任边界在持有方把关：非 full 对端一律回空批次、不泄露任何文件名；完全信任降级为朋友时立即清空该设备的远端索引缓存。统一视图 `unified::merge` 把本机索引 ⊕ 远端索引按限定路径（顶层段=「收到的」/共享文件夹名）归并，按「本机有→🟢 / 在线设备有→🟡 / 仅离线设备有→🔴」着色并标注持有设备。新增 Tauri 命令 `list_unified_files` / `refresh_remote_index`；「同步」页接统一视图（绿/黄/红 + 持有设备 + 筛选），新增「刷新设备」按钮。拉取触发=启动初拉 + 设备上线触发 + 手动刷新（未接 `notify`/`IndexSummary` 优化，见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §11）。跨设备**按需拉取**内容仍属里程碑 4。
 - V0.2 同步里程碑 2：共享范围 + 本地文件索引扫描 + Inbox 落点，「同步」页接上真实文件（不再是示例数据）。`sync_scopes` / `sync_file_index` 落库（迁移 `003_sync.sql`）；`aa4c-core` 新增扫描器（mtime+size 未变复用旧 BLAKE3、变化则重算，跳过隐藏文件与 `.aa4c-part` 临时文件），启动时扫一次、之后每 300s 定时全量重扫，任意一次传输完成也会追加一次扫描；`save_dir` 变更时 Inbox 范围自动跟随并清空旧路径下的索引。新增 Tauri 命令 `list_sync_scopes` / `add_sync_scope` / `remove_sync_scope` / `list_sync_files` / `rescan_sync` 与 `sync_index_updated` 事件。「同步」页支持添加/移除同步文件夹、手动重新扫描；统一文件视图当前恒为绿（本地有）——跨设备黄/红状态待里程碑 3 的索引摘要交换落地。文件系统实时监听（`notify`）暂未接入，先用定时扫描兜底（见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §11）。
 
 ## [0.2.0-preview] - 2026-06-29

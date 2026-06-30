@@ -18,6 +18,17 @@ pub struct FileMeta {
     pub size: u64,
 }
 
+/// 索引交换条目（SYNC_DESIGN.md §3.3，里程碑 3）。
+///
+/// `rel_path` 是发送方限定好的展示路径（顶层段为来源分组，如「收到的」或共享文件夹名），
+/// 接收方原样存入 `remote_index`，与本机统一视图同命名空间。只含元数据，不含内容。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexItem {
+    pub rel_path: String,
+    pub size: u64,
+    pub hash: Option<String>,
+}
+
 /// ATP v1 全部消息（PROTOCOL.md §4）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Message {
@@ -74,6 +85,17 @@ pub enum Message {
     Cancel {
         task_id: TaskId,
         reason: String,
+    },
+
+    // —— 索引交换（SYNC_DESIGN.md §3.3 / 里程碑 3）——
+    // 在 v1 之上**向后兼容追加**：bincode 按声明顺序给枚举判别号，新变体只追加在末尾，
+    // 不影响既有变体编号。旧版本（v0.1.x）收到这些变体会解码失败并断开（优雅降级）。
+    /// 发起方握手后请求对端共享索引（仅完全信任设备之间有效）。
+    IndexRequest,
+    /// 持有方分批回送索引条目；`last = true` 标记最后一批。
+    IndexEntries {
+        entries: Vec<IndexItem>,
+        last: bool,
     },
 }
 
@@ -179,6 +201,8 @@ pub fn unexpected(msg: &Message) -> Aa4cError {
         Message::FileAck { .. } => "FileAck",
         Message::TaskDone { .. } => "TaskDone",
         Message::Cancel { .. } => "Cancel",
+        Message::IndexRequest => "IndexRequest",
+        Message::IndexEntries { .. } => "IndexEntries",
     };
     Aa4cError::Protocol(format!("unexpected message: {variant}"))
 }

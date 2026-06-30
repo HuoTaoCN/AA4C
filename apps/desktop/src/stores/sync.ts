@@ -1,13 +1,13 @@
-// 同步 store（SYNC_DESIGN.md §10 里程碑 2）：共享范围 + 本机文件索引。
+// 同步 store（SYNC_DESIGN.md §10 里程碑 2–3）：共享范围管理 + 跨设备统一文件视图。
 
 import { defineStore } from "pinia";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "../lib/api";
-import type { SyncFileEntry, SyncScope } from "../lib/types";
+import type { SyncScope, UnifiedFile } from "../lib/types";
 
 interface State {
   scopes: SyncScope[];
-  files: SyncFileEntry[];
+  files: UnifiedFile[];
   loading: boolean;
 }
 
@@ -20,7 +20,7 @@ export const useSyncStore = defineStore("sync", {
       try {
         const [scopes, files] = await Promise.all([
           api.listSyncScopes(),
-          api.listSyncFiles(),
+          api.listUnifiedFiles(),
         ]);
         this.scopes = scopes;
         this.files = files;
@@ -40,8 +40,14 @@ export const useSyncStore = defineStore("sync", {
       await api.removeSyncScope(id);
       await this.load();
     },
+    /** 重新扫描本机共享范围（本地文件增删改）。 */
     async rescan() {
       await api.rescanSync();
+      await this.load();
+    },
+    /** 与在线的「自己的设备」刷新一次跨设备索引（黄/红状态）。 */
+    async refresh() {
+      await api.refreshRemoteIndex();
       await this.load();
     },
   },

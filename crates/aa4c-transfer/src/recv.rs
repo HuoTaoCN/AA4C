@@ -66,6 +66,19 @@ pub(crate) async fn run_incoming(
             svc.finish_task(&task_id, result).await;
             Ok(())
         }
+        // 索引交换：仅已配对设备，交给 Core 注入的分流钩子（完全信任过滤在 Core 端）
+        Message::IndexRequest => {
+            if !trusted {
+                return Err(Aa4cError::NotPaired(cert_id));
+            }
+            match svc.index_dispatch.get() {
+                Some(dispatch) => {
+                    dispatch.dispatch(stream, cert_id);
+                    Ok(())
+                }
+                None => Err(Aa4cError::Protocol("index dispatch not wired".into())),
+            }
+        }
         // 配对连接：交给 Core 注入的分流钩子（PairingManager 适配器）
         Message::PairRequest { device, public_key } => match svc.pair_dispatch.get() {
             Some(dispatch) => {

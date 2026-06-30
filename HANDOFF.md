@@ -1,6 +1,6 @@
 # AA4C 开发交接（换机指南）
 
-> 最后更新：2026-06-29。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
+> 最后更新：2026-06-30。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
 > 给 AI Agent：开工前先读本文档"当前进度"与"下一步"，再按 [AGENTS.md](AGENTS.md) 的必读清单工作。
 
 ## 一、当前进度
@@ -26,9 +26,10 @@
 | 前端能力架构 + UI 预览 | ✅ | `2e78590`/`194286e`/`148e326` | 五大能力导航（传输/同步/分享/下载/归档）+ PC/移动两套外壳；同步页目录树预览 + 信任分级前移到配对成功弹窗 |
 | V0.2 信任分级（第一步） | ✅ | `b12d739` | `devices.trust_level` 落库（迁移 `002_trust.sql`）+ `set_trust_level` 命令端到端打通，配对默认 friend，「我的设备/朋友」UI 接真实后端 |
 | v0.2.0-preview 发布 | ✅ | `0ac48f6` | 打包预览版：品牌 + 新 UI + 信任分级随安装包/APK 发布（GitHub Release，prerelease） |
-| **V0.2 同步里程碑 2** | 🚀 进行中 | — | 共享范围 + 本地索引扫描 + Inbox 落点（`003_sync.sql`，`aa4c-core/src/sync_index.rs`），「同步」页接真实文件；尚未联调真机/未跑 `pnpm tauri dev` 实测 UI |
+| V0.2 同步里程碑 2 | ✅ | `391b8b7` | 共享范围 + 本地索引扫描 + Inbox 落点（`003_sync.sql`，`aa4c-core/src/sync_index.rs`），「同步」页接真实本机文件 |
+| **V0.2 同步里程碑 3** | 🚀 进行中 | — | 跨设备索引摘要交换（`IndexRequest`/`IndexEntries`）+ `remote_index`（`004_remote_index.sql`）+ 统一视图绿/黄/红（`sync_exchange.rs` / `unified.rs` / `dispatch.rs`）；完全信任边界把关 + 降级清缓存，含 e2e 索引交换测试；尚未跑 `pnpm tauri dev` 真机/真实 GUI 联调，且黄/红需真实双机在线才出现 |
 
-整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。V0.2 进行中：信任分级数据模型已落地，本地同步索引（里程碑 2）刚完成，跨设备索引交换/同步（SYNC_DESIGN.md §10 里程碑 3–5）待续。
+整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。V0.2 进行中：信任分级数据模型、本地同步索引（里程碑 2）、跨设备索引交换 + 统一视图（里程碑 3）均已落地；按需拉取（里程碑 4）与冲突标记（里程碑 5）待续（SYNC_DESIGN.md §10）。
 
 ### 已实现 crate 概览（`crates/`）
 
@@ -39,7 +40,7 @@
 | `aa4c-identity` | 身份 + 配对 | `Identity::load_or_generate`、`tls_server_config`/`tls_client_config`（mTLS 证书固定）、`derive_pin`、`PairingManager`（`start_pairing`/`handle_incoming`/`confirm`） |
 | `aa4c-discovery` | mDNS | `DiscoveryService::new/start/stop/devices` |
 | `aa4c-store` | SQLite | `Store::open`、设备/任务/设置 CRUD（`Store` 是廉价克隆句柄，内部专职线程） |
-| `aa4c-transfer` | 传输 | `TransferService::new`（返回 `Arc<Self>`）、`start_listener`/`send`/`accept`/`cancel`；`set_pair_dispatch` 注入配对分流钩子（`IncomingPairDispatch` trait）|
+| `aa4c-transfer` | 传输 + 索引交换 | `TransferService::new`（返回 `Arc<Self>`）、`start_listener`/`send`/`accept`/`cancel`/`fetch_index`；`set_pair_dispatch` / `set_index_dispatch` 注入分流钩子（`IncomingPairDispatch` / `IncomingIndexDispatch` trait）|
 | `aa4c-core` | 组装 | `Core::start`/`shutdown`/`subscribe`/`self_info`/`listen_port`；§9 的 11 个 Command 在 Core 上有同名编排方法；`CoreConfig`、`Settings` 读写 |
 
 CI 现状：7 个 job 全绿（lint、三平台 test、frontend、audit、android 哨兵）。
@@ -121,15 +122,14 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：V0.2 同步 —— 索引摘要交换 + 跨设备统一视图
+## 四、下一步：V0.2 同步 —— 按需拉取（里程碑 4）
 
-里程碑 1（信任分级）、里程碑 2（共享范围 + 本地索引 + Inbox）已完成，「同步」页已接真实本机文件。下一步按 [SYNC_DESIGN.md](SYNC_DESIGN.md) §10 继续：
+里程碑 1（信任分级）、里程碑 2（共享范围 + 本地索引 + Inbox）、里程碑 3（跨设备索引交换 + 统一视图绿/黄/红）已完成。下一步按 [SYNC_DESIGN.md](SYNC_DESIGN.md) §10 继续：
 
-- **里程碑 3（下一步）**：索引摘要交换协议（`IndexSummary`/`IndexEntries`）+ `remote_index` + 统一视图（绿/黄/红，只读）——这一步上线后「可下载」(黄)/"设备离线"(红) 才会真正出现
-- **里程碑 4**：按需拉取（复用现有 ATP `Offer`/分块传输）
-- **里程碑 5**：冲突标记（同名不同 hash 加序号）与人工解决
-- **未完成的里程碑 2 尾巴**（可随时补，不阻塞里程碑 3）：`notify` 文件系统实时监听（当前只有定时扫描 300s + 传输完成触发）、Inbox 按来源设备+时间分组展示
-- **里程碑 2 尚未做的验证**：还没有跑 `pnpm tauri dev` 实际点过「添加同步文件夹」/「移除」/「重新扫描」按钮，只验证到 `cargo test --workspace` + `pnpm build`（类型检查）这一层——真机/真实 GUI 验证留给下一次会话或用户自测
+- **里程碑 4（下一步）**：按需拉取——点统一视图里的黄色「可下载」条目 → 选一台在线持有设备 → 复用现有 ATP `Offer`/分块传输/`FileAck` 把内容拉到本机 → 落地后 `present_local=1` 转绿。统一视图条目已带 `holders`（持有设备名）与限定 `rel_path`，需要把限定路径反解回「哪台设备的哪个范围内相对路径」以发起 `Offer`（可在 `remote_index` 旁补一张映射，或在 `IndexEntries` 里多带 scope 信息——实现前先定 PROTOCOL）
+- **里程碑 5**：冲突标记（同名不同 hash 加序号）与人工解决；当前里程碑 3 同路径不同 hash 仅按 rel_path 归并、未拆分版本
+- **未完成的里程碑 2/3 尾巴**（可随时补，不阻塞里程碑 4）：`notify` 文件系统实时监听（当前只有定时扫描 300s + 传输完成触发）、Inbox 按来源设备+时间分组展示、`IndexSummary` 摘要优化（先比整体哈希再决定是否全量拉）
+- **里程碑 3 尚未做的验证**：还没有跑 `pnpm tauri dev` 真机联调（「刷新设备」按钮、黄/红状态需要两台真实在线的「我的设备」才会出现）；后端已有 e2e 测试 `index_exchange_gated_by_full_trust`（验证完全信任边界 + 限定路径），但真实 GUI / 双机在线验证留给下一次会话或用户自测
 
 > ⚠️ v0.2.0-preview 与 v0.1.x 配对协议不兼容（`DeviceInfo` 新增 `trust_level` 字段）。真机联调请确保两端都是 v0.2.0-preview 起的版本。
 
@@ -162,4 +162,4 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - **`cargo test --workspace` 会跨 crate 并行跑测试二进制**，单独 `cargo test -p X` 过不代表 workspace 过。提交前务必跑一次完整 `cargo test --workspace`。
 - **lib 内联单测 ≠ 集成测试**：`cargo test -p X --test Y` 只跑集成测试，漏掉 `src/*.rs` 里的 `#[cfg(test)]`。要 `--lib` 或直接 `--workspace` 覆盖全部。
 
-对 Agent 直接说"**开始 V0.2 里程碑 3**"（索引摘要交换 + `remote_index` + 统一视图）即可继续，详见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §10。
+对 Agent 直接说"**开始 V0.2 里程碑 4**"（按需拉取：点黄色「可下载」复用 ATP 拉取内容）即可继续，详见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §10。

@@ -15,8 +15,8 @@ use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aa4c_types::{
-    Aa4cError, DeviceId, Result, ScopeKind, SyncFileEntry, SyncScope, TaskId, TransferFile,
-    TransferStatus, TransferTask, TrustLevel,
+    Aa4cError, DeviceId, RemoteIndexEntry, Result, ScopeKind, SyncFileEntry, SyncScope, TaskId,
+    TransferFile, TransferStatus, TransferTask, TrustLevel,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -573,6 +573,81 @@ impl Store {
         })
         .await
     }
+
+    // —— 远端索引（跨设备摘要交换，SYNC_DESIGN.md §3.3，DATABASE_SCHEMA.md §4.4，里程碑 3）——
+
+    /// 用一次交换收到的完整快照整体替换某设备的远端索引（单事务先清后插）。
+    pub async fn replace_remote_index(
+        &self,
+        device_id: &str,
+        entries: Vec<RemoteIndexEntry>,
+    ) -> Result<()> {
+        let device_id = device_id.to_owned();
+        self.call(move |conn| {
+            let tx = conn.transaction().map_err(db_err)?;
+            tx.execute(
+                "DELETE FROM remote_index WHERE device_id = ?1",
+                params![device_id],
+            )
+            .map_err(db_err)?;
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "INSERT INTO remote_index (device_id, rel_path, size, hash, seen_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT(device_id, rel_path) DO UPDATE SET
+                           size = excluded.size, hash = excluded.hash, seen_at = excluded.seen_at",
+                    )
+                    .map_err(db_err)?;
+                for e in &entries {
+                    stmt.execute(params![
+                        device_id,
+                        e.rel_path,
+                        i64::try_from(e.size).unwrap_or(i64::MAX),
+                        e.hash,
+                        e.seen_at,
+                    ])
+                    .map_err(db_err)?;
+                }
+            }
+            tx.commit().map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 清空某设备的远端索引（完全信任降级为朋友时调用，SYNC_DESIGN.md §2）。
+    pub async fn clear_remote_index(&self, device_id: &str) -> Result<()> {
+        let device_id = device_id.to_owned();
+        self.call(move |conn| {
+            conn.execute(
+                "DELETE FROM remote_index WHERE device_id = ?1",
+                params![device_id],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 全部远端索引条目（统一视图归并用）。
+    pub async fn list_remote_index(&self) -> Result<Vec<RemoteIndexEntry>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT device_id, rel_path, size, hash, seen_at
+                     FROM remote_index ORDER BY rel_path",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], row_to_remote_entry)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
 }
 
 fn open_and_migrate(path: &Path) -> Result<Connection> {
@@ -654,6 +729,16 @@ fn row_to_sync_file_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncFileE
         mtime: row.get(3)?,
         hash: row.get(4)?,
         present_local: row.get(5)?,
+    })
+}
+
+fn row_to_remote_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemoteIndexEntry> {
+    Ok(RemoteIndexEntry {
+        device_id: row.get(0)?,
+        rel_path: row.get(1)?,
+        size: get_u64(row, 2)?,
+        hash: row.get(3)?,
+        seen_at: row.get(4)?,
     })
 }
 

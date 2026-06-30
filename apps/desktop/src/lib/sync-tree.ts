@@ -1,10 +1,10 @@
-// 同步页的树形视图：把后端的扁平文件索引（按共享范围）组装成目录树。
+// 同步页的树形视图：把后端的统一文件索引组装成目录树。
 //
-// V0.2 里程碑 2：索引只来自本机扫描，所以每个条目都是「本地有」(绿)。
-// 黄(可下载)/红(设备离线) 要等里程碑 3 的跨设备索引交换才会出现，
-// 这里的类型已经把三态留好，方便后续直接接上。
+// V0.2 里程碑 3：条目来自「本机索引 + 跨设备远端索引」的归并（后端 list_unified_files），
+// 每条自带 🟢 本地有 / 🟡 可下载 / 🔴 设备离线 状态与持有设备名。条目的 relPath
+// 已是限定路径（顶层段=来源分组：「收到的」或共享文件夹名），按 "/" 拆分即得目录树。
 
-import type { SyncFileEntry, SyncScope } from "./types";
+import type { UnifiedFile } from "./types";
 
 /** 文件可获取状态：local=本地有(绿) / online=在线设备有可下载(黄) / offline=仅离线设备有(红)。 */
 export type SyncStatus = "local" | "online" | "offline";
@@ -37,23 +37,15 @@ export const STATUS_LEGEND: { status: SyncStatus; label: string }[] = [
   { status: "offline", label: "设备离线" },
 ];
 
-/** 范围在树里的显示名：Inbox 固定叫「收到的」，文件夹取路径末段。 */
-function scopeName(scope: SyncScope): string {
-  if (scope.kind === "inbox") return "收到的";
-  const parts = scope.localPath.replace(/[/\\]+$/, "").split(/[/\\]/);
-  return parts[parts.length - 1] || scope.localPath;
-}
-
-function insert(dir: SyncDir, segments: string[], file: SyncFileEntry) {
+function insert(dir: SyncDir, segments: string[], file: UnifiedFile) {
   const [head, ...rest] = segments;
   if (rest.length === 0) {
     dir.children.push({
       kind: "file",
       name: head,
       size: file.size,
-      // V0.2 里程碑 2：本机索引里的条目恒为本地有，里程碑 3 接入跨设备状态后这里会按需判定
-      status: "local",
-      owners: ["这台设备"],
+      status: file.status,
+      owners: file.holders,
     });
     return;
   }
@@ -75,18 +67,22 @@ function sortDir(dir: SyncDir) {
   for (const c of dir.children) if (c.kind === "dir") sortDir(c);
 }
 
-/** 把（范围 + 扁平文件索引）组装成目录树；每个范围是一个顶层目录，空范围不显示。 */
-export function buildTree(scopes: SyncScope[], files: SyncFileEntry[]): SyncNode[] {
+/** 把统一文件索引（限定路径，顶层段=来源分组）组装成目录树；空分组自然不出现。 */
+export function buildTree(files: UnifiedFile[]): SyncNode[] {
   const roots = new Map<string, SyncDir>();
-  for (const scope of scopes) {
-    roots.set(scope.id, { kind: "dir", name: scopeName(scope), children: [] });
-  }
   for (const file of files) {
-    const root = roots.get(file.scopeId);
-    if (!root) continue;
-    insert(root, file.relPath.split("/"), file);
+    const segments = file.relPath.split("/");
+    const group = segments[0];
+    if (!group) continue;
+    let root = roots.get(group);
+    if (!root) {
+      root = { kind: "dir", name: group, children: [] };
+      roots.set(group, root);
+    }
+    insert(root, segments.slice(1), file);
   }
-  const tree = [...roots.values()].filter((r) => r.children.length > 0);
+  const tree = [...roots.values()];
+  tree.sort((a, b) => a.name.localeCompare(b.name, "zh"));
   tree.forEach(sortDir);
   return tree;
 }

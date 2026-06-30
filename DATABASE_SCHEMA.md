@@ -122,10 +122,10 @@ devices 1 ──── n transfer_tasks 1 ──── n transfer_files
 
 ## 4. V0.2 表结构（信任分级 + 跨设备索引设计）
 
-> §4.1 `devices.trust_level`、§4.2 `sync_scopes`、§4.3 `sync_file_index` **已实现**
-> （迁移 `002_trust.sql` + `003_sync.sql`，user_version=3）；§4.4 `remote_index`、
-> §4.5 `sync_conflicts` 仍为设计定稿、尚未建表，随后续里程碑落地。
-> 完整设计见 [SYNC_DESIGN.md](SYNC_DESIGN.md)。
+> §4.1 `devices.trust_level`、§4.2 `sync_scopes`、§4.3 `sync_file_index`、
+> §4.4 `remote_index` **已实现**（迁移 `002_trust.sql` + `003_sync.sql` +
+> `004_remote_index.sql`，user_version=4）；§4.5 `sync_conflicts` 仍为设计定稿、
+> 尚未建表，随后续里程碑落地。完整设计见 [SYNC_DESIGN.md](SYNC_DESIGN.md)。
 
 ### 4.1 devices 增列 —— 信任分级（已实现）
 
@@ -181,7 +181,7 @@ CREATE TABLE sync_file_index (
   （`aa4c-core/src/sync_index.rs` 的 `spawn_background_scan`）。文件系统实时监听
   （`notify` crate）留给后续里程碑，见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §11。
 
-### 4.4 remote_index —— 远端设备广播来的条目
+### 4.4 remote_index —— 远端设备广播来的条目（已实现）
 
 ```sql
 CREATE TABLE remote_index (
@@ -192,10 +192,19 @@ CREATE TABLE remote_index (
     seen_at    INTEGER NOT NULL,                 -- 最近一次收到该条目的时间
     PRIMARY KEY (device_id, rel_path)
 );
+
+CREATE INDEX idx_remote_index_path ON remote_index(rel_path);
 ```
 
+- 维护者：`aa4c-core` 的 `sync_exchange`（上线即与在线的完全信任设备交换索引摘要，
+  整体 `Store::replace_remote_index` 单事务替换该设备的全部条目）；统一视图由
+  `unified::merge`（本机 `sync_file_index` ⊕ `remote_index`）按限定 `rel_path` 归并。
+- `rel_path` 已是限定展示路径（顶层段为来源分组「收到的」/共享文件夹名），与本机
+  `sync_file_index` 同命名空间，便于按路径归并（SYNC_DESIGN.md §3.4）。
+- 交换只走元数据（rel_path/size/hash），不传内容；按需拉取内容是里程碑 4。
+
 > 黄/红判定：某 `rel_path` 本机 `present_local=0` 时，看持有它的 `device_id` 是否在线（`devices.last_seen_at` 30s 内）——在线为黄、仅离线为红。`remote_index` 可常驻内存 + 落库缓存。
-> 解除配对（`DELETE devices`）经外键级联清空其 `remote_index`；**完全信任降为朋友**会保留设备行，需在应用层**显式 `DELETE FROM remote_index WHERE device_id=?`**（见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §2）。
+> 解除配对（`DELETE devices`）经外键级联清空其 `remote_index`；**完全信任降为朋友**会保留设备行，应用层在 `Core::set_trust_level` 里**显式 `Store::clear_remote_index(device_id)`**（见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §2）。
 
 ### 4.5 sync_conflicts —— 冲突记录（占位）
 
@@ -229,8 +238,9 @@ CREATE TABLE sync_conflicts (
 ```rust
 const MIGRATIONS: &[&str] = &[
     /* v1: */ include_str!("migrations/001_init.sql"),
-    // v2: 002_trust_and_sync.sql（V0.2：devices.trust_level + sync_scopes
-    //      + sync_file_index + remote_index + sync_conflicts，见 §4）
+    /* v2: */ include_str!("migrations/002_trust.sql"),        // devices.trust_level
+    /* v3: */ include_str!("migrations/003_sync.sql"),         // sync_scopes + sync_file_index
+    /* v4: */ include_str!("migrations/004_remote_index.sql"), // remote_index
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {

@@ -10,6 +10,7 @@ import type {
   SyncScope,
   TransferTask,
   TrustLevel,
+  UnifiedFile,
 } from "./types";
 
 export const api = {
@@ -43,6 +44,8 @@ export const api = {
   removeSyncScope: (id: string) => invoke<void>("remove_sync_scope", { id }),
   listSyncFiles: () => invoke<SyncFileEntry[]>("list_sync_files"),
   rescanSync: () => invoke<void>("rescan_sync"),
+  listUnifiedFiles: () => invoke<UnifiedFile[]>("list_unified_files"),
+  refreshRemoteIndex: () => invoke<void>("refresh_remote_index"),
 };
 
 /** 把任意 reject 值收敛为 CommandError（兜底未知错误）。 */

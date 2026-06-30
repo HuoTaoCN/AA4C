@@ -86,6 +86,8 @@ pub fn run() {
             commands::remove_sync_scope,
             commands::list_sync_files,
             commands::rescan_sync,
+            commands::list_unified_files,
+            commands::refresh_remote_index,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

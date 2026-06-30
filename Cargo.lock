@@ -8,6 +8,7 @@ version = "0.2.0"
 dependencies = [
  "aa4c-discovery",
  "aa4c-identity",
+ "aa4c-proto",
  "aa4c-store",
  "aa4c-transfer",
  "aa4c-types",

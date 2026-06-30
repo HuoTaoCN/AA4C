@@ -144,6 +144,64 @@ async fn two_cores_pair_then_transfer() {
 }
 
 #[tokio::test]
+async fn index_exchange_gated_by_full_trust() {
+    use aa4c_types::TrustLevel;
+
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let a_id = a.core.self_info().id;
+
+    // —— 先配对（默认 friend）——
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "both sides pair");
+
+    // —— B 添加一个共享文件夹（含一个文件）并扫描入索引 ——
+    let shared = b._dir.path().join("shared");
+    tokio::fs::create_dir_all(&shared).await.unwrap();
+    tokio::fs::write(shared.join("doc.txt"), b"hi")
+        .await
+        .unwrap();
+    b.core.add_sync_scope(shared.clone()).await.unwrap();
+    b.core.rescan_sync().await.unwrap();
+
+    let b_addr = peer_info(&b).addr.unwrap();
+
+    // —— A 仍是 B 眼中的 friend：B 拒绝交出索引（回空批次，不泄露任何文件名）——
+    let items = a
+        .core
+        .transfer
+        .fetch_index(&b.core.self_info().id, b_addr)
+        .await
+        .unwrap();
+    assert!(items.is_empty(), "friend must not receive any shared index");
+
+    // —— B 把 A 升级为「我的设备」（full）后，A 才能取到 B 的共享索引 ——
+    b.core
+        .set_trust_level(&a_id, TrustLevel::Full)
+        .await
+        .unwrap();
+    let items = a
+        .core
+        .transfer
+        .fetch_index(&b.core.self_info().id, b_addr)
+        .await
+        .unwrap();
+    assert_eq!(items.len(), 1, "full device receives the shared file");
+    // 限定路径：顶层段是共享文件夹名（last path segment）
+    assert_eq!(items[0].rel_path, "shared/doc.txt");
+    assert_eq!(items[0].size, 2);
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn restart_marks_stale_tasks_failed() {
     let dir = tempfile::tempdir().unwrap();
     // 第一次启动：手工插入一个「传输中」任务，模拟上次异常退出

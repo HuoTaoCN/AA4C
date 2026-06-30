@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 aa4c-types = { workspace = true }
+aa4c-proto = { workspace = true }
 aa4c-identity = { workspace = true }
 aa4c-discovery = { workspace = true }
 aa4c-transfer = { workspace = true }
