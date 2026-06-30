@@ -12,6 +12,8 @@ export type SyncStatus = "local" | "online" | "offline";
 export interface SyncFile {
   kind: "file";
   name: string;
+  /** 完整限定路径（顶层段=来源分组），按需拉取时回传给后端。 */
+  relPath: string;
   size: number;
   status: SyncStatus;
   /** 持有该文件的设备名；online 多设备时可并行拉取（更快）。 */
@@ -43,6 +45,7 @@ function insert(dir: SyncDir, segments: string[], file: UnifiedFile) {
     dir.children.push({
       kind: "file",
       name: head,
+      relPath: file.relPath,
       size: file.size,
       status: file.status,
       owners: file.holders,

@@ -5,6 +5,7 @@
 //! 同路径不同内容的冲突拆分留给里程碑 5）。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use aa4c_proto::IndexItem;
 use aa4c_store::Store;
@@ -50,6 +51,39 @@ pub(crate) async fn local_shared_items(store: &Store) -> Result<Vec<IndexItem>> 
         });
     }
     Ok(items)
+}
+
+/// 把统一视图的限定展示路径解析回本机共享文件（按需拉取的服务端，里程碑 4）。
+///
+/// 顶层段匹配某共享范围的分组名，其余为范围内相对路径。**只解析我们自己已索引（已对外
+/// 广播）的条目**——既是隐私/安全边界（绝不按对端任意路径读盘、天然挡掉 `..` 穿越），
+/// 也确保拉取的就是统一视图里看到的那一份。返回（绝对路径, 当前大小）。
+pub(crate) async fn resolve_shared(
+    store: &Store,
+    display_rel: &str,
+) -> Result<Option<(PathBuf, u64)>> {
+    let Some((group, rest)) = display_rel.split_once('/') else {
+        return Ok(None);
+    };
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    for scope in store.list_sync_scopes().await? {
+        if group_name(&scope) != group {
+            continue;
+        }
+        let idx = store.list_scope_index(&scope.id).await?;
+        if let Some(entry) = idx.iter().find(|e| e.rel_path == rest) {
+            let abs = Path::new(&scope.local_path).join(rest);
+            // 文件可能在广播后又变化：现取实时大小，取不到则回落索引里的值
+            let size = tokio::fs::metadata(&abs)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(entry.size);
+            return Ok(Some((abs, size)));
+        }
+    }
+    Ok(None)
 }
 
 /// 本机一条限定索引（统一视图归并的左侧输入）。

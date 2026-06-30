@@ -50,5 +50,9 @@ export const useSyncStore = defineStore("sync", {
       await api.refreshRemoteIndex();
       await this.load();
     },
+    /** 按需拉取一个黄色「可下载」文件；完成后扫描会把它转绿（事件驱动刷新）。 */
+    async fetch(relPath: string): Promise<string> {
+      return api.fetchFile(relPath);
+    },
   },
 });

@@ -8,7 +8,10 @@ use std::sync::Arc;
 use aa4c_identity::PairingManager;
 use aa4c_proto::{write_message, IndexItem, Message};
 use aa4c_store::Store;
-use aa4c_transfer::{IncomingIndexDispatch, IncomingPairDispatch, IncomingTlsStream};
+use aa4c_transfer::{
+    IncomingIndexDispatch, IncomingPairDispatch, IncomingTlsStream, ResolveFuture, ResolvedFetch,
+    SharedFileResolver,
+};
 use aa4c_types::{DeviceId, DeviceInfo, TrustLevel};
 
 use crate::unified;
@@ -110,4 +113,44 @@ async fn serve_index(
         .await?;
     }
     Ok(())
+}
+
+/// 共享文件解析器：把拉取方请求的限定展示路径解析为本机共享文件（SYNC_DESIGN.md §4）。
+///
+/// 同样把守完全信任边界：非 `full` 对端一律 `None`（传输层据此回 `Cancel`）；
+/// 路径解析只命中本机已索引（已对外广播）的条目，绝不按对端任意路径读盘。
+pub(crate) struct FetchServe {
+    store: Store,
+}
+
+impl FetchServe {
+    pub(crate) fn new(store: Store) -> Self {
+        Self { store }
+    }
+}
+
+impl SharedFileResolver for FetchServe {
+    fn resolve(&self, peer_id: DeviceId, rel_path: String) -> ResolveFuture {
+        let store = self.store.clone();
+        Box::pin(async move {
+            let is_full = store
+                .get_device(&peer_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|d| d.trust_level == TrustLevel::Full)
+                .unwrap_or(false);
+            if !is_full {
+                return None;
+            }
+            match unified::resolve_shared(&store, &rel_path).await {
+                Ok(Some((abs, size))) => Some(ResolvedFetch {
+                    abs,
+                    rel_path,
+                    size,
+                }),
+                _ => None,
+            }
+        })
+    }
 }

@@ -46,6 +46,7 @@ export const api = {
   rescanSync: () => invoke<void>("rescan_sync"),
   listUnifiedFiles: () => invoke<UnifiedFile[]>("list_unified_files"),
   refreshRemoteIndex: () => invoke<void>("refresh_remote_index"),
+  fetchFile: (relPath: string) => invoke<string>("fetch_file", { relPath }),
 };
 
 /** 把任意 reject 值收敛为 CommandError（兜底未知错误）。 */

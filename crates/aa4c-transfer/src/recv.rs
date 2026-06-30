@@ -12,6 +12,7 @@ use aa4c_types::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 use crate::path::{dedup_target, sanitize_rel_path};
 use crate::progress::Progress;
@@ -77,6 +78,38 @@ pub(crate) async fn run_incoming(
                     Ok(())
                 }
                 None => Err(Aa4cError::Protocol("index dispatch not wired".into())),
+            }
+        }
+        // 按需拉取：仅完全信任设备可拉（边界由 Core 注入的解析器把关）。解析成功后
+        // **反转角色**，本端在同一连接上变身发送方回推该文件（里程碑 4）。
+        Message::FetchRequest { rel_path } => {
+            if !trusted {
+                return Err(Aa4cError::NotPaired(cert_id));
+            }
+            let Some(resolver) = svc.fetch_resolver.get() else {
+                return Err(Aa4cError::Protocol("fetch resolver not wired".into()));
+            };
+            match resolver.resolve(cert_id.clone(), rel_path).await {
+                Some(resolved) => {
+                    let task_id = uuid::Uuid::new_v4().to_string();
+                    let result =
+                        crate::send::serve_fetch(&svc, &mut stream, &cert_id, &task_id, resolved)
+                            .await;
+                    svc.finish_task(&task_id, result).await;
+                    Ok(())
+                }
+                None => {
+                    // 不在共享范围 / 非 full：回 Cancel，不泄露存在性细节
+                    let _ = write_message(
+                        &mut stream,
+                        &Message::Cancel {
+                            task_id: String::new(),
+                            reason: "not_shared".into(),
+                        },
+                    )
+                    .await;
+                    Err(Aa4cError::Protocol("fetch denied".into()))
+                }
             }
         }
         // 配对连接：交给 Core 注入的分流钩子（PairingManager 适配器）
@@ -172,6 +205,29 @@ async fn session(
         .update_task_status(&task_id, TransferStatus::Transferring, None)
         .await?;
 
+    receive_files(
+        svc, stream, &task_id, &files, &rel_paths, &save_dir, &cancel,
+    )
+    .await
+}
+
+/// 接收文件主循环（PROTOCOL.md §7 右列，已与「接受/握手」解耦）：
+/// 收 `Chunk`/`FileDone`、回 `FileAck`、`TaskDone` 收尾。入站推送（[`session`]）与
+/// 按需拉取（拉取方反向接收，里程碑 4）共用此循环；`stream` 泛型，故两种连接皆可。
+pub(crate) async fn receive_files<S>(
+    svc: &Arc<TransferService>,
+    stream: &mut S,
+    task_id: &TaskId,
+    files: &[FileMeta],
+    rel_paths: &[PathBuf],
+    save_dir: &std::path::Path,
+    cancel: &CancellationToken,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let t = svc.config.timeout;
+    let total: u64 = files.iter().map(|f| f.size).sum();
     let mut progress = Progress::new(
         task_id.clone(),
         svc.events.clone(),
@@ -212,7 +268,7 @@ async fn session(
                     if current.is_some() || offset != 0 {
                         break Err(Aa4cError::Protocol("out-of-order chunk".into()));
                     }
-                    let open = open_part(&save_dir, &rel_paths[idx], file_index).await;
+                    let open = open_part(save_dir, &rel_paths[idx], file_index).await;
                     match open {
                         Ok(open) => {
                             parts_created.push(open.part.clone());
@@ -246,7 +302,7 @@ async fn session(
                     if current.is_some() || files[idx].size != 0 {
                         break Err(Aa4cError::Protocol("FileDone without chunks".into()));
                     }
-                    match open_part(&save_dir, &rel_paths[idx], file_index).await {
+                    match open_part(save_dir, &rel_paths[idx], file_index).await {
                         Ok(open) => {
                             parts_created.push(open.part.clone());
                             current = Some(open);

@@ -138,7 +138,7 @@ async function refresh() {
     </div>
 
     <p class="foot muted">
-      跨设备拉取（点黄色「可下载」直接取回）将在下一步上线，当前为只读视图。
+      点黄色「可下载」文件即可从在线设备取回到本机，完成后自动转为绿色「本地有」。
     </p>
   </div>
 </template>

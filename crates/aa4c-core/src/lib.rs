@@ -139,6 +139,7 @@ impl Core {
         );
         transfer.set_pair_dispatch(Arc::new(dispatch::PairDispatch::new(pairing.clone())));
         transfer.set_index_dispatch(Arc::new(dispatch::IndexServe::new(store.clone())));
+        transfer.set_fetch_resolver(Arc::new(dispatch::FetchServe::new(store.clone())));
 
         // 6. 启动监听（端口占用自动递增，返回真实端口）
         //    端口优先级：显式覆盖（config 非默认值，如测试用 0）> 已保存设置

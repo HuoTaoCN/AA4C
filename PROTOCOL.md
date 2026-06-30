@@ -190,6 +190,27 @@ pin = u32::from_le_bytes( BLAKE3( min(pkA,pkB) ‖ max(pkA,pkB) )[0..4] ) % 1_00
 | 超时（任何等待 ≥ 60s） | 任务/会话失败 |
 | 哈希不匹配 | 重传 ≤ 2 次后失败 |
 
+## 8b. V0.2 同步扩展消息（proto v1 之上向后兼容追加）
+
+V0.2 在 `Message` 末尾**追加** enum 变体（不改既有判别号；旧版 v0.1.x 收到会解码失败并断开，
+属优雅降级）。仅在**完全信任**设备之间使用，详见 [SYNC_DESIGN.md](SYNC_DESIGN.md)。
+
+```rust
+enum Message {
+    // …§4 既有变体…
+    IndexRequest,                                    // 拉索引摘要（里程碑 3）
+    IndexEntries { entries: Vec<IndexItem>, last: bool },
+    FetchRequest { rel_path: String },               // 按需拉取一个共享文件（里程碑 4）
+}
+struct IndexItem { rel_path: String, size: u64, hash: Option<String> }
+```
+
+- **索引交换**：A 握手后发 `IndexRequest`；B 校验对端为 full，分批回 `IndexEntries`
+  （每批 ≤1000 条，`last=true` 收尾；非 full / 无共享回空批次，不泄露文件名）。
+- **按需拉取**：A 握手后发 `FetchRequest{rel_path}`（限定展示路径）；B 校验 full + 路径落在
+  共享范围内，**反转角色**用 §7 的 `Offer`→`Chunk`→`FileDone`→`FileAck`→`TaskDone` 回推内容，
+  A 自动 `OfferAnswer{accept:true}`。解析失败回 `Cancel{reason:"not_shared"}`。不新增数据通路。
+
 ---
 
 # Part B — proto v2（广域网，V0.3 设计草案）

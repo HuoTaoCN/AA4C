@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useToastStore } from "../stores/toast";
+import { useSyncStore } from "../stores/sync";
+import { asCommandError } from "../lib/api";
 import { humanBytes } from "../lib/format";
 import { statusLabel, type SyncNode } from "../lib/sync-tree";
 
@@ -8,19 +10,28 @@ const props = defineProps<{ node: SyncNode; depth: number }>();
 defineOptions({ name: "SyncNode" });
 
 const toast = useToastStore();
+const sync = useSyncStore();
 const open = ref(props.depth < 1); // 顶层目录默认展开
+const fetching = ref(false);
 
 const indent = (d: number) => ({ paddingLeft: `${12 + d * 18}px` });
 
-function onFile() {
+async function onFile() {
   if (props.node.kind !== "file") return;
   const f = props.node;
   if (f.status === "online") {
-    const msg =
-      f.owners.length > 1
-        ? `将同时从「${f.owners.join("、")}」取回 ${f.name}（多设备并行，更快）`
-        : `将从「${f.owners[0]}」取回 ${f.name}`;
-    toast.push("info", `${msg}（跨设备拉取即将上线）`);
+    if (fetching.value) return;
+    fetching.value = true;
+    toast.push("info", `正在从「${f.owners[0]}」取回 ${f.name}…`);
+    try {
+      await sync.fetch(f.relPath);
+      // 内容拉到本机后扫描会自动把它转绿（事件驱动刷新），无需手动操作
+      toast.push("success", `${f.name} 取回中，完成后会自动转为「本地有」`);
+    } catch (e) {
+      toast.push("error", asCommandError(e).message);
+    } finally {
+      fetching.value = false;
+    }
   } else if (f.status === "offline") {
     toast.push("info", `「${f.owners[0]}」当前离线，等它上线后即可取回`);
   } else {

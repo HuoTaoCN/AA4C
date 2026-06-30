@@ -152,6 +152,11 @@ pub async fn refresh_remote_index(core: State<'_, Arc<Core>>) -> CmdResult<()> {
     Ok(core.refresh_remote_index().await?)
 }
 
+#[tauri::command]
+pub async fn fetch_file(core: State<'_, Arc<Core>>, rel_path: String) -> CmdResult<String> {
+    Ok(core.fetch_file(&rel_path).await?)
+}
+
 /// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。
 pub fn event_payload(event: &CoreEvent) -> Value {
     match event {

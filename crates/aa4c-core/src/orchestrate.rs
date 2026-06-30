@@ -257,6 +257,40 @@ impl Core {
         Ok(())
     }
 
+    /// 按需拉取统一视图里某条目（限定展示路径）的内容（SYNC_DESIGN.md §4，里程碑 4）。
+    ///
+    /// 从远端索引里找出持有该文件的设备，挑一台**在线**且**完全信任**的，复用 ATP 把内容
+    /// 拉到本机 Inbox；落地后由扫描器转绿（黄→绿）。返回拉取任务 id（A 侧 Recv 记录）。
+    pub async fn fetch_file(&self, rel_path: &str) -> Result<TaskId> {
+        let holders: HashSet<DeviceId> = self
+            .store
+            .list_remote_index()
+            .await?
+            .into_iter()
+            .filter(|r| r.rel_path == rel_path)
+            .map(|r| r.device_id)
+            .collect();
+        if holders.is_empty() {
+            return Err(Aa4cError::Protocol("没有设备持有这个文件".into()));
+        }
+        // 在线快照里挑一台「我的设备」（完全信任）持有者
+        for dev in self.discovery.devices() {
+            if !holders.contains(&dev.id) {
+                continue;
+            }
+            let is_full = self
+                .store
+                .get_device(&dev.id)
+                .await?
+                .map(|d| d.trusted && d.trust_level == TrustLevel::Full)
+                .unwrap_or(false);
+            if is_full {
+                return self.transfer.fetch_file(&dev, rel_path, None).await;
+            }
+        }
+        Err(Aa4cError::Protocol("持有这个文件的设备当前不在线".into()))
+    }
+
     /// 把 device_id 解析为可发送的 DeviceInfo：优先在线快照（含实时地址），
     /// 否则回落到配对记录里的最后地址。
     async fn resolve_peer(&self, device_id: &DeviceId) -> Result<DeviceInfo> {

@@ -97,6 +97,14 @@ pub enum Message {
         entries: Vec<IndexItem>,
         last: bool,
     },
+
+    // —— 按需拉取（SYNC_DESIGN.md §4 / 里程碑 4）——
+    /// 拉取方握手后请求对端某个共享文件（`rel_path` 为统一视图的限定展示路径）。
+    /// 对端校验完全信任 + 路径落在共享范围内后，**反转角色**用既有发送流回推该文件
+    /// （`Offer` → 分块 → `FileDone`/`FileAck` → `TaskDone`），不新增数据通路。
+    FetchRequest {
+        rel_path: String,
+    },
 }
 
 /// 编码为完整帧（长度前缀 + 消息体）。
@@ -203,6 +211,7 @@ pub fn unexpected(msg: &Message) -> Aa4cError {
         Message::Cancel { .. } => "Cancel",
         Message::IndexRequest => "IndexRequest",
         Message::IndexEntries { .. } => "IndexEntries",
+        Message::FetchRequest { .. } => "FetchRequest",
     };
     Aa4cError::Protocol(format!("unexpected message: {variant}"))
 }

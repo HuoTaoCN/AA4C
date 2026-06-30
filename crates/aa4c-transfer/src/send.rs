@@ -217,6 +217,91 @@ fn cancel_msg(task_id: &TaskId) -> Message {
     }
 }
 
+/// 服务一次按需拉取（里程碑 4）：本端已读到对端 `FetchRequest` 并解析出共享文件，
+/// 现在在**同一入站连接**上反转角色当发送方——记一条 Send 任务、回 `Offer`、收
+/// `OfferAnswer` 后复用 [`transfer_files`] 把内容推给拉取方。收尾交由调用方 `finish_task`。
+pub(crate) async fn serve_fetch<S: AsyncRead + AsyncWrite + Unpin>(
+    svc: &Arc<TransferService>,
+    stream: &mut S,
+    peer_id: &DeviceId,
+    task_id: &TaskId,
+    resolved: crate::ResolvedFetch,
+) -> Result<()> {
+    use aa4c_proto::FileMeta;
+    use aa4c_types::{Direction, FileStatus, TransferFile, TransferTask};
+
+    let t = svc.config.timeout;
+    let file = SendFile {
+        abs: resolved.abs,
+        meta: FileMeta {
+            rel_path: resolved.rel_path.clone(),
+            size: resolved.size,
+        },
+    };
+    let total = resolved.size;
+
+    // B 侧记一条 Send 任务：拉取在 B 的「记录」里呈现为「发送」，progress/收尾沿用既有机制
+    svc.store
+        .insert_task(&TransferTask {
+            id: task_id.clone(),
+            direction: Direction::Send,
+            peer: peer_id.clone(),
+            files: vec![TransferFile {
+                rel_path: file.meta.rel_path.clone(),
+                size: file.meta.size,
+                hash: None,
+                status: FileStatus::Pending,
+            }],
+            status: TransferStatus::WaitingAccept,
+            total_bytes: total,
+            transferred_bytes: 0,
+            created_at: crate::now_ms(),
+            error: None,
+        })
+        .await?;
+    let cancel = svc.register_cancel(task_id);
+
+    write_message(
+        stream,
+        &Message::Offer {
+            task_id: task_id.clone(),
+            files: vec![file.meta.clone()],
+        },
+    )
+    .await?;
+    match timeout(t, read_message(stream))
+        .await
+        .map_err(|_| Aa4cError::Network("offer answer timeout".into()))??
+    {
+        Message::OfferAnswer { accept: true, .. } => {}
+        Message::OfferAnswer { accept: false, .. } => return Err(Aa4cError::TransferRejected),
+        Message::Cancel { reason, .. } => {
+            return Err(Aa4cError::Network(format!("peer cancelled: {reason}")));
+        }
+        other => return Err(unexpected(&other)),
+    }
+
+    svc.store
+        .update_task_status(task_id, TransferStatus::Transferring, None)
+        .await?;
+    let mut progress = Progress::new(
+        task_id.clone(),
+        svc.events.clone(),
+        svc.store.clone(),
+        total,
+    );
+    transfer_files(
+        stream,
+        task_id,
+        &[file],
+        svc.config.chunk_size,
+        t,
+        &mut progress,
+        &cancel,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

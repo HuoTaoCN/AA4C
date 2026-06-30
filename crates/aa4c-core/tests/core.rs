@@ -201,6 +201,89 @@ async fn index_exchange_gated_by_full_trust() {
     b.core.shutdown().await.unwrap();
 }
 
+/// 等待某任务到达终态：返回 true=完成(Done)，false=失败(Failed)。
+async fn wait_terminal(mut events: broadcast::Receiver<CoreEvent>, task_id: &str) -> bool {
+    loop {
+        match events.recv().await.expect("event bus open") {
+            CoreEvent::TransferDone { task_id: t } if t == task_id => return true,
+            CoreEvent::TransferFailed { task_id: t, .. } if t == task_id => return false,
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn on_demand_fetch_pulls_file_and_gates_on_full_trust() {
+    use aa4c_types::TrustLevel;
+
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let a_id = a.core.self_info().id;
+
+    // 配对（默认 friend）
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "both sides pair");
+
+    // B 共享一个文件夹（含一个文件），扫描入索引
+    let shared = b._dir.path().join("shared");
+    tokio::fs::create_dir_all(&shared).await.unwrap();
+    tokio::fs::write(shared.join("doc.txt"), b"pull me over ATP!")
+        .await
+        .unwrap();
+    b.core.add_sync_scope(shared.clone()).await.unwrap();
+    b.core.rescan_sync().await.unwrap();
+
+    let dest = a._dir.path().join("pulled");
+
+    // —— A 还是 friend：拉取被拒（B 的解析器回 None → Cancel → A 任务失败）——
+    let ev = a.core.subscribe();
+    let task = a
+        .core
+        .transfer
+        .fetch_file(&peer_info(&b), "shared/doc.txt", Some(dest.clone()))
+        .await
+        .unwrap();
+    assert!(
+        !timeout(WAIT, wait_terminal(ev, &task)).await.unwrap(),
+        "friend must not be able to pull"
+    );
+    assert!(
+        !dest.join("doc.txt").exists(),
+        "no file should land on refusal"
+    );
+
+    // —— B 把 A 升级为「我的设备」(full) 后，拉取成功，内容落盘 ——
+    b.core
+        .set_trust_level(&a_id, TrustLevel::Full)
+        .await
+        .unwrap();
+    let ev = a.core.subscribe();
+    let task = a
+        .core
+        .transfer
+        .fetch_file(&peer_info(&b), "shared/doc.txt", Some(dest.clone()))
+        .await
+        .unwrap();
+    assert!(
+        timeout(WAIT, wait_terminal(ev, &task)).await.unwrap(),
+        "full device pulls successfully"
+    );
+    // 落盘相对路径剥掉了顶层分组段「shared」
+    assert_eq!(
+        tokio::fs::read(dest.join("doc.txt")).await.unwrap(),
+        b"pull me over ATP!"
+    );
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn restart_marks_stale_tasks_failed() {
     let dir = tempfile::tempdir().unwrap();

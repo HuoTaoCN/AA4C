@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+mod fetch;
 mod path;
 mod progress;
 mod recv;
@@ -56,6 +57,27 @@ pub trait IncomingIndexDispatch: Send + Sync + 'static {
     fn dispatch(&self, stream: IncomingTlsStream, peer_id: DeviceId);
 }
 
+/// 解析成功的待回推文件（里程碑 4 按需拉取）。
+pub struct ResolvedFetch {
+    /// 本机绝对路径。
+    pub abs: PathBuf,
+    /// 回送给拉取方的展示限定路径（原样回声，便于其归并/转绿）。
+    pub rel_path: String,
+    pub size: u64,
+}
+
+/// 共享文件解析器（里程碑 4）：把拉取方请求的限定展示路径解析为本机共享文件。
+///
+/// 由 Core 注入：完全信任校验 + 「路径必须落在某个共享范围内」的边界都在实现里把关，
+/// 传输层只在解析成功后反转角色回推。返回 `None` = 拒绝（传输层回 `Cancel`）。
+pub trait SharedFileResolver: Send + Sync + 'static {
+    fn resolve(&self, peer_id: DeviceId, rel_path: String) -> ResolveFuture;
+}
+
+/// [`SharedFileResolver::resolve`] 的返回（避免引入 async-trait 依赖）。
+pub type ResolveFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<ResolvedFetch>> + Send>>;
+
 /// 接收方用户决定：（是否接收，保存目录覆盖）。
 type AcceptDecision = (bool, Option<PathBuf>);
 
@@ -94,6 +116,8 @@ pub struct TransferService {
     pub(crate) pair_dispatch: OnceLock<Arc<dyn IncomingPairDispatch>>,
     /// 索引分流钩子（Core 注入；未注入时入站 `IndexRequest` 直接断开）。
     pub(crate) index_dispatch: OnceLock<Arc<dyn IncomingIndexDispatch>>,
+    /// 共享文件解析器（Core 注入；未注入时入站 `FetchRequest` 直接断开）。
+    pub(crate) fetch_resolver: OnceLock<Arc<dyn SharedFileResolver>>,
 }
 
 impl TransferService {
@@ -114,6 +138,7 @@ impl TransferService {
             send_permits: Arc::new(Semaphore::new(permits)),
             pair_dispatch: OnceLock::new(),
             index_dispatch: OnceLock::new(),
+            fetch_resolver: OnceLock::new(),
         })
     }
 
@@ -125,6 +150,11 @@ impl TransferService {
     /// 注入索引分流钩子（Core 在装配阶段调用一次）。重复设置无效。
     pub fn set_index_dispatch(&self, dispatch: Arc<dyn IncomingIndexDispatch>) {
         let _ = self.index_dispatch.set(dispatch);
+    }
+
+    /// 注入共享文件解析器（Core 在装配阶段调用一次）。重复设置无效。
+    pub fn set_fetch_resolver(&self, resolver: Arc<dyn SharedFileResolver>) {
+        let _ = self.fetch_resolver.set(resolver);
     }
 
     /// 启动 TLS 监听。`port` 被占用时自动向后递增（最多 16 个），返回实际端口。
@@ -264,6 +294,44 @@ impl TransferService {
             }
         }
         Err(Aa4cError::Protocol("index stream too long".into()))
+    }
+
+    /// 向某完全信任设备按需拉取一个共享文件（SYNC_DESIGN.md §4，里程碑 4）。
+    ///
+    /// 立即返回 A 侧 `task_id`（进度走事件总线）；连接、`FetchRequest`、自动接受、接收落盘
+    /// 由后台任务驱动。`rel_path` 为统一视图的限定展示路径；`save_dir` 缺省为 Inbox。
+    pub async fn fetch_file(
+        self: &Arc<Self>,
+        peer: &DeviceInfo,
+        rel_path: &str,
+        save_dir: Option<PathBuf>,
+    ) -> Result<TaskId> {
+        let record = self
+            .store
+            .get_device(&peer.id)
+            .await?
+            .filter(|d| d.trusted)
+            .ok_or_else(|| Aa4cError::NotPaired(peer.id.clone()))?;
+        let addr = peer
+            .addr
+            .or_else(|| record.last_addr.as_deref().and_then(|s| s.parse().ok()))
+            .ok_or_else(|| Aa4cError::DeviceNotFound(peer.id.clone()))?;
+
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let job = fetch::FetchJob {
+            task_id: task_id.clone(),
+            peer_id: peer.id.clone(),
+            addr,
+            rel_path: rel_path.to_string(),
+            save_dir,
+        };
+        let svc = self.clone();
+        let permits = self.send_permits.clone();
+        tokio::spawn(async move {
+            let _permit = permits.acquire_owned().await;
+            fetch::run(svc, job).await;
+        });
+        Ok(task_id)
     }
 
     /// 接收端用户确认（save_dir 为空使用默认目录）。
