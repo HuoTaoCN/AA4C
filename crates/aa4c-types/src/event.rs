@@ -55,6 +55,9 @@ pub enum CoreEvent {
         task_id: TaskId,
         error: String,
     },
+
+    /// 本机同步索引发生变化（扫描完成），UI 应重新拉取统一文件视图。
+    SyncIndexUpdated,
 }
 
 impl CoreEvent {
@@ -71,6 +74,7 @@ impl CoreEvent {
             Self::TransferProgress { .. } => "transfer_progress",
             Self::TransferDone { .. } => "transfer_done",
             Self::TransferFailed { .. } => "transfer_failed",
+            Self::SyncIndexUpdated => "sync_index_updated",
         }
     }
 }

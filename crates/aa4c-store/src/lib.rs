@@ -15,7 +15,8 @@ use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aa4c_types::{
-    Aa4cError, DeviceId, Result, TaskId, TransferFile, TransferStatus, TransferTask, TrustLevel,
+    Aa4cError, DeviceId, Result, ScopeKind, SyncFileEntry, SyncScope, TaskId, TransferFile,
+    TransferStatus, TransferTask, TrustLevel,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -365,6 +366,213 @@ impl Store {
         })
         .await
     }
+
+    // —— 同步范围 + 本地文件索引（SYNC_DESIGN.md §3/§6，DATABASE_SCHEMA.md §4.2-4.3）——
+
+    /// 新建一个共享范围；按 `local_path` 去重（已存在则原样返回）。
+    pub async fn upsert_sync_scope(&self, kind: ScopeKind, local_path: &str) -> Result<SyncScope> {
+        let local_path = local_path.to_owned();
+        self.call(move |conn| {
+            if let Some(existing) = conn
+                .query_row(
+                    "SELECT id, kind, local_path, created_at FROM sync_scopes WHERE local_path = ?1",
+                    params![local_path],
+                    row_to_scope,
+                )
+                .optional()
+                .map_err(db_err)?
+            {
+                return Ok(existing);
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = now_ms();
+            conn.execute(
+                "INSERT INTO sync_scopes (id, kind, local_path, mode, created_at)
+                 VALUES (?1, ?2, ?3, 'ondemand', ?4)",
+                params![id, kind.as_str(), local_path, now],
+            )
+            .map_err(db_err)?;
+            Ok(SyncScope {
+                id,
+                kind,
+                local_path,
+                created_at: now,
+            })
+        })
+        .await
+    }
+
+    /// 确保 Inbox 范围存在并指向 `local_path`（全局唯一一个）；路径变化时原地更新——
+    /// 旧路径下的条目会在下次扫描时随 `replace_scope_index` 一起被清空。
+    pub async fn ensure_inbox_scope(&self, local_path: &str) -> Result<SyncScope> {
+        let local_path = local_path.to_owned();
+        self.call(move |conn| {
+            let existing: Option<SyncScope> = conn
+                .query_row(
+                    "SELECT id, kind, local_path, created_at FROM sync_scopes WHERE kind = 'inbox'",
+                    [],
+                    row_to_scope,
+                )
+                .optional()
+                .map_err(db_err)?;
+            if let Some(mut scope) = existing {
+                if scope.local_path != local_path {
+                    conn.execute(
+                        "UPDATE sync_scopes SET local_path = ?2 WHERE id = ?1",
+                        params![scope.id, local_path],
+                    )
+                    .map_err(db_err)?;
+                    scope.local_path = local_path;
+                }
+                return Ok(scope);
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = now_ms();
+            conn.execute(
+                "INSERT INTO sync_scopes (id, kind, local_path, mode, created_at)
+                 VALUES (?1, 'inbox', ?2, 'ondemand', ?3)",
+                params![id, local_path, now],
+            )
+            .map_err(db_err)?;
+            Ok(SyncScope {
+                id,
+                kind: ScopeKind::Inbox,
+                local_path,
+                created_at: now,
+            })
+        })
+        .await
+    }
+
+    pub async fn list_sync_scopes(&self) -> Result<Vec<SyncScope>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, kind, local_path, created_at FROM sync_scopes ORDER BY created_at",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], row_to_scope)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 删除一个共享范围（级联删除其索引条目）。
+    pub async fn remove_sync_scope(&self, id: &str) -> Result<()> {
+        let id = id.to_owned();
+        self.call(move |conn| {
+            conn.execute("DELETE FROM sync_scopes WHERE id = ?1", params![id])
+                .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 某范围当前索引（扫描时用于和文件系统比对 mtime/size，决定是否重新哈希）。
+    pub async fn list_scope_index(&self, scope_id: &str) -> Result<Vec<SyncFileEntry>> {
+        let scope_id = scope_id.to_owned();
+        self.call(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT scope_id, rel_path, size, mtime, hash, present_local
+                     FROM sync_file_index WHERE scope_id = ?1",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map(params![scope_id], row_to_sync_file_entry)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 全部范围的索引并集（统一视图）。
+    pub async fn list_all_sync_files(&self) -> Result<Vec<SyncFileEntry>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT scope_id, rel_path, size, mtime, hash, present_local
+                     FROM sync_file_index ORDER BY rel_path",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], row_to_sync_file_entry)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 用一次扫描结果整体替换某范围的索引：删除扫描中已消失的条目，插入/更新现存条目（单事务）。
+    pub async fn replace_scope_index(
+        &self,
+        scope_id: &str,
+        entries: Vec<SyncFileEntry>,
+    ) -> Result<()> {
+        let scope_id = scope_id.to_owned();
+        self.call(move |conn| {
+            let tx = conn.transaction().map_err(db_err)?;
+            let keep: std::collections::HashSet<&str> =
+                entries.iter().map(|e| e.rel_path.as_str()).collect();
+            {
+                let mut stmt = tx
+                    .prepare("SELECT rel_path FROM sync_file_index WHERE scope_id = ?1")
+                    .map_err(db_err)?;
+                let existing: Vec<String> = stmt
+                    .query_map(params![scope_id], |r| r.get(0))
+                    .map_err(db_err)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(db_err)?;
+                let mut del = tx
+                    .prepare("DELETE FROM sync_file_index WHERE scope_id = ?1 AND rel_path = ?2")
+                    .map_err(db_err)?;
+                for rel in existing {
+                    if !keep.contains(rel.as_str()) {
+                        del.execute(params![scope_id, rel]).map_err(db_err)?;
+                    }
+                }
+            }
+            let now = now_ms();
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "INSERT INTO sync_file_index
+                           (scope_id, rel_path, size, mtime, hash, present_local, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                         ON CONFLICT(scope_id, rel_path) DO UPDATE SET
+                           size = excluded.size,
+                           mtime = excluded.mtime,
+                           hash = excluded.hash,
+                           present_local = excluded.present_local,
+                           updated_at = excluded.updated_at",
+                    )
+                    .map_err(db_err)?;
+                for e in &entries {
+                    stmt.execute(params![
+                        scope_id,
+                        e.rel_path,
+                        i64::try_from(e.size).unwrap_or(i64::MAX),
+                        e.mtime,
+                        e.hash,
+                        e.present_local,
+                        now,
+                    ])
+                    .map_err(db_err)?;
+                }
+            }
+            tx.commit().map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 fn open_and_migrate(path: &Path) -> Result<Connection> {
@@ -426,6 +634,26 @@ fn row_to_file(row: &rusqlite::Row<'_>) -> rusqlite::Result<TransferFile> {
         size: get_u64(row, 1)?,
         hash: row.get(2)?,
         status: parse_col(row, 3)?,
+    })
+}
+
+fn row_to_scope(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncScope> {
+    Ok(SyncScope {
+        id: row.get(0)?,
+        kind: parse_col(row, 1)?,
+        local_path: row.get(2)?,
+        created_at: row.get(3)?,
+    })
+}
+
+fn row_to_sync_file_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncFileEntry> {
+    Ok(SyncFileEntry {
+        scope_id: row.get(0)?,
+        rel_path: row.get(1)?,
+        size: get_u64(row, 2)?,
+        mtime: row.get(3)?,
+        hash: row.get(4)?,
+        present_local: row.get(5)?,
     })
 }
 

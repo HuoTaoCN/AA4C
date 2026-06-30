@@ -64,6 +64,27 @@ export interface Settings {
   listenPort: number;
 }
 
+/** 共享范围种类：用户选的同步文件夹，或固定的「收到的」(自动维护)。 */
+export type ScopeKind = "folder" | "inbox";
+
+export interface SyncScope {
+  id: string;
+  kind: ScopeKind;
+  localPath: string;
+  /** unix 毫秒。 */
+  createdAt: number;
+}
+
+/** 本机文件索引条目（V0.2 里程碑 2：跨设备黄/红状态留待后续里程碑）。 */
+export interface SyncFileEntry {
+  scopeId: string;
+  relPath: string;
+  size: number;
+  mtime: number;
+  hash: string | null;
+  presentLocal: boolean;
+}
+
 /** Command 失败时后端返回的形状（API_DESIGN §9.1）。 */
 export interface CommandError {
   code: string;

@@ -24,10 +24,11 @@
 | V0.2 设计 | ✅ | `6d56ed5` | 新增 [SYNC_DESIGN.md](SYNC_DESIGN.md)：信任分级 + 跨设备文件索引 + 绿/黄/红状态可视化设计 |
 | 产品重新定位 | ✅ | `8e02b27` | 品牌改「AA连接（AA4C）」、设备连接平台定位、连接优先五阶段路线；移动端确认沿用 Tauri 2 |
 | 前端能力架构 + UI 预览 | ✅ | `2e78590`/`194286e`/`148e326` | 五大能力导航（传输/同步/分享/下载/归档）+ PC/移动两套外壳；同步页目录树预览 + 信任分级前移到配对成功弹窗 |
-| **V0.2 信任分级（第一步）** | ✅ | `b12d739` | `devices.trust_level` 落库（迁移 `002_trust.sql`）+ `set_trust_level` 命令端到端打通，配对默认 friend，「我的设备/朋友」UI 接真实后端 |
-| **v0.2.0-preview 发布** | 🚀 进行中 | — | 打包预览版：品牌 + 新 UI + 信任分级随安装包/APK 发布 |
+| V0.2 信任分级（第一步） | ✅ | `b12d739` | `devices.trust_level` 落库（迁移 `002_trust.sql`）+ `set_trust_level` 命令端到端打通，配对默认 friend，「我的设备/朋友」UI 接真实后端 |
+| v0.2.0-preview 发布 | ✅ | `0ac48f6` | 打包预览版：品牌 + 新 UI + 信任分级随安装包/APK 发布（GitHub Release，prerelease） |
+| **V0.2 同步里程碑 2** | 🚀 进行中 | — | 共享范围 + 本地索引扫描 + Inbox 落点（`003_sync.sql`，`aa4c-core/src/sync_index.rs`），「同步」页接真实文件；尚未联调真机/未跑 `pnpm tauri dev` 实测 UI |
 
-整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。V0.2 进行中：信任分级数据模型已落地，跨设备文件索引/同步（SYNC_DESIGN.md §10 里程碑 2–5）待续。
+整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。V0.2 进行中：信任分级数据模型已落地，本地同步索引（里程碑 2）刚完成，跨设备索引交换/同步（SYNC_DESIGN.md §10 里程碑 3–5）待续。
 
 ### 已实现 crate 概览（`crates/`）
 
@@ -120,14 +121,15 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：V0.2 同步 —— 共享范围 + 本地索引 + Inbox
+## 四、下一步：V0.2 同步 —— 索引摘要交换 + 跨设备统一视图
 
-`v0.2.0-preview` 已发：品牌重塑、五能力导航 UI、信任分级（`devices.trust_level`）端到端打通。下一步按 [SYNC_DESIGN.md](SYNC_DESIGN.md) §10 里程碑 2 继续：
+里程碑 1（信任分级）、里程碑 2（共享范围 + 本地索引 + Inbox）已完成，「同步」页已接真实本机文件。下一步按 [SYNC_DESIGN.md](SYNC_DESIGN.md) §10 继续：
 
-- **里程碑 2**：`sync_scopes` 共享范围 + 本地文件索引（`notify` 监听 + 定时扫描兜底，哈希惰性计算）+ Inbox 落点（见 §5）
-- **里程碑 3**：索引摘要交换协议（`IndexSummary`/`IndexEntries`）+ `remote_index` + 统一视图（绿/黄/红，只读）
+- **里程碑 3（下一步）**：索引摘要交换协议（`IndexSummary`/`IndexEntries`）+ `remote_index` + 统一视图（绿/黄/红，只读）——这一步上线后「可下载」(黄)/"设备离线"(红) 才会真正出现
 - **里程碑 4**：按需拉取（复用现有 ATP `Offer`/分块传输）
 - **里程碑 5**：冲突标记（同名不同 hash 加序号）与人工解决
+- **未完成的里程碑 2 尾巴**（可随时补，不阻塞里程碑 3）：`notify` 文件系统实时监听（当前只有定时扫描 300s + 传输完成触发）、Inbox 按来源设备+时间分组展示
+- **里程碑 2 尚未做的验证**：还没有跑 `pnpm tauri dev` 实际点过「添加同步文件夹」/「移除」/「重新扫描」按钮，只验证到 `cargo test --workspace` + `pnpm build`（类型检查）这一层——真机/真实 GUI 验证留给下一次会话或用户自测
 
 > ⚠️ v0.2.0-preview 与 v0.1.x 配对协议不兼容（`DeviceInfo` 新增 `trust_level` 字段）。真机联调请确保两端都是 v0.2.0-preview 起的版本。
 
@@ -160,4 +162,4 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - **`cargo test --workspace` 会跨 crate 并行跑测试二进制**，单独 `cargo test -p X` 过不代表 workspace 过。提交前务必跑一次完整 `cargo test --workspace`。
 - **lib 内联单测 ≠ 集成测试**：`cargo test -p X --test Y` 只跑集成测试，漏掉 `src/*.rs` 里的 `#[cfg(test)]`。要 `--lib` 或直接 `--workspace` 覆盖全部。
 
-对 Agent 直接说"**开始 V0.2 里程碑 2**"（共享范围 + 本地索引 + Inbox）即可继续，详见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §10。
+对 Agent 直接说"**开始 V0.2 里程碑 3**"（索引摘要交换 + `remote_index` + 统一视图）即可继续，详见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §10。

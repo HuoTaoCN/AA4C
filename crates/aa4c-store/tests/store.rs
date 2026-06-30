@@ -2,7 +2,8 @@
 
 use aa4c_store::{DeviceRecord, Store};
 use aa4c_types::{
-    Direction, FileStatus, Platform, TransferFile, TransferStatus, TransferTask, TrustLevel,
+    Direction, FileStatus, Platform, ScopeKind, SyncFileEntry, TransferFile, TransferStatus,
+    TransferTask, TrustLevel,
 };
 
 fn sample_device(id: &str, trusted: bool) -> DeviceRecord {
@@ -62,7 +63,7 @@ async fn migration_is_idempotent_across_reopens() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 2); // 001_init + 002_trust
+    assert_eq!(version, 3); // 001_init + 002_trust + 003_sync
 }
 
 #[tokio::test]
@@ -202,6 +203,92 @@ async fn settings_roundtrip_and_overwrite() {
         store.get_setting("device_name").await.unwrap().as_deref(),
         Some("\"客厅电脑\"")
     );
+}
+
+#[tokio::test]
+async fn sync_scope_index_diffing_and_cascade_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    let scope = store
+        .upsert_sync_scope(ScopeKind::Folder, "/Users/x/Photos")
+        .await
+        .unwrap();
+    assert_eq!(scope.kind, ScopeKind::Folder);
+
+    // 同路径再 upsert 一次：返回同一行，不重复创建
+    let again = store
+        .upsert_sync_scope(ScopeKind::Folder, "/Users/x/Photos")
+        .await
+        .unwrap();
+    assert_eq!(again.id, scope.id);
+    assert_eq!(store.list_sync_scopes().await.unwrap().len(), 1);
+
+    let entry = |rel: &str, size: u64| SyncFileEntry {
+        scope_id: scope.id.clone(),
+        rel_path: rel.into(),
+        size,
+        mtime: 1000,
+        hash: Some("h1".into()),
+        present_local: true,
+    };
+    store
+        .replace_scope_index(&scope.id, vec![entry("a.jpg", 1), entry("b.jpg", 2)])
+        .await
+        .unwrap();
+    let mut idx = store.list_scope_index(&scope.id).await.unwrap();
+    idx.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    assert_eq!(idx.len(), 2);
+    assert_eq!(idx[0].rel_path, "a.jpg");
+
+    // 第二次扫描：a.jpg 消失、b.jpg 改了 size、新增 c.jpg —— 一次性 diff 落库
+    store
+        .replace_scope_index(&scope.id, vec![entry("b.jpg", 99), entry("c.jpg", 3)])
+        .await
+        .unwrap();
+    let mut idx2 = store.list_scope_index(&scope.id).await.unwrap();
+    idx2.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    let rels: Vec<_> = idx2.iter().map(|e| e.rel_path.as_str()).collect();
+    assert_eq!(rels, vec!["b.jpg", "c.jpg"]);
+    assert_eq!(idx2[0].size, 99);
+
+    assert_eq!(store.list_all_sync_files().await.unwrap().len(), 2);
+
+    // 删除范围级联清空其索引
+    store.remove_sync_scope(&scope.id).await.unwrap();
+    assert!(store.list_sync_scopes().await.unwrap().is_empty());
+    assert!(store.list_all_sync_files().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn ensure_inbox_scope_is_singleton_and_path_mutable() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    let inbox = store
+        .ensure_inbox_scope("/Users/x/Downloads/AA4C")
+        .await
+        .unwrap();
+    assert_eq!(inbox.kind, ScopeKind::Inbox);
+
+    // 路径不变：原地返回同一条
+    let same = store
+        .ensure_inbox_scope("/Users/x/Downloads/AA4C")
+        .await
+        .unwrap();
+    assert_eq!(same.id, inbox.id);
+
+    // save_dir 变更：同一条记录原地更新路径，不会新增一行
+    let moved = store
+        .ensure_inbox_scope("/Users/x/AA4C-Inbox")
+        .await
+        .unwrap();
+    assert_eq!(moved.id, inbox.id);
+    assert_eq!(moved.local_path, "/Users/x/AA4C-Inbox");
+
+    let scopes = store.list_sync_scopes().await.unwrap();
+    assert_eq!(scopes.len(), 1);
+    assert_eq!(scopes[0].local_path, "/Users/x/AA4C-Inbox");
 }
 
 #[tokio::test]

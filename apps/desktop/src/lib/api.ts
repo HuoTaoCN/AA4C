@@ -6,6 +6,8 @@ import type {
   CommandError,
   DeviceInfo,
   Settings,
+  SyncFileEntry,
+  SyncScope,
   TransferTask,
   TrustLevel,
 } from "./types";
@@ -35,6 +37,12 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   updateSettings: (settings: Settings) =>
     invoke<void>("update_settings", { settings }),
+
+  listSyncScopes: () => invoke<SyncScope[]>("list_sync_scopes"),
+  addSyncScope: (path: string) => invoke<SyncScope>("add_sync_scope", { path }),
+  removeSyncScope: (id: string) => invoke<void>("remove_sync_scope", { id }),
+  listSyncFiles: () => invoke<SyncFileEntry[]>("list_sync_files"),
+  rescanSync: () => invoke<void>("rescan_sync"),
 };
 
 /** 把任意 reject 值收敛为 CommandError（兜底未知错误）。 */

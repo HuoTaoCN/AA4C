@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use aa4c_types::{
-    Aa4cError, DeviceId, DeviceInfo, Result, Settings, TaskId, TransferTask, TrustLevel,
+    Aa4cError, CoreEvent, DeviceId, DeviceInfo, Result, ScopeKind, Settings, SyncFileEntry,
+    SyncScope, TaskId, TransferTask, TrustLevel,
 };
 
-use crate::{settings, Core};
+use crate::{settings, sync_index, Core};
 
 impl Core {
     /// 已发现（在线）+ 已配对（可能离线）设备合并，按 id 去重。
@@ -128,6 +129,55 @@ impl Core {
         if new.device_name != old.device_name {
             self.discovery.rebroadcast(new.device_name).await?;
         }
+        if new.save_dir != old.save_dir {
+            let inbox = self.store.ensure_inbox_scope(&new.save_dir).await?;
+            sync_index::scan_scope(&self.store, &inbox).await?;
+            let _ = self.events.send(CoreEvent::SyncIndexUpdated);
+        }
+        Ok(())
+    }
+
+    // —— 同步：共享范围 + 本地索引（SYNC_DESIGN.md §3/§6，里程碑 2）——
+
+    /// 列出共享范围（含自动维护的 Inbox）。
+    pub async fn list_sync_scopes(&self) -> Result<Vec<SyncScope>> {
+        self.store.list_sync_scopes().await
+    }
+
+    /// 添加一个同步文件夹，立即扫描一次。
+    pub async fn add_sync_scope(&self, local_path: PathBuf) -> Result<SyncScope> {
+        let scope = self
+            .store
+            .upsert_sync_scope(ScopeKind::Folder, &local_path.to_string_lossy())
+            .await?;
+        sync_index::scan_scope(&self.store, &scope).await?;
+        let _ = self.events.send(CoreEvent::SyncIndexUpdated);
+        Ok(scope)
+    }
+
+    /// 移除一个共享范围（Inbox 不可移除，自动维护）。
+    pub async fn remove_sync_scope(&self, id: &str) -> Result<()> {
+        let scopes = self.store.list_sync_scopes().await?;
+        if scopes
+            .iter()
+            .any(|s| s.id == id && s.kind == ScopeKind::Inbox)
+        {
+            return Err(Aa4cError::Protocol("inbox scope cannot be removed".into()));
+        }
+        self.store.remove_sync_scope(id).await?;
+        let _ = self.events.send(CoreEvent::SyncIndexUpdated);
+        Ok(())
+    }
+
+    /// 统一文件视图（V0.2 里程碑 2：仅本机索引，跨设备黄/红状态留待后续里程碑）。
+    pub async fn list_sync_files(&self) -> Result<Vec<SyncFileEntry>> {
+        self.store.list_all_sync_files().await
+    }
+
+    /// 手动触发全部共享范围重新扫描。
+    pub async fn rescan_sync(&self) -> Result<()> {
+        sync_index::rescan_all(&self.store).await?;
+        let _ = self.events.send(CoreEvent::SyncIndexUpdated);
         Ok(())
     }
 

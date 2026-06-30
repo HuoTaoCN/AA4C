@@ -122,7 +122,10 @@ devices 1 ──── n transfer_tasks 1 ──── n transfer_files
 
 ## 4. V0.2 表结构（信任分级 + 跨设备索引设计）
 
-> §4.1 `devices.trust_level` **已实现**（迁移 `002_trust.sql`，user_version=2）；§4.2–4.5 仍为设计定稿、尚未建表，随后续阶段落地。完整设计见 [SYNC_DESIGN.md](SYNC_DESIGN.md)。
+> §4.1 `devices.trust_level`、§4.2 `sync_scopes`、§4.3 `sync_file_index` **已实现**
+> （迁移 `002_trust.sql` + `003_sync.sql`，user_version=3）；§4.4 `remote_index`、
+> §4.5 `sync_conflicts` 仍为设计定稿、尚未建表，随后续里程碑落地。
+> 完整设计见 [SYNC_DESIGN.md](SYNC_DESIGN.md)。
 
 ### 4.1 devices 增列 —— 信任分级（已实现）
 
@@ -134,7 +137,7 @@ ALTER TABLE devices ADD COLUMN trust_level TEXT NOT NULL DEFAULT 'friend'
 - 旧数据回填：`trusted=1` 的行 → `trust_level='friend'`，用户可在设置升级为 `full`。
 - 仅 `full`（完全信任）设备参与跨设备索引与同步。
 
-### 4.2 sync_scopes —— 共享范围
+### 4.2 sync_scopes —— 共享范围（已实现）
 
 ```sql
 CREATE TABLE sync_scopes (
@@ -145,9 +148,15 @@ CREATE TABLE sync_scopes (
                 CHECK (mode IN ('ondemand','mirror')),  -- V0.2 首版只用 ondemand
     created_at  INTEGER NOT NULL
 );
+
+CREATE UNIQUE INDEX idx_sync_scopes_path ON sync_scopes(local_path);
 ```
 
-### 4.3 sync_file_index —— 本机文件索引
+- `local_path` 唯一：同一文件夹不会被重复添加为两个范围。
+- Inbox 是全局唯一一行（`kind='inbox'`），由 `Store::ensure_inbox_scope` 维护；
+  `save_dir` 设置变化时原地更新 `local_path`，旧路径下的条目随下次扫描清空。
+
+### 4.3 sync_file_index —— 本机文件索引（已实现）
 
 ```sql
 CREATE TABLE sync_file_index (
@@ -162,6 +171,15 @@ CREATE TABLE sync_file_index (
     UNIQUE (scope_id, rel_path)
 );
 ```
+
+- 维护者：`aa4c-core` 的 `sync_index::scan_scope`（遍历范围目录，mtime+size 未变复用旧
+  hash，否则重新算 BLAKE3），结果整体写入 `Store::replace_scope_index`（单事务 diff：
+  删除已消失的条目、插入/更新现存条目）。
+- V0.2 里程碑 2 范围内 `present_local` 恒为 `1`（只有本机扫描出的条目）；跨设备的
+  `present_local=0` 条目要等 §4.4 `remote_index` 落地才会出现于统一视图。
+- 触发时机：启动时扫一次、每 300s 定时全量重扫、任意一次传输完成后追加一次重扫
+  （`aa4c-core/src/sync_index.rs` 的 `spawn_background_scan`）。文件系统实时监听
+  （`notify` crate）留给后续里程碑，见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §11。
 
 ### 4.4 remote_index —— 远端设备广播来的条目
 

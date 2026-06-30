@@ -11,6 +11,7 @@ import {
 import { useDeviceStore } from "../stores/devices";
 import { usePairingStore } from "../stores/pairing";
 import { useSettingsStore } from "../stores/settings";
+import { useSyncStore } from "../stores/sync";
 import { useToastStore } from "../stores/toast";
 import { useTransferStore } from "../stores/transfer";
 import type {
@@ -45,6 +46,7 @@ export async function startEventBridge(): Promise<UnlistenFn> {
   const pairing = usePairingStore();
   const transfer = useTransferStore();
   const settings = useSettingsStore();
+  const sync = useSyncStore();
   const toast = useToastStore();
 
   const unlisten = await Promise.all([
@@ -94,6 +96,8 @@ export async function startEventBridge(): Promise<UnlistenFn> {
       transfer.onFailed(e.payload.taskId);
       toast.push("error", e.payload.error || "传输失败，请重试");
     }),
+
+    listen<null>("aa4c://sync_index_updated", () => void sync.load()),
   ]);
 
   return () => unlisten.forEach((fn) => fn());

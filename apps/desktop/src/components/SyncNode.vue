@@ -2,7 +2,7 @@
 import { ref } from "vue";
 import { useToastStore } from "../stores/toast";
 import { humanBytes } from "../lib/format";
-import { statusLabel, type SyncNode } from "../lib/sync-preview";
+import { statusLabel, type SyncNode } from "../lib/sync-tree";
 
 const props = defineProps<{ node: SyncNode; depth: number }>();
 defineOptions({ name: "SyncNode" });
@@ -20,7 +20,7 @@ function onFile() {
       f.owners.length > 1
         ? `将同时从「${f.owners.join("、")}」取回 ${f.name}（多设备并行，更快）`
         : `将从「${f.owners[0]}」取回 ${f.name}`;
-    toast.push("info", `${msg}（同步功能 V0.2 上线）`);
+    toast.push("info", `${msg}（跨设备拉取即将上线）`);
   } else if (f.status === "offline") {
     toast.push("info", `「${f.owners[0]}」当前离线，等它上线后即可取回`);
   } else {

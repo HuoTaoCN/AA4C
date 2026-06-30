@@ -9,6 +9,7 @@
 mod dispatch;
 mod orchestrate;
 mod settings;
+mod sync_index;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -148,6 +149,17 @@ impl Core {
         // 7. mDNS 广播 + 浏览（用真实端口）
         let discovery = Arc::new(DiscoveryService::new(self_info.clone(), events.clone())?);
         discovery.start(actual_port).await?;
+
+        // 8. 同步：Inbox 落点 + 初始扫描，并启动后台扫描循环（SYNC_DESIGN.md §3/§5，里程碑 2）
+        match store.ensure_inbox_scope(&current.save_dir).await {
+            Ok(inbox) => {
+                if let Err(e) = sync_index::scan_scope(&store, &inbox).await {
+                    tracing::warn!(error = %e, "initial sync scan failed");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "ensure inbox scope failed"),
+        }
+        sync_index::spawn_background_scan(store.clone(), events.clone());
 
         tracing::info!(
             device = %self_info.name,

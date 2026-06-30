@@ -10,6 +10,7 @@ import ToastHost from "./components/ToastHost.vue";
 
 import { useDeviceStore } from "./stores/devices";
 import { useSettingsStore } from "./stores/settings";
+import { useSyncStore } from "./stores/sync";
 import { useTransferStore } from "./stores/transfer";
 import { useToastStore } from "./stores/toast";
 import { startEventBridge } from "./lib/events";
@@ -17,6 +18,7 @@ import { asCommandError } from "./lib/api";
 
 const devices = useDeviceStore();
 const settings = useSettingsStore();
+const sync = useSyncStore();
 const transfer = useTransferStore();
 const toast = useToastStore();
 
@@ -38,6 +40,7 @@ onMounted(async () => {
       devices.loadDevices(),
       settings.load(),
       transfer.loadHistory(),
+      sync.load(),
     ]);
   } catch (e) {
     toast.push("error", asCommandError(e).message);

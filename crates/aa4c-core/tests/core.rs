@@ -27,6 +27,8 @@ async fn spawn_node() -> Node {
     let dir = tempfile::tempdir().unwrap();
     let mut config = CoreConfig::new(dir.path().to_path_buf());
     config.listen_port = 0; // ephemeral，避免双实例端口冲突
+                            // 不用真实下载目录：否则启动时的 Inbox 初始扫描会扫到测试机的真实文件
+    config.transfer.default_save_dir = dir.path().join("downloads");
     let core = Core::start(config).await.expect("core starts");
     Node { core, _dir: dir }
 }
@@ -148,6 +150,7 @@ async fn restart_marks_stale_tasks_failed() {
     {
         let mut config = CoreConfig::new(dir.path().to_path_buf());
         config.listen_port = 0;
+        config.transfer.default_save_dir = dir.path().join("downloads");
         let core = Core::start(config).await.unwrap();
         // 任务的 peer 需先存在于 devices 表（外键约束）
         core.store
@@ -185,6 +188,7 @@ async fn restart_marks_stale_tasks_failed() {
     // 第二次启动：遗留任务应被标记为失败
     let mut config = CoreConfig::new(dir.path().to_path_buf());
     config.listen_port = 0;
+    config.transfer.default_save_dir = dir.path().join("downloads");
     let core = Core::start(config).await.unwrap();
     let tasks = core.list_transfers(10, 0).await.unwrap();
     assert_eq!(tasks.len(), 1);

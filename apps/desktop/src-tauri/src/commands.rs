@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use aa4c_core::Core;
-use aa4c_types::{Aa4cError, CoreEvent, DeviceInfo, Settings, TransferTask, TrustLevel};
+use aa4c_types::{
+    Aa4cError, CoreEvent, DeviceInfo, Settings, SyncFileEntry, SyncScope, TransferTask, TrustLevel,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::State;
@@ -114,6 +116,31 @@ pub async fn update_settings(core: State<'_, Arc<Core>>, settings: Settings) -> 
     Ok(core.update_settings(settings).await?)
 }
 
+#[tauri::command]
+pub async fn list_sync_scopes(core: State<'_, Arc<Core>>) -> CmdResult<Vec<SyncScope>> {
+    Ok(core.list_sync_scopes().await?)
+}
+
+#[tauri::command]
+pub async fn add_sync_scope(core: State<'_, Arc<Core>>, path: String) -> CmdResult<SyncScope> {
+    Ok(core.add_sync_scope(PathBuf::from(path)).await?)
+}
+
+#[tauri::command]
+pub async fn remove_sync_scope(core: State<'_, Arc<Core>>, id: String) -> CmdResult<()> {
+    Ok(core.remove_sync_scope(&id).await?)
+}
+
+#[tauri::command]
+pub async fn list_sync_files(core: State<'_, Arc<Core>>) -> CmdResult<Vec<SyncFileEntry>> {
+    Ok(core.list_sync_files().await?)
+}
+
+#[tauri::command]
+pub async fn rescan_sync(core: State<'_, Arc<Core>>) -> CmdResult<()> {
+    Ok(core.rescan_sync().await?)
+}
+
 /// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。
 pub fn event_payload(event: &CoreEvent) -> Value {
     match event {
@@ -150,5 +177,6 @@ pub fn event_payload(event: &CoreEvent) -> Value {
         CoreEvent::TransferFailed { task_id, error } => {
             json!({ "taskId": task_id, "error": error })
         }
+        CoreEvent::SyncIndexUpdated => Value::Null,
     }
 }

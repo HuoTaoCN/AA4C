@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- V0.2 同步里程碑 2：共享范围 + 本地文件索引扫描 + Inbox 落点，「同步」页接上真实文件（不再是示例数据）。`sync_scopes` / `sync_file_index` 落库（迁移 `003_sync.sql`）；`aa4c-core` 新增扫描器（mtime+size 未变复用旧 BLAKE3、变化则重算，跳过隐藏文件与 `.aa4c-part` 临时文件），启动时扫一次、之后每 300s 定时全量重扫，任意一次传输完成也会追加一次扫描；`save_dir` 变更时 Inbox 范围自动跟随并清空旧路径下的索引。新增 Tauri 命令 `list_sync_scopes` / `add_sync_scope` / `remove_sync_scope` / `list_sync_files` / `rescan_sync` 与 `sync_index_updated` 事件。「同步」页支持添加/移除同步文件夹、手动重新扫描；统一文件视图当前恒为绿（本地有）——跨设备黄/红状态待里程碑 3 的索引摘要交换落地。文件系统实时监听（`notify`）暂未接入，先用定时扫描兜底（见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §11）。
+
 ## [0.2.0-preview] - 2026-06-29
 
 > **预览版**：品牌重塑 + 新能力导航 UI + 信任分级（第一步）已落地，跨设备文件索引/同步仍是设计稿（见 [SYNC_DESIGN.md](SYNC_DESIGN.md)），尚未实现。
