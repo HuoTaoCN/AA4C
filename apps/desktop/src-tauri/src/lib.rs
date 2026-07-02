@@ -89,6 +89,7 @@ pub fn run() {
             commands::list_unified_files,
             commands::refresh_remote_index,
             commands::fetch_file,
+            commands::list_conflicts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

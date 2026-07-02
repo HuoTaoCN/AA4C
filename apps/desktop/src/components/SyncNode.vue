@@ -24,7 +24,7 @@ async function onFile() {
     fetching.value = true;
     toast.push("info", `正在从「${f.owners[0]}」取回 ${f.name}…`);
     try {
-      await sync.fetch(f.relPath);
+      await sync.fetch(f.basePath, f.hash);
       // 内容拉到本机后扫描会自动把它转绿（事件驱动刷新），无需手动操作
       toast.push("success", `${f.name} 取回中，完成后会自动转为「本地有」`);
     } catch (e) {
@@ -63,6 +63,9 @@ async function onFile() {
   <div v-else class="row file" :style="indent(depth)" @click="onFile">
     <span class="fic">📄</span>
     <span class="nm">{{ node.name }}</span>
+    <span v-if="node.conflict" class="conflict" title="这个名字有多个不同版本，各自独立取回">
+      多版本
+    </span>
     <span class="pill" :class="node.status">
       <span class="dot"></span>{{ statusLabel(node.status) }}
     </span>
@@ -119,6 +122,23 @@ async function onFile() {
   font-size: 0.8rem;
   min-width: 96px;
   text-align: right;
+}
+
+/* 冲突（多版本）标记 */
+.conflict {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #7a5200;
+  background: #fff0d6;
+  white-space: nowrap;
+}
+@media (prefers-color-scheme: dark) {
+  .conflict {
+    color: #ffd591;
+    background: #4a3a16;
+  }
 }
 
 /* 状态标签：彩点 + 文字 */

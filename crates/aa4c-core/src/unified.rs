@@ -110,28 +110,50 @@ struct Accum {
     offline_holders: Vec<String>,
 }
 
+/// 冲突时给基准路径加序号：第 1 份保留原名，其余在文件名扩展名前插「 (n)」
+/// （`收到的/报告.pdf` → `收到的/报告 (2).pdf`）。
+fn numbered(base: &str, seq: usize) -> String {
+    if seq <= 1 {
+        return base.to_string();
+    }
+    let (dir, name) = match base.rfind('/') {
+        Some(i) => (&base[..=i], &base[i + 1..]),
+        None => ("", base),
+    };
+    let numbered = match name.rfind('.') {
+        Some(dot) if dot > 0 => format!("{} ({}){}", &name[..dot], seq, &name[dot..]),
+        _ => format!("{name} ({seq})"),
+    };
+    format!("{dir}{numbered}")
+}
+
 /// 纯函数归并：本机条目 + 远端条目 + 当前在线设备集合 + 设备名映射 → 统一视图。
 ///
-/// - 本机有 → 🟢 绿（`Local`）；
-/// - 本机没有但有在线持有设备 → 🟡 黄（`Online`）；
-/// - 本机没有且仅离线设备有 → 🔴 红（`Offline`）。
+/// 先按限定基准路径分组，再按 hash 拆分版本（SYNC_DESIGN.md §3.4 / §8）：
+/// - 同一路径只有一个 hash → 单条目，原名；
+/// - 同一路径多个不同 hash → 并列多条目、加序号区分、各带 `conflict=true`。
+///
+/// 每条目着色：本机有 → 🟢 绿；本机没有但有在线持有设备 → 🟡 黄；仅离线设备有 → 🔴 红。
 pub(crate) fn merge(
     local: Vec<LocalEntry>,
     remote: Vec<RemoteEntry>,
     online: &HashSet<DeviceId>,
     names: &HashMap<DeviceId, String>,
 ) -> Vec<UnifiedFile> {
-    let mut map: BTreeMap<String, Accum> = BTreeMap::new();
+    // (基准路径 → (hash 键 → 累积))；hash 键空串代表无 hash（正常不出现）
+    let mut map: BTreeMap<String, BTreeMap<String, Accum>> = BTreeMap::new();
     for l in local {
-        let acc = map.entry(l.rel_path).or_default();
+        let hk = l.hash.clone().unwrap_or_default();
+        let acc = map.entry(l.rel_path).or_default().entry(hk).or_default();
         acc.has_local = true;
         acc.size = l.size;
         acc.hash = l.hash;
     }
     for r in remote {
-        let acc = map.entry(r.rel_path).or_default();
-        if !acc.has_local && acc.hash.is_none() {
-            acc.size = r.size;
+        let hk = r.hash.clone().unwrap_or_default();
+        let acc = map.entry(r.rel_path).or_default().entry(hk).or_default();
+        acc.size = r.size;
+        if acc.hash.is_none() {
             acc.hash = r.hash;
         }
         let name = names
@@ -147,8 +169,18 @@ pub(crate) fn merge(
         }
     }
 
-    map.into_iter()
-        .map(|(rel_path, acc)| {
+    let mut out = Vec::new();
+    for (base, versions) in map {
+        let conflict = versions.len() > 1;
+        // 版本排序（决定序号）：本机有优先，其次有在线持有者，再按 hash 键稳定排序
+        let mut vs: Vec<Accum> = versions.into_values().collect();
+        vs.sort_by(|a, b| {
+            b.has_local
+                .cmp(&a.has_local)
+                .then((!b.online_holders.is_empty()).cmp(&(!a.online_holders.is_empty())))
+                .then(a.hash.cmp(&b.hash))
+        });
+        for (i, acc) in vs.into_iter().enumerate() {
             let status = if acc.has_local {
                 SyncStatus::Local
             } else if !acc.online_holders.is_empty() {
@@ -162,15 +194,18 @@ pub(crate) fn merge(
             }
             holders.extend(acc.online_holders);
             holders.extend(acc.offline_holders);
-            UnifiedFile {
-                rel_path,
+            out.push(UnifiedFile {
+                rel_path: numbered(&base, i + 1),
+                base_path: base.clone(),
                 size: acc.size,
                 hash: acc.hash,
                 status,
                 holders,
-            }
-        })
-        .collect()
+                conflict,
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -248,5 +283,68 @@ mod tests {
 
         assert_eq!(by["项目/offline.rs"].status, SyncStatus::Offline);
         assert_eq!(by["项目/offline.rs"].holders, vec!["旧手机"]);
+        // 单 hash → 非冲突，展示路径 == 基准路径
+        assert!(!by["项目/online.rs"].conflict);
+        assert_eq!(by["项目/online.rs"].base_path, "项目/online.rs");
+    }
+
+    #[test]
+    fn numbered_inserts_before_extension() {
+        assert_eq!(numbered("收到的/报告.pdf", 1), "收到的/报告.pdf");
+        assert_eq!(numbered("收到的/报告.pdf", 2), "收到的/报告 (2).pdf");
+        assert_eq!(numbered("no_ext", 2), "no_ext (2)");
+        assert_eq!(numbered("dir/.hidden", 2), "dir/.hidden (2)");
+    }
+
+    #[test]
+    fn merge_splits_same_path_different_hash_into_numbered_variants() {
+        let names: HashMap<DeviceId, String> = [
+            ("devA".to_string(), "客厅电脑".to_string()),
+            ("devB".to_string(), "旧手机".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let online: HashSet<DeviceId> = ["devA".to_string()].into_iter().collect();
+
+        // 本机有 h1；devA(在线) 有 h2；devB(离线) 有 h3 —— 同一路径三个不同版本
+        let out = merge(
+            vec![LocalEntry {
+                rel_path: "收到的/报告.pdf".into(),
+                size: 10,
+                hash: Some("h1".into()),
+            }],
+            vec![
+                RemoteEntry {
+                    device_id: "devA".into(),
+                    rel_path: "收到的/报告.pdf".into(),
+                    size: 20,
+                    hash: Some("h2".into()),
+                },
+                RemoteEntry {
+                    device_id: "devB".into(),
+                    rel_path: "收到的/报告.pdf".into(),
+                    size: 30,
+                    hash: Some("h3".into()),
+                },
+            ],
+            &online,
+            &names,
+        );
+        assert_eq!(out.len(), 3, "three distinct versions");
+        assert!(out.iter().all(|f| f.conflict));
+        assert!(out.iter().all(|f| f.base_path == "收到的/报告.pdf"));
+
+        // 排序：本机(绿) 第一（原名），在线(黄) 第二，离线(红) 第三
+        assert_eq!(out[0].rel_path, "收到的/报告.pdf");
+        assert_eq!(out[0].status, SyncStatus::Local);
+        assert_eq!(out[0].hash.as_deref(), Some("h1"));
+
+        assert_eq!(out[1].rel_path, "收到的/报告 (2).pdf");
+        assert_eq!(out[1].status, SyncStatus::Online);
+        assert_eq!(out[1].hash.as_deref(), Some("h2"));
+
+        assert_eq!(out[2].rel_path, "收到的/报告 (3).pdf");
+        assert_eq!(out[2].status, SyncStatus::Offline);
+        assert_eq!(out[2].hash.as_deref(), Some("h3"));
     }
 }

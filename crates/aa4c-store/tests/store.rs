@@ -63,7 +63,7 @@ async fn migration_is_idempotent_across_reopens() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 4); // 001_init + 002_trust + 003_sync + 004_remote_index
+    assert_eq!(version, 5); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts
 }
 
 #[tokio::test]
@@ -335,6 +335,49 @@ async fn remote_index_replace_clear_and_cascade() {
         .unwrap();
     store.remove_device(&device.id).await.unwrap();
     assert!(store.list_remote_index().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn conflicts_replace_diffs_and_preserves_created_at() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    // 首次探测：报告.pdf 两个版本 + 图.png 两个版本
+    store
+        .replace_conflicts(vec![
+            ("收到的/报告.pdf".into(), "h1".into()),
+            ("收到的/报告.pdf".into(), "h2".into()),
+            ("图.png".into(), "hA".into()),
+            ("图.png".into(), "hB".into()),
+        ])
+        .await
+        .unwrap();
+    let first = store.list_conflicts().await.unwrap();
+    assert_eq!(first.len(), 4);
+    let ts = first.iter().find(|c| c.hash == "h1").unwrap().created_at;
+    assert!(ts > 0);
+    assert_eq!(first[0].status, "open");
+
+    // 再次探测：报告.pdf 冲突仍在（h1 应保留原 created_at），图.png 已解决（消失）
+    store
+        .replace_conflicts(vec![
+            ("收到的/报告.pdf".into(), "h1".into()),
+            ("收到的/报告.pdf".into(), "h2".into()),
+        ])
+        .await
+        .unwrap();
+    let second = store.list_conflicts().await.unwrap();
+    assert_eq!(second.len(), 2);
+    assert!(second.iter().all(|c| c.rel_path == "收到的/报告.pdf"));
+    assert_eq!(
+        second.iter().find(|c| c.hash == "h1").unwrap().created_at,
+        ts,
+        "created_at preserved across replace"
+    );
+
+    // 全部解决：清空
+    store.replace_conflicts(vec![]).await.unwrap();
+    assert!(store.list_conflicts().await.unwrap().is_empty());
 }
 
 #[tokio::test]

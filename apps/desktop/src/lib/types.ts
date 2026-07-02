@@ -88,15 +88,27 @@ export interface SyncFileEntry {
 /** 文件可获取状态（SYNC_DESIGN §4）：🟢 本地有 / 🟡 可下载 / 🔴 设备离线。 */
 export type SyncStatusCode = "local" | "online" | "offline";
 
-/** 统一文件视图条目（里程碑 3）：本机 + 跨设备索引归并后的结果。 */
+/** 统一文件视图条目（里程碑 3 + 5）：本机 + 跨设备索引归并后的结果。 */
 export interface UnifiedFile {
-  /** 限定路径，`/` 分隔；顶层段是来源分组（「收到的」或共享文件夹名）。 */
+  /** 限定展示路径，`/` 分隔；顶层段是来源分组。冲突时按序号区分（`报告 (2).pdf`）。 */
   relPath: string;
+  /** 限定基准路径（未加序号，对端认得的真实路径）；拉取按 basePath + hash 定位。 */
+  basePath: string;
   size: number;
   hash: string | null;
   status: SyncStatusCode;
   /** 持有该文件的设备名（本机用「这台设备」）。 */
   holders: string[];
+  /** 是否为冲突版本之一（同一 basePath 有多个不同 hash）。 */
+  conflict: boolean;
+}
+
+/** 冲突记录（里程碑 5）：同一基准路径存在多个不同 hash 的版本。 */
+export interface SyncConflict {
+  relPath: string;
+  hash: string;
+  status: string;
+  createdAt: number;
 }
 
 /** Command 失败时后端返回的形状（API_DESIGN §9.1）。 */

@@ -28,9 +28,10 @@
 | v0.2.0-preview 发布 | ✅ | `0ac48f6` | 打包预览版：品牌 + 新 UI + 信任分级随安装包/APK 发布（GitHub Release，prerelease） |
 | V0.2 同步里程碑 2 | ✅ | `391b8b7` | 共享范围 + 本地索引扫描 + Inbox 落点（`003_sync.sql`，`aa4c-core/src/sync_index.rs`），「同步」页接真实本机文件 |
 | V0.2 同步里程碑 3 | ✅ | `6962dca` | 跨设备索引摘要交换（`IndexRequest`/`IndexEntries`）+ `remote_index`（`004_remote_index.sql`）+ 统一视图绿/黄/红（`sync_exchange.rs` / `unified.rs` / `dispatch.rs`）；完全信任边界把关 + 降级清缓存，含 e2e 索引交换测试 |
-| **V0.2 同步里程碑 4** | 🚀 进行中 | — | 按需拉取（`FetchRequest` + `aa4c-transfer/src/fetch.rs` + `serve_fetch`）：点黄色「可下载」反转角色复用 ATP 拉内容→落 Inbox→扫描转绿；完全信任边界 + 只服务已索引条目，含 e2e 拉取测试；尚未跑 `pnpm tauri dev` 真机/真实 GUI 联调（黄/红 + 拉取需真实双机在线才能验证） |
+| V0.2 同步里程碑 4 | ✅ | `7b35fe3` | 按需拉取（`FetchRequest` + `aa4c-transfer/src/fetch.rs` + `serve_fetch`）：点黄色「可下载」反转角色复用 ATP 拉内容→落 Inbox→扫描转绿；完全信任边界 + 只服务已索引条目，含 e2e 拉取测试 |
+| **V0.2 同步里程碑 5** | 🚀 进行中 | — | 冲突标记（同名不同 hash 加序号并列 + 分别拉取）+ `sync_conflicts`（`005_conflicts.sql`）；`unified::merge` 按 (path,hash) 拆版本、`UnifiedFile` 加 `basePath`/`conflict`，含 merge/store 单测；尚未跑 `pnpm tauri dev` 真机/真实 GUI 联调（冲突需真实双机各持不同版本才能触发） |
 
-整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。V0.2 进行中：信任分级、本地索引（里程碑 2）、跨设备索引交换 + 统一视图（里程碑 3）、按需拉取（里程碑 4）均已落地；仅剩冲突标记（里程碑 5）待续（SYNC_DESIGN.md §10）。
+整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。**V0.2 同步五个里程碑（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取 / 冲突标记）全部落地**（SYNC_DESIGN.md §10）。
 
 ### 已实现 crate 概览（`crates/`）
 
@@ -123,13 +124,13 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：V0.2 同步 —— 冲突标记与人工解决（里程碑 5）
+## 四、下一步：V0.2 收尾（真机联调）或开启 V0.3 分享
 
-里程碑 1–4（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取）已完成，「同步」页可看绿/黄/红并点黄色拉取转绿。最后一步按 [SYNC_DESIGN.md](SYNC_DESIGN.md) §8/§10 继续：
+**V0.2 同步五个里程碑已全部实现**（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取 / 冲突标记），逻辑层 `cargo test --workspace` + `pnpm build` 全绿。下一步二选一：
 
-- **里程碑 5（下一步）**：冲突标记——同一限定 `rel_path` 出现多个不同 `hash` 时，并列展示并以序号区分（`报告.pdf` / `报告 (2).pdf`），各自独立着色，记入 `sync_conflicts`（DATABASE_SCHEMA.md §4.5 仍是设计稿，需建表），拉取/打开针对具体版本，人工决定保留哪份。当前 `unified::merge` 仅按 `rel_path` 归并、同路径不同 hash 不拆分——这是本里程碑要改的核心。
-- **未完成的里程碑 2/3/4 尾巴**（可随时补，不阻塞里程碑 5）：`notify` 文件系统实时监听（当前只有定时扫描 300s + 传输完成触发）、Inbox 按来源设备+时间分组展示、`IndexSummary` 摘要优化（先比整体哈希再决定是否全量拉）、按需拉取按范围镜像回原目录结构（当前统一落 Inbox，文件夹来源文件不会与原黄条目并条）
-- **里程碑 4 尚未做的验证**：还没有跑 `pnpm tauri dev` 真机联调（点黄色拉取、转绿、黄/红状态都需要两台真实在线的「我的设备」才能验证）；后端已有 e2e 测试 `on_demand_fetch_pulls_file_and_gates_on_full_trust`（真实 TLS 验证朋友拒绝 + 我的设备拉取成功落盘），但真实 GUI / 双机在线验证留给下一次会话或用户自测
+- **A. V0.2 真机联调（推荐先做）**：跑 `pnpm tauri dev`（或装 v0.2.x 包）用两台真实设备验证整条同步链路——加同步文件夹、互标「我的设备」、看统一视图黄/红、点黄色拉取转绿、造同名不同内容看「多版本」并列。这些都需要**两台真实在线设备**才能触发，逻辑层已由 e2e 测试覆盖（`index_exchange_gated_by_full_trust` / `on_demand_fetch_pulls_file_and_gates_on_full_trust` + `unified::merge` 冲突单测），但真实 GUI / 双机场景留给用户自测。联调通过后可考虑发 `v0.2.0`（去掉 preview）。
+- **B. 开启 V0.3 分享（Share）**：见 [ROADMAP.md](ROADMAP.md)——给朋友/临时设备的手动分享链接（`shares` 表、token/权限/过期）。这是「朋友」信任层级真正用起来的地方（V0.2 只有完全信任设备参与同步）。
+- **可随时补的同步尾巴**（不阻塞上面任一）：`notify` 文件系统实时监听（当前定时 300s + 传输完成触发）、Inbox 按来源设备+时间分组、`IndexSummary` 摘要优化（先比整体哈希）、按需拉取按范围镜像回原目录结构（当前统一落 Inbox）、冲突的版本历史 / 自动合并。
 
 > ⚠️ v0.2.0-preview 与 v0.1.x 配对协议不兼容（`DeviceInfo` 新增 `trust_level` 字段）。真机联调请确保两端都是 v0.2.0-preview 起的版本。
 
@@ -162,4 +163,4 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - **`cargo test --workspace` 会跨 crate 并行跑测试二进制**，单独 `cargo test -p X` 过不代表 workspace 过。提交前务必跑一次完整 `cargo test --workspace`。
 - **lib 内联单测 ≠ 集成测试**：`cargo test -p X --test Y` 只跑集成测试，漏掉 `src/*.rs` 里的 `#[cfg(test)]`。要 `--lib` 或直接 `--workspace` 覆盖全部。
 
-对 Agent 直接说"**开始 V0.2 里程碑 5**"（冲突标记：同名不同 hash 加序号 + `sync_conflicts` 建表 + 人工解决）即可继续，详见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §8/§10。
+V0.2 同步已全部实现。对 Agent 直接说"**V0.2 真机联调**"（跑 `pnpm tauri dev` 双机验证同步链路、通过后发 `v0.2.0`）或"**开始 V0.3 分享**"（`shares` 表 + 分享链接，见 [ROADMAP.md](ROADMAP.md)）即可继续。

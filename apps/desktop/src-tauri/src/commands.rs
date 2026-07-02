@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use aa4c_core::Core;
 use aa4c_types::{
-    Aa4cError, CoreEvent, DeviceInfo, Settings, SyncFileEntry, SyncScope, TransferTask, TrustLevel,
-    UnifiedFile,
+    Aa4cError, CoreEvent, DeviceInfo, Settings, SyncConflict, SyncFileEntry, SyncScope,
+    TransferTask, TrustLevel, UnifiedFile,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -153,8 +153,17 @@ pub async fn refresh_remote_index(core: State<'_, Arc<Core>>) -> CmdResult<()> {
 }
 
 #[tauri::command]
-pub async fn fetch_file(core: State<'_, Arc<Core>>, rel_path: String) -> CmdResult<String> {
-    Ok(core.fetch_file(&rel_path).await?)
+pub async fn fetch_file(
+    core: State<'_, Arc<Core>>,
+    rel_path: String,
+    hash: Option<String>,
+) -> CmdResult<String> {
+    Ok(core.fetch_file(&rel_path, hash.as_deref()).await?)
+}
+
+#[tauri::command]
+pub async fn list_conflicts(core: State<'_, Arc<Core>>) -> CmdResult<Vec<SyncConflict>> {
+    Ok(core.list_conflicts().await?)
 }
 
 /// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。

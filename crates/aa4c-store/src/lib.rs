@@ -15,8 +15,8 @@ use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aa4c_types::{
-    Aa4cError, DeviceId, RemoteIndexEntry, Result, ScopeKind, SyncFileEntry, SyncScope, TaskId,
-    TransferFile, TransferStatus, TransferTask, TrustLevel,
+    Aa4cError, DeviceId, RemoteIndexEntry, Result, ScopeKind, SyncConflict, SyncFileEntry,
+    SyncScope, TaskId, TransferFile, TransferStatus, TransferTask, TrustLevel,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -641,6 +641,78 @@ impl Store {
                 .map_err(db_err)?;
             let rows = stmt
                 .query_map([], row_to_remote_entry)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    // —— 冲突记录（同名不同 hash，SYNC_DESIGN.md §8，DATABASE_SCHEMA.md §4.5，里程碑 5）——
+
+    /// 用当前统一视图探测到的冲突版本整体替换冲突表（单事务 diff：删除已消失的、
+    /// 保留仍在的 `created_at`、插入新出现的）。`versions` 为 (rel_path, hash) 列表。
+    pub async fn replace_conflicts(&self, versions: Vec<(String, String)>) -> Result<()> {
+        self.call(move |conn| {
+            let now = now_ms();
+            let keep: std::collections::HashSet<(String, String)> =
+                versions.iter().cloned().collect();
+            let tx = conn.transaction().map_err(db_err)?;
+            {
+                let existing: Vec<(String, String)> = {
+                    let mut stmt = tx
+                        .prepare("SELECT rel_path, hash FROM sync_conflicts")
+                        .map_err(db_err)?;
+                    let rows = stmt
+                        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                        .map_err(db_err)?
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .map_err(db_err)?;
+                    rows
+                };
+                for (rel_path, hash) in existing.iter().filter(|k| !keep.contains(k)) {
+                    tx.execute(
+                        "DELETE FROM sync_conflicts WHERE rel_path = ?1 AND hash = ?2",
+                        params![rel_path, hash],
+                    )
+                    .map_err(db_err)?;
+                }
+                let mut stmt = tx
+                    .prepare(
+                        "INSERT INTO sync_conflicts (rel_path, hash, status, created_at)
+                         VALUES (?1, ?2, 'open', ?3)
+                         ON CONFLICT(rel_path, hash) DO NOTHING",
+                    )
+                    .map_err(db_err)?;
+                for (rel_path, hash) in &versions {
+                    stmt.execute(params![rel_path, hash, now]).map_err(db_err)?;
+                }
+            }
+            tx.commit().map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 全部冲突版本行（按 rel_path 排序；一个 rel_path 有 ≥2 行即一处冲突）。
+    pub async fn list_conflicts(&self) -> Result<Vec<SyncConflict>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT rel_path, hash, status, created_at
+                     FROM sync_conflicts ORDER BY rel_path, hash",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(SyncConflict {
+                        rel_path: r.get(0)?,
+                        hash: r.get(1)?,
+                        status: r.get(2)?,
+                        created_at: r.get(3)?,
+                    })
+                })
                 .map_err(db_err)?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(db_err)?;

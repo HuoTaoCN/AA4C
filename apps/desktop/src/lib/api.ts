@@ -6,6 +6,7 @@ import type {
   CommandError,
   DeviceInfo,
   Settings,
+  SyncConflict,
   SyncFileEntry,
   SyncScope,
   TransferTask,
@@ -46,7 +47,9 @@ export const api = {
   rescanSync: () => invoke<void>("rescan_sync"),
   listUnifiedFiles: () => invoke<UnifiedFile[]>("list_unified_files"),
   refreshRemoteIndex: () => invoke<void>("refresh_remote_index"),
-  fetchFile: (relPath: string) => invoke<string>("fetch_file", { relPath }),
+  fetchFile: (relPath: string, hash: string | null) =>
+    invoke<string>("fetch_file", { relPath, hash }),
+  listConflicts: () => invoke<SyncConflict[]>("list_conflicts"),
 };
 
 /** 把任意 reject 值收敛为 CommandError（兜底未知错误）。 */

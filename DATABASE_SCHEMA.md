@@ -122,10 +122,9 @@ devices 1 ──── n transfer_tasks 1 ──── n transfer_files
 
 ## 4. V0.2 表结构（信任分级 + 跨设备索引设计）
 
-> §4.1 `devices.trust_level`、§4.2 `sync_scopes`、§4.3 `sync_file_index`、
-> §4.4 `remote_index` **已实现**（迁移 `002_trust.sql` + `003_sync.sql` +
-> `004_remote_index.sql`，user_version=4）；§4.5 `sync_conflicts` 仍为设计定稿、
-> 尚未建表，随后续里程碑落地。完整设计见 [SYNC_DESIGN.md](SYNC_DESIGN.md)。
+> §4.1–§4.5 **全部已实现**（迁移 `002_trust.sql` + `003_sync.sql` +
+> `004_remote_index.sql` + `005_conflicts.sql`，user_version=5）。V0.2 同步五个里程碑
+> 完成。完整设计见 [SYNC_DESIGN.md](SYNC_DESIGN.md)。
 
 ### 4.1 devices 增列 —— 信任分级（已实现）
 
@@ -206,19 +205,28 @@ CREATE INDEX idx_remote_index_path ON remote_index(rel_path);
 > 黄/红判定：某 `rel_path` 本机 `present_local=0` 时，看持有它的 `device_id` 是否在线（`devices.last_seen_at` 30s 内）——在线为黄、仅离线为红。`remote_index` 可常驻内存 + 落库缓存。
 > 解除配对（`DELETE devices`）经外键级联清空其 `remote_index`；**完全信任降为朋友**会保留设备行，应用层在 `Core::set_trust_level` 里**显式 `Store::clear_remote_index(device_id)`**（见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §2）。
 
-### 4.5 sync_conflicts —— 冲突记录（占位）
+### 4.5 sync_conflicts —— 冲突记录（已实现）
 
 ```sql
 CREATE TABLE sync_conflicts (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    rel_path    TEXT NOT NULL,
-    local_hash  TEXT,
-    remote_hash TEXT,
-    status      TEXT NOT NULL DEFAULT 'open'
-                CHECK (status IN ('open','resolved')),
-    created_at  INTEGER NOT NULL
+    rel_path   TEXT NOT NULL,                  -- 限定基准路径（未加序号）
+    hash       TEXT NOT NULL,                  -- 该版本的 BLAKE3 hex
+    status     TEXT NOT NULL DEFAULT 'open'
+               CHECK (status IN ('open','resolved')),
+    created_at INTEGER NOT NULL,               -- 首次探测到该版本冲突的时间（unix 毫秒）
+    PRIMARY KEY (rel_path, hash)
 );
+
+CREATE INDEX idx_sync_conflicts_path ON sync_conflicts(rel_path);
 ```
+
+- 实现调整：设计初稿用 `local_hash`/`remote_hash` 建模一对本地-远端冲突；落地时改为
+  **每个冲突版本一行**（`(rel_path, hash)` 联合主键），天然支持同一路径 ≥3 个版本的多方冲突。
+  一个 `rel_path` 有 ≥2 行即一处冲突。
+- 维护者：`aa4c-core` 的 `list_unified_files` 每次刷新时，把 `unified::merge` 探测到的当前冲突
+  整体 `Store::replace_conflicts`（单事务 diff：删除已消失的、保留仍在版本的 `created_at`、
+  插入新出现的）。冲突解决（用户拉取某版本、`.aa4c-part` 落盘自动加序号成为独立路径，或删掉多余
+  副本）后，下次刷新该路径不再多版本，对应行随之清空。
 
 ## 4b. 更远期预留（设计预告）
 
@@ -241,6 +249,7 @@ const MIGRATIONS: &[&str] = &[
     /* v2: */ include_str!("migrations/002_trust.sql"),        // devices.trust_level
     /* v3: */ include_str!("migrations/003_sync.sql"),         // sync_scopes + sync_file_index
     /* v4: */ include_str!("migrations/004_remote_index.sql"), // remote_index
+    /* v5: */ include_str!("migrations/005_conflicts.sql"),    // sync_conflicts
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {

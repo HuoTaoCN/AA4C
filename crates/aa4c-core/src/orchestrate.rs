@@ -193,8 +193,9 @@ impl Core {
         self.store.list_all_sync_files().await
     }
 
-    /// 统一文件视图（SYNC_DESIGN.md §3.4 / §4，里程碑 3）：
-    /// 本机索引 + 远端索引按限定路径归并，每条带 🟢/🟡/🔴 状态与持有设备。
+    /// 统一文件视图（SYNC_DESIGN.md §3.4 / §4 / §8，里程碑 3 + 5）：本机索引 + 远端索引
+    /// 按限定路径归并，每条带 🟢/🟡/🔴 状态与持有设备；同名不同 hash 拆成带序号的冲突版本，
+    /// 并把当前冲突整体落 `sync_conflicts` 供人工挑选。
     pub async fn list_unified_files(&self) -> Result<Vec<UnifiedFile>> {
         // 本机：按范围分组名限定路径
         let scopes = self.store.list_sync_scopes().await?;
@@ -240,7 +241,22 @@ impl Core {
             names.insert(dev.id, dev.name);
         }
 
-        Ok(unified::merge(local, remote, &online, &names))
+        let files = unified::merge(local, remote, &online, &names);
+
+        // 探测到的冲突整体落库（每个冲突版本一行；解决后下次刷新自动清掉）
+        let conflicts: Vec<(String, String)> = files
+            .iter()
+            .filter(|f| f.conflict)
+            .map(|f| (f.base_path.clone(), f.hash.clone().unwrap_or_default()))
+            .collect();
+        self.store.replace_conflicts(conflicts).await?;
+
+        Ok(files)
+    }
+
+    /// 全部冲突版本记录（一个 `rel_path` 有 ≥2 行即一处冲突，里程碑 5）。
+    pub async fn list_conflicts(&self) -> Result<Vec<aa4c_types::SyncConflict>> {
+        self.store.list_conflicts().await
     }
 
     /// 手动触发全部共享范围重新扫描。
@@ -257,17 +273,20 @@ impl Core {
         Ok(())
     }
 
-    /// 按需拉取统一视图里某条目（限定展示路径）的内容（SYNC_DESIGN.md §4，里程碑 4）。
+    /// 按需拉取统一视图里某条目的内容（SYNC_DESIGN.md §4 / §8，里程碑 4 + 5）。
     ///
-    /// 从远端索引里找出持有该文件的设备，挑一台**在线**且**完全信任**的，复用 ATP 把内容
-    /// 拉到本机 Inbox；落地后由扫描器转绿（黄→绿）。返回拉取任务 id（A 侧 Recv 记录）。
-    pub async fn fetch_file(&self, rel_path: &str) -> Result<TaskId> {
+    /// `rel_path` 是限定**基准**路径（对端认得的真实路径，非加了序号的展示名）；`hash` 指定
+    /// 要拉哪个版本（冲突时区分不同版本，`None` 表示不限）。从远端索引里找出持有该（路径,版本）
+    /// 的设备，挑一台**在线**且**完全信任**的，复用 ATP 拉到本机 Inbox；落地后扫描转绿。
+    pub async fn fetch_file(&self, rel_path: &str, hash: Option<&str>) -> Result<TaskId> {
         let holders: HashSet<DeviceId> = self
             .store
             .list_remote_index()
             .await?
             .into_iter()
-            .filter(|r| r.rel_path == rel_path)
+            .filter(|r| {
+                r.rel_path == rel_path && hash.map_or(true, |h| r.hash.as_deref() == Some(h))
+            })
             .map(|r| r.device_id)
             .collect();
         if holders.is_empty() {

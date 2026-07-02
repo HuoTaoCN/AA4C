@@ -12,12 +12,16 @@ export type SyncStatus = "local" | "online" | "offline";
 export interface SyncFile {
   kind: "file";
   name: string;
-  /** 完整限定路径（顶层段=来源分组），按需拉取时回传给后端。 */
-  relPath: string;
+  /** 限定基准路径（未加序号，对端认得）；按需拉取时回传给后端。 */
+  basePath: string;
+  /** 该版本 hash；冲突时区分要拉哪一份。 */
+  hash: string | null;
   size: number;
   status: SyncStatus;
   /** 持有该文件的设备名；online 多设备时可并行拉取（更快）。 */
   owners: string[];
+  /** 是否为冲突版本之一（同名不同 hash）。 */
+  conflict: boolean;
 }
 
 export interface SyncDir {
@@ -45,10 +49,12 @@ function insert(dir: SyncDir, segments: string[], file: UnifiedFile) {
     dir.children.push({
       kind: "file",
       name: head,
-      relPath: file.relPath,
+      basePath: file.basePath,
+      hash: file.hash,
       size: file.size,
       status: file.status,
       owners: file.holders,
+      conflict: file.conflict,
     });
     return;
   }

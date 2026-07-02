@@ -94,17 +94,33 @@ pub struct RemoteIndexEntry {
     pub seen_at: i64,
 }
 
-/// 统一文件视图条目：本机索引 + 远端索引按 `rel_path` 归并后的结果（SYNC_DESIGN.md §3.4 / §4）。
+/// 统一文件视图条目：本机索引 + 远端索引按 `rel_path`（同名不同 hash 拆分）归并后的结果
+/// （SYNC_DESIGN.md §3.4 / §4 / §8）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnifiedFile {
-    /// 限定展示路径，`/` 分隔；顶层段是来源分组（「收到的」或共享文件夹名）。
+    /// 限定**展示**路径，`/` 分隔；顶层段是来源分组。冲突时按序号区分（`报告 (2).pdf`）。
     pub rel_path: String,
+    /// 限定**基准**路径（未加序号，对端认得的真实路径）；拉取时按 `base_path` + `hash` 定位。
+    pub base_path: String,
     pub size: u64,
     pub hash: Option<String>,
     pub status: SyncStatus,
     /// 持有此文件的设备名（本机用「这台设备」），可多台。
     pub holders: Vec<String>,
+    /// 是否为冲突版本之一（同一 `base_path` 存在多个不同 hash）。
+    pub conflict: bool,
+}
+
+/// 一条冲突记录（DATABASE_SCHEMA.md §4.5 `sync_conflicts`）：同一 `rel_path`（限定基准路径）
+/// 存在多个不同 hash 的版本。里程碑 5 由统一视图实时探测并落库，供人工挑选保留哪份。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncConflict {
+    pub rel_path: String,
+    pub hash: String,
+    pub status: String,
+    pub created_at: i64,
 }
 
 #[cfg(test)]
@@ -153,15 +169,19 @@ mod tests {
     fn unified_file_json_is_camel_case() {
         let f = UnifiedFile {
             rel_path: "收到的/a.jpg".into(),
+            base_path: "收到的/a.jpg".into(),
             size: 100,
             hash: Some("ab".repeat(32)),
             status: SyncStatus::Online,
             holders: vec!["客厅电脑".into()],
+            conflict: false,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["relPath"], "收到的/a.jpg");
+        assert_eq!(json["basePath"], "收到的/a.jpg");
         assert_eq!(json["status"], "online");
         assert_eq!(json["holders"][0], "客厅电脑");
+        assert_eq!(json["conflict"], false);
         let back: UnifiedFile = serde_json::from_value(json).unwrap();
         assert_eq!(back, f);
     }
