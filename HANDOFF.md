@@ -155,8 +155,15 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 
 ### 前端自测要点（联调时用）
 
-- `pnpm tauri dev` 启动；两实例应在首页互相出现，可配对、传输
-- 前端代码在 `apps/desktop/src/`：`lib/`（api/events/format/types）、`stores/`（4 个 Pinia）、`pages/`（4 页）、`components/`（卡片/弹窗/任务条/toast）
+- **同机双实例联调**：`bash scripts/dev-two-nodes.sh` 一键构建并起 A / B 两个隔离窗口
+  （靠后端钩子 `AA4C_DATA_DIR` / `AA4C_DEVICE_NAME`，见 `src-tauri/src/lib.rs` setup），
+  脚本头部有完整走查清单（配对 → 互标我的设备 → 黄 → 拉取转绿 → 冲突多版本）。
+- 单实例快速起：`pnpm tauri dev`。
+- ⚠️ 同步链路的 GUI 走查目前只能人工做：本机自动化（computer-use）的截图过滤只认
+  LaunchServices 注册的 `/Applications/AA4C.app`（且它可能是旧构建），CLI 起的当前构建
+  实例对其不可见，加上双向配对要两个窗口同时点，故自动化跑不了两窗口流程——后端逻辑已由
+  真 TLS 端到端测试覆盖（`index_exchange_gated_by_full_trust` / `on_demand_fetch_...`）。
+- 前端代码在 `apps/desktop/src/`：`lib/`（api/events/format/types）、`stores/`（Pinia）、`pages/`、`components/`。
 
 ## 五、本次会话的教训（务必遵守）
 
