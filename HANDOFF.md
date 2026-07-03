@@ -120,7 +120,7 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 6. **gen/android 工程源文件已入库**；Gradle 产物/schemas 由各级 .gitignore 排除，不要把 `app/build/`、`.so`、APK 提交进来
 7. **接口变更先改文档**：API_DESIGN / PROTOCOL / DATABASE_SCHEMA 是唯一事实来源
 8. 提交前自检：`cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
-9. CI 的 android job 是 `continue-on-error` 哨兵，不阻塞合并；其余 job 必须全绿
+9. CI 的 android job 是 `continue-on-error` 哨兵，不阻塞合并；其余 job 必须全绿。`cargo audit` 忽略了 `RUSTSEC-2026-0194/0195`（quick-xml DoS，Tauri 打包链路传递依赖、运行时不碰不可信 XML，无法就地升级），上游 Tauri/plist 升到 quick-xml ≥0.41 后应移除该忽略（见 `ci.yml` 注释）
 10. `gh run watch` 经代理不稳定（annotations 接口 EOF），盯 CI 用轮询：
     ```bash
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'

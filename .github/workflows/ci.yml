@@ -71,7 +71,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/install-action@cargo-audit
-      - run: cargo audit
+      # 忽略的 RUSTSEC-2026-0194 / 0195 是 quick-xml 的 DoS 公告，来自 Tauri 打包链路的
+      # 传递依赖（plist → macOS bundle 元数据、tauri-winrt-notification → Windows 通知），
+      # 只解析我们自有的构建配置 / bundle XML，运行时不接触任何不可信输入，实际攻击面≈0；
+      # 依赖方 pin 了 quick-xml ^0.37/^0.39 无法就地升到 >=0.41，待上游 Tauri/plist 升级后
+      # 移除此忽略。其余 unmaintained/unsound 属 cargo-audit 默认告警、不阻断。
+      - run: cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
 
   # Android 编译哨兵（A0）：只验证能构建出 debug APK，不阻塞合并
   android:
