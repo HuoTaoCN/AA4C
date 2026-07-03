@@ -316,4 +316,32 @@ mod tests {
         assert_eq!(proto_a, PROTO_VERSION);
         assert_eq!(proto_b, PROTO_VERSION);
     }
+
+    #[tokio::test]
+    async fn client_hello_negotiates_down_to_v1_peer() {
+        // 模拟老版本（v1）对端：它只回 HelloAck{proto:1}。发起方应把协商版本降到 1，
+        // 上层据此跳过 v2 的索引/拉取消息（优雅降级，PROTOCOL.md §8b / §14）。
+        let (mut a, mut b) = tokio::io::duplex(1024);
+        let id_a = "aa".repeat(32);
+        let v1_peer = async {
+            // 读 Hello，回一个 proto=1 的 HelloAck（不管本机实际版本）
+            let _ = read_message(&mut b).await.unwrap();
+            write_message(
+                &mut b,
+                &Message::HelloAck {
+                    proto: 1,
+                    device_id: "bb".repeat(32),
+                },
+            )
+            .await
+            .unwrap();
+        };
+        let (client, ()) = tokio::join!(client_hello(&mut a, &id_a), v1_peer);
+        let (_peer, proto) = client.unwrap();
+        assert_eq!(proto, 1, "negotiated down to v1");
+        assert!(
+            proto < aa4c_types::SYNC_PROTO_VERSION,
+            "gate would skip sync"
+        );
+    }
 }

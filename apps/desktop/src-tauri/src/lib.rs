@@ -50,16 +50,31 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            // 数据目录由 Tauri 注入（桌面为应用数据目录，Android 为应用私有目录）
-            let data_dir = app.path().app_data_dir()?;
-            // 接收目录：优先系统下载目录，取不到（如 Android）回落到应用数据目录
-            let save_dir = app
-                .path()
-                .download_dir()
-                .unwrap_or_else(|_| data_dir.clone())
-                .join("AA4C");
+            // 数据目录由 Tauri 注入（桌面为应用数据目录，Android 为应用私有目录）。
+            // 联调钩子：AA4C_DATA_DIR 覆盖数据目录（含接收目录），使同一台机器能跑
+            // 多个隔离实例做双机联调；AA4C_DEVICE_NAME 指定首启设备名便于区分窗口。
+            let override_dir = std::env::var("AA4C_DATA_DIR")
+                .ok()
+                .map(std::path::PathBuf::from);
+            let data_dir = match &override_dir {
+                Some(dir) => dir.clone(),
+                None => app.path().app_data_dir()?,
+            };
+            // 接收目录：优先系统下载目录，取不到（如 Android）回落到应用数据目录；
+            // 数据目录被覆盖时接收目录跟着进去，保证实例之间 Inbox 也互相隔离
+            let save_dir = match &override_dir {
+                Some(dir) => dir.join("Inbox"),
+                None => app
+                    .path()
+                    .download_dir()
+                    .unwrap_or_else(|_| data_dir.clone())
+                    .join("AA4C"),
+            };
             let mut config = CoreConfig::new(data_dir);
             config.transfer.default_save_dir = save_dir;
+            if let Ok(name) = std::env::var("AA4C_DEVICE_NAME") {
+                config.device_name = Some(name);
+            }
 
             // 启动序列是异步的；setup 在事件循环前运行，可阻塞等待
             let core = tauri::async_runtime::block_on(Core::start(config))?;

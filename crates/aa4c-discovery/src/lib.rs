@@ -119,12 +119,13 @@ impl DiscoveryService {
         // 实例名取 DeviceId 前 16 位 hex（PROTOCOL.md §1），足够唯一且可读
         let instance = &info.id[..16];
         let hostname = format!("{instance}.local.");
+        let proto = aa4c_types::PROTO_VERSION.to_string();
         let props = [
             (parse::TXT_ID, info.id.as_str()),
             (parse::TXT_NAME, info.name.as_str()),
             (parse::TXT_PLATFORM, info.platform.as_str()),
             (parse::TXT_VERSION, info.version.as_str()),
-            (parse::TXT_PROTO, "1"),
+            (parse::TXT_PROTO, proto.as_str()),
         ];
         let service = ServiceInfo::new(
             SERVICE_TYPE,

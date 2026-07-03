@@ -55,9 +55,13 @@ async fn drive(
         )
         .await?;
 
-    let (hello_id, _proto) = client_hello(&mut stream, svc.identity.device_id()).await?;
+    let (hello_id, proto) = client_hello(&mut stream, svc.identity.device_id()).await?;
     if hello_id != job.peer_id {
         return Err(Aa4cError::Protocol("hello id != expected peer".into()));
+    }
+    // 版本门槛：对端为 v1（proto<2）不支持按需拉取，直接不发 FetchRequest（优雅降级）
+    if proto < aa4c_types::SYNC_PROTO_VERSION {
+        return Err(Aa4cError::Protocol("对端版本过旧，无法拉取".into()));
     }
     write_message(
         &mut stream,

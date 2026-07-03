@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 协议版本升到 `proto = 2`，并给 V0.2 新增的**索引交换 / 按需拉取**加发起方版本门槛：握手 `Hello.proto` 取双方最小值，只有协商结果 `≥ 2`（`aa4c-types::SYNC_PROTO_VERSION`）才发送索引/拉取消息；遇到 v1 对端直接不发（优雅降级为纯 v1 传输），不再依赖对端 bincode 解码失败断开来兜底。落点：`TransferService::fetch_index` 与 `fetch.rs` 握手后判断；mDNS TXT 的 `proto` 字段也随之广播为 `2`。新增 proto 测试 `client_hello_negotiates_down_to_v1_peer`。
+  > ⚠️ 与 `v0.2.0-preview`（广播 `proto=1`）的**跨设备同步不再互通**（索引/拉取会被版本门槛跳过）；基础的发现 / 配对 / AA 直传仍可用。同步联调请让两端都升级到本版本起的构建。趁 preview 仍是预发布窗口一次性把线路版本对齐，避免正式版再背历史包袱。
+- 桌面端联调钩子：环境变量 `AA4C_DATA_DIR` 覆盖数据目录（含接收目录 `Inbox`）、`AA4C_DEVICE_NAME` 指定首启设备名，使同一台机器能跑多个互相隔离的实例做双机真机联调（真 mDNS / 真 TLS / 真 GUI）。仅开发用途，默认不影响正常启动。
+
 ### Added
 
 - V0.2 同步里程碑 5：冲突标记与人工解决——**V0.2 同步五个里程碑至此全部完成**。同一限定基准路径出现多个不同 hash 的版本时，统一视图并列展示、以序号区分（`报告.pdf` / `报告 (2).pdf`），各自独立着色（🟢/🟡/🔴）、可分别拉取（拉取按 `basePath` + `hash` 定位具体版本）。`unified::merge` 改为按 (rel_path, hash) 拆分版本；`UnifiedFile` 增加 `basePath` / `conflict` 字段。当前冲突整体落 `sync_conflicts`（迁移 `005_conflicts.sql`，user_version=5；每版本一行，`(rel_path,hash)` 主键，支持多方冲突；单事务 diff 保留 `created_at`）。**绝不自动覆盖**：拉取想要的版本落盘时 `.aa4c-part` 自动加序号与本地副本共存、各自转绿，冲突随下次刷新消解。新增 Tauri 命令 `list_conflicts`，`fetch_file` 增加 `hash` 参数；「同步」页冲突文件显示「多版本」标记。

@@ -268,9 +268,15 @@ impl TransferService {
             )
             .await?;
 
-        let (hello_id, _proto) = client_hello(&mut stream, self.identity.device_id()).await?;
+        let (hello_id, proto) = client_hello(&mut stream, self.identity.device_id()).await?;
         if &hello_id != peer_id {
             return Err(Aa4cError::Protocol("hello id != expected peer".into()));
+        }
+        // 版本门槛：对端为 v1（proto<2）不认识索引消息，直接不发（优雅降级，不发 v2 帧）
+        if proto < aa4c_types::SYNC_PROTO_VERSION {
+            return Err(Aa4cError::Protocol(format!(
+                "peer proto {proto} too old for index exchange"
+            )));
         }
         write_message(&mut stream, &Message::IndexRequest).await?;
 

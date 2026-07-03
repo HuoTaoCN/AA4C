@@ -21,8 +21,13 @@ pub use sync::{
 };
 pub use transfer::{Direction, FileStatus, TaskId, TransferFile, TransferStatus, TransferTask};
 
-/// 协议版本（PROTOCOL.md §0）。
-pub const PROTO_VERSION: u16 = 1;
+/// 协议版本（PROTOCOL.md §0）。V0.2 起为 2：新增索引交换 / 按需拉取消息。
+/// 握手 `min(双方)` 协商；与 v1 对端相遇时降级为纯 v1 传输、不做同步（见下）。
+pub const PROTO_VERSION: u16 = 2;
+
+/// 支持跨设备索引交换 / 按需拉取所需的最低协商版本（PROTOCOL.md §8b / §14）。
+/// 握手谈成的 proto < 此值即对端为 v1，跳过一切同步消息（优雅降级，不发 v2 帧）。
+pub const SYNC_PROTO_VERSION: u16 = 2;
 
 /// 默认监听端口（PROTOCOL.md §0）。
 pub const DEFAULT_PORT: u16 = 42420;
