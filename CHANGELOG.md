@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.2.0-preview.2] - 2026-07-03
+
+> **预览版（第二版）**：V0.2 **跨设备同步从设计稿变为可用**——共享文件夹 + Inbox、跨设备统一文件视图（🟢 本地有 / 🟡 可下载 / 🔴 设备离线）、点黄色即从在线设备拉取并转绿、同名不同内容「多版本」并列可分别取回；实时文件监听秒级更新。已过真机双实例 GUI 走查。
+>
+> ⚠️ **与 `v0.2.0-preview` 跨设备同步不互通**：线路协议升到 `proto = 2`，索引/拉取按版本门槛跳过 `proto=1` 的旧预览版；基础的发现 / 配对 / AA 直传仍可用。参与同步的设备请都升级到本版本起的构建。（与 v0.1.x 仍因 `DeviceInfo.trust_level` 无法配对。）
+
 ### Changed
 
 - 协议版本升到 `proto = 2`，并给 V0.2 新增的**索引交换 / 按需拉取**加发起方版本门槛：握手 `Hello.proto` 取双方最小值，只有协商结果 `≥ 2`（`aa4c-types::SYNC_PROTO_VERSION`）才发送索引/拉取消息；遇到 v1 对端直接不发（优雅降级为纯 v1 传输），不再依赖对端 bincode 解码失败断开来兜底。落点：`TransferService::fetch_index` 与 `fetch.rs` 握手后判断；mDNS TXT 的 `proto` 字段也随之广播为 `2`。新增 proto 测试 `client_hello_negotiates_down_to_v1_peer`。
@@ -74,7 +80,8 @@
 - 桌面端（Tauri + Vue3：Windows / macOS / Linux）
 - Android 实验版（Tauri 2，与桌面端同一代码库）
 
-[Unreleased]: https://github.com/HuoTaoCN/AA4C/compare/v0.2.0-preview...HEAD
+[Unreleased]: https://github.com/HuoTaoCN/AA4C/compare/v0.2.0-preview.2...HEAD
+[0.2.0-preview.2]: https://github.com/HuoTaoCN/AA4C/compare/v0.2.0-preview...v0.2.0-preview.2
 [0.2.0-preview]: https://github.com/HuoTaoCN/AA4C/releases/tag/v0.2.0-preview
 [0.1.1]: https://github.com/HuoTaoCN/AA4C/releases/tag/v0.1.1
 [0.1.0]: https://github.com/HuoTaoCN/AA4C/releases/tag/v0.1.0
