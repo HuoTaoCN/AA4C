@@ -48,6 +48,9 @@ bincode = "1"
 # 存储
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# 文件系统监听（同步索引实时更新，SYNC_DESIGN §3.2；带去抖，定时扫描仍作兜底）
+notify-debouncer-mini = "0.4"
+
 # 基础设施
 thiserror = "2"
 tracing = "0.1"

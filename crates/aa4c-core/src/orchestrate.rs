@@ -277,7 +277,10 @@ impl Core {
     ///
     /// `rel_path` 是限定**基准**路径（对端认得的真实路径，非加了序号的展示名）；`hash` 指定
     /// 要拉哪个版本（冲突时区分不同版本，`None` 表示不限）。从远端索引里找出持有该（路径,版本）
-    /// 的设备，挑一台**在线**且**完全信任**的，复用 ATP 拉到本机 Inbox；落地后扫描转绿。
+    /// 的设备，挑一台**在线**且**完全信任**的，复用 ATP 拉取；落地后扫描转绿。
+    ///
+    /// 落点：按限定路径顶层分组段匹配本机某个共享范围，命中则**落回该范围原结构**
+    /// （文件夹来源文件回到原文件夹、原黄条目转绿）；否则回落 Inbox（默认接收目录）。
     pub async fn fetch_file(&self, rel_path: &str, hash: Option<&str>) -> Result<TaskId> {
         let holders: HashSet<DeviceId> = self
             .store
@@ -292,6 +295,20 @@ impl Core {
         if holders.is_empty() {
             return Err(Aa4cError::Protocol("没有设备持有这个文件".into()));
         }
+
+        // 落点：顶层分组段命中本机某共享范围 → 落回其目录（保留原结构、原黄条目转绿）；
+        // 未命中 → None（transfer 侧回落 Inbox）。
+        let save_dir = match rel_path.split_once('/') {
+            Some((group, _)) => self
+                .store
+                .list_sync_scopes()
+                .await?
+                .into_iter()
+                .find(|s| unified::group_name(s) == group)
+                .map(|s| PathBuf::from(s.local_path)),
+            None => None,
+        };
+
         // 在线快照里挑一台「我的设备」（完全信任）持有者
         for dev in self.discovery.devices() {
             if !holders.contains(&dev.id) {
@@ -304,7 +321,7 @@ impl Core {
                 .map(|d| d.trusted && d.trust_level == TrustLevel::Full)
                 .unwrap_or(false);
             if is_full {
-                return self.transfer.fetch_file(&dev, rel_path, None).await;
+                return self.transfer.fetch_file(&dev, rel_path, save_dir).await;
             }
         }
         Err(Aa4cError::Protocol("持有这个文件的设备当前不在线".into()))
