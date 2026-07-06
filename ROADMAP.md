@@ -64,9 +64,11 @@
 功能：
 
 - NAT 穿透（STUN / 打洞）
-- 设备中继（Relay）
+- 设备中继（Relay，**仅自建**，不做官方公益节点）
 - 远程同步、远程发送
 - 分享链接
+
+> 设计详见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)；线路层见 [PROTOCOL.md](PROTOCOL.md) Part B。
 
 ---
 

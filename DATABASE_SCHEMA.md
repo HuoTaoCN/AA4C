@@ -228,11 +228,51 @@ CREATE INDEX idx_sync_conflicts_path ON sync_conflicts(rel_path);
   插入新出现的）。冲突解决（用户拉取某版本、`.aa4c-part` 落盘自动加序号成为独立路径，或删掉多余
   副本）后，下次刷新该路径不再多版本，对应行随之清空。
 
-## 4b. 更远期预留（设计预告）
+## 4c. V0.3 表结构（远程连接 + 分享，设计定稿、尚未建表）
+
+> 对应 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（AA Connect）。仅设计，随 V0.3 里程碑落地。
+> 连接配置（`rendezvous_url` / `relay_url` / `enable_remote`）复用现有 `settings` KV 表，不新增表。
+
+### 4c.1 shares —— 分享记录（CONNECT_DESIGN §7）
+
+```sql
+CREATE TABLE shares (
+    id          TEXT PRIMARY KEY,                -- UUID
+    token       TEXT NOT NULL UNIQUE,            -- 高熵随机串，即访问能力（capability）
+    rel_path    TEXT NOT NULL,                   -- 被分享的文件/文件夹（本机绝对或限定路径，落地时定）
+    permission  TEXT NOT NULL DEFAULT 'read'
+                CHECK (permission IN ('read','readwrite')),  -- V0.3 首版建议只用 read
+    expires_at  INTEGER,                         -- 绝对过期时间（unix 毫秒）；NULL=长期
+    status      TEXT NOT NULL DEFAULT 'open'
+                CHECK (status IN ('open','revoked')),
+    created_at  INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_shares_token ON shares(token);
+```
+
+- `token` 是能力：持有有效且未过期未吊销的 token 即可按 `permission` 访问，无需账号。
+- 吊销 = 置 `status='revoked'`（保留审计），或直接 `DELETE`。
+- 服务端每次访问校验：`status='open'` 且（`expires_at IS NULL` 或 `expires_at > now`）。
+
+### 4c.2 share_access —— 访问记录（可选，供「查看访问记录」）
+
+```sql
+CREATE TABLE share_access (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    share_id   TEXT NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
+    peer_id    TEXT,                             -- 访问方 device_id；匿名访问为 NULL
+    action     TEXT NOT NULL,                    -- 'list' / 'download' / 'upload'
+    at         INTEGER NOT NULL                  -- unix 毫秒
+);
+
+CREATE INDEX idx_share_access_share ON share_access(share_id);
+```
+
+## 4d. 更远期预留（设计预告）
 
 | 版本 | 表 | 用途 |
 |------|----|------|
-| V0.3 | `shares` | 分享链接（token、权限、过期时间、访问记录） |
 | V0.4 | `download_tasks` | 下载任务（url、协议、引擎、状态） |
 | V0.5 | `tags` / `file_tags` | AI 标签 |
 | V0.5 | `archive_rules` | 归档规则（匹配条件 → 目标目录） |

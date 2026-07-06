@@ -31,7 +31,9 @@
 | V0.2 同步里程碑 4 | ✅ | `7b35fe3` | 按需拉取（`FetchRequest` + `aa4c-transfer/src/fetch.rs` + `serve_fetch`）：点黄色「可下载」反转角色复用 ATP 拉内容→落 Inbox→扫描转绿；完全信任边界 + 只服务已索引条目，含 e2e 拉取测试 |
 | V0.2 同步里程碑 5 | ✅ | `5e84031` | 冲突标记（同名不同 hash 加序号并列 + 分别拉取）+ `sync_conflicts`（`005_conflicts.sql`）；`unified::merge` 按 (path,hash) 拆版本、`UnifiedFile` 加 `basePath`/`conflict`，含 merge/store 单测 |
 | 协议 proto→2 + 同步版本门槛 | ✅ | `d1d147a` | `PROTO_VERSION=2` + `SYNC_PROTO_VERSION`：索引/拉取发起方按协商版本 gate，遇 v1 对端优雅跳过；mDNS TXT `proto=2`；新增桌面联调钩子 `AA4C_DATA_DIR`/`AA4C_DEVICE_NAME`（同机跑多实例）+ `scripts/dev-two-nodes.sh`。**⚠️ 与 v0.2.0-preview 同步不再互通** |
-| **同步收尾：实时监听 + 拉取落点镜像** | 🚀 进行中 | — | `notify`（`notify-debouncer-mini`，2s 去抖）实时监听共享范围目录、随范围增删对齐（定时 300s + 传输完成兜底）；按需拉取按分组匹配落回本机对应范围原结构（原黄条目转绿），未命中回落 Inbox。含监听重扫测试 |
+| 同步收尾：实时监听 + 拉取落点镜像 | ✅ | `9dfe1ad` | `notify`（`notify-debouncer-mini`，2s 去抖）实时监听共享范围目录、随范围增删对齐（定时 300s + 传输完成兜底）；按需拉取按分组匹配落回本机对应范围原结构（原黄条目转绿），未命中回落 Inbox。含监听重扫测试 |
+| v0.2.0-preview.2 发布 | ✅ | `bf403ba` | 打包预览版：V0.2 跨设备同步全链路 + proto=2 随三平台包/APK 发布（GitHub Release，prerelease）；`e53fb53` 修 CI `cargo audit`（忽略 quick-xml 传递依赖 DoS 公告） |
+| **V0.3 设计（Connect）** | 🚀 进行中 | — | 新增 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)：连接阶梯（LAN→公网→打洞→**自建 Relay**）+ 自建 Rendezvous 信令 + QUIC 会话 + 远程同步/发送复用 + 分享链接；DATABASE_SCHEMA §4c（`shares`/`share_access`）、PROTOCOL Part B、ROADMAP 同步。仅设计未实现 |
 
 整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。**V0.2 同步五个里程碑（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取 / 冲突标记）全部落地**（SYNC_DESIGN.md §10）；线路协议已升到 `proto=2` 并对同步路径按版本 gate（与 v0.2.0-preview 的同步不再互通，趁预发布窗口对齐）。**真机 GUI 走查已人工跑通**（`scripts/dev-two-nodes.sh` 起两实例：配对 → 互标我的设备 → 黄「可下载」→ 点黄拉取转绿 → 同名不同内容「多版本」并列，均正常）。
 
@@ -126,15 +128,19 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：V0.2 收尾（真机联调）或开启 V0.3 分享
+## 四、下一步：V0.3 里程碑 1（QUIC 会话层）
 
-**V0.2 同步五个里程碑已全部实现**（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取 / 冲突标记），逻辑层 `cargo test --workspace` + `pnpm build` 全绿。下一步二选一：
+**V0.2 已全部完成并发布**（五个同步里程碑 + 实时监听 + 拉取镜像 + proto=2；已过真机双实例走查，`v0.2.0-preview.2` 三平台包/APK 已发，CI 全绿）。**V0.3 设计已定稿**：见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（基础设施**仅自建 Rendezvous/Relay**，不做官方节点）。按 CONNECT_DESIGN §11 的里程碑推进：
 
-- **A. V0.2 真机联调（推荐先做）**：跑 `pnpm tauri dev`（或装 v0.2.x 包）用两台真实设备验证整条同步链路——加同步文件夹、互标「我的设备」、看统一视图黄/红、点黄色拉取转绿、造同名不同内容看「多版本」并列。这些都需要**两台真实在线设备**才能触发，逻辑层已由 e2e 测试覆盖（`index_exchange_gated_by_full_trust` / `on_demand_fetch_pulls_file_and_gates_on_full_trust` + `unified::merge` 冲突单测），但真实 GUI / 双机场景留给用户自测。联调通过后可考虑发 `v0.2.0`（去掉 preview）。
-- **B. 开启 V0.3 分享（Share）**：见 [ROADMAP.md](ROADMAP.md)——给朋友/临时设备的手动分享链接（`shares` 表、token/权限/过期）。这是「朋友」信任层级真正用起来的地方（V0.2 只有完全信任设备参与同步）。
-- **可随时补的同步尾巴**（不阻塞上面任一）：`notify` 文件系统实时监听（当前定时 300s + 传输完成触发）、Inbox 按来源设备+时间分组、`IndexSummary` 摘要优化（先比整体哈希）、按需拉取按范围镜像回原目录结构（当前统一落 Inbox）、冲突的版本历史 / 自动合并。
+- **里程碑 1（下一步）**：QUIC 会话层——广域网通道用 quinn，证书固定规则复用 V0.1，单任务多流；`Hello.proto` 协商 + v1 TCP 回退（proto 顺延到 `≥ 3`）；断点续传（`Offer.resume` 按块重算哈希回告可信偏移）。**先独立于信令交付**：两端手填地址即可验证 QUIC 传输 + 续传，把风险最大的传输层单独跑通，信令/打洞/中继再逐档叠加。落点新 crate（暂名 `aa4c-wan` 或扩 `aa4c-transfer`，实现前定）。
+- 里程碑 2：自建 Rendezvous 信令（注册/查询带配对证明/信令）+ 客户端接入；配对时互签 proof 落库。
+- 里程碑 3：NAT 打洞（STUN 反射地址 + 信令交换候选 + 双向打洞 → QUIC）。
+- 里程碑 4：自建 Relay 中继（打洞失败回退，盲转发）+ 连接质量显示。
+- 里程碑 5：远程同步/发送（V0.2 索引交换 + V0.1 ATP 跑到远程通道；在线判定并入 Rendezvous）。
+- 里程碑 6：分享链接（`shares`/`share_access` 表、token/权限/过期/吊销/访问记录；先局域网落地）。可与传输层并行。
+- **可随时补的 V0.2 尾巴**（不阻塞 V0.3）：Inbox 按来源设备+时间分组、`IndexSummary` 摘要优化（先比整体哈希再决定是否全量拉）、冲突的版本历史 / 自动合并。
 
-> ⚠️ v0.2.0-preview 与 v0.1.x 配对协议不兼容（`DeviceInfo` 新增 `trust_level` 字段）。真机联调请确保两端都是 v0.2.0-preview 起的版本。
+> ⚠️ 版本兼容：`v0.2.0-preview.2`（proto=2）与 `v0.2.0-preview`（proto=1）**跨设备同步不互通**；与 v0.1.x 因 `DeviceInfo.trust_level` 无法配对。V0.3 起 proto 顺延到 `≥ 3`，仍向后兼容降级。
 
 ### A1 已完成要点（Android 适配）
 
@@ -172,4 +178,4 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - **`cargo test --workspace` 会跨 crate 并行跑测试二进制**，单独 `cargo test -p X` 过不代表 workspace 过。提交前务必跑一次完整 `cargo test --workspace`。
 - **lib 内联单测 ≠ 集成测试**：`cargo test -p X --test Y` 只跑集成测试，漏掉 `src/*.rs` 里的 `#[cfg(test)]`。要 `--lib` 或直接 `--workspace` 覆盖全部。
 
-V0.2 同步已全部实现。对 Agent 直接说"**V0.2 真机联调**"（跑 `pnpm tauri dev` 双机验证同步链路、通过后发 `v0.2.0`）或"**开始 V0.3 分享**"（`shares` 表 + 分享链接，见 [ROADMAP.md](ROADMAP.md)）即可继续。
+V0.2 已全部实现并发布，V0.3 设计已定稿（[CONNECT_DESIGN.md](CONNECT_DESIGN.md)，仅自建 Relay）。对 Agent 直接说"**开始 V0.3 里程碑 1**"（QUIC 会话层 + 断点续传，先两端手填地址跑通）即可继续。
