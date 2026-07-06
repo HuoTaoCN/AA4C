@@ -10,7 +10,7 @@ use aa4c_proto::{write_message, IndexItem, Message};
 use aa4c_store::Store;
 use aa4c_transfer::{
     IncomingIndexDispatch, IncomingPairDispatch, IncomingTlsStream, ResolveFuture, ResolvedFetch,
-    SharedFileResolver,
+    SharedFileResolver, SharedStream,
 };
 use aa4c_types::{DeviceId, DeviceInfo, TrustLevel};
 
@@ -61,7 +61,7 @@ impl IndexServe {
 }
 
 impl IncomingIndexDispatch for IndexServe {
-    fn dispatch(&self, stream: IncomingTlsStream, peer_id: DeviceId) {
+    fn dispatch(&self, stream: SharedStream, peer_id: DeviceId) {
         let store = self.store.clone();
         tokio::spawn(async move {
             if let Err(e) = serve_index(store, stream, peer_id).await {
@@ -73,7 +73,7 @@ impl IncomingIndexDispatch for IndexServe {
 
 async fn serve_index(
     store: Store,
-    mut stream: IncomingTlsStream,
+    mut stream: SharedStream,
     peer_id: DeviceId,
 ) -> aa4c_types::Result<()> {
     // 完全信任过滤：非 full 设备一律回空批次

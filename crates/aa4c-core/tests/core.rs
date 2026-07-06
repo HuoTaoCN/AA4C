@@ -33,6 +33,19 @@ async fn spawn_node() -> Node {
     Node { core, _dir: dir }
 }
 
+/// 同 [`spawn_node`]，但出站连接强制走 QUIC（里程碑 C1 的测试专用开关，
+/// 见 `TransferConfig::prefer_quic`）。`start_listener` 总会 best-effort 绑定 QUIC，
+/// 所以只需给发起方设这个开关，接收方按普通节点起即可同时监听 TCP 与 QUIC。
+async fn spawn_node_quic() -> Node {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = CoreConfig::new(dir.path().to_path_buf());
+    config.listen_port = 0;
+    config.transfer.default_save_dir = dir.path().join("downloads");
+    config.transfer.prefer_quic = true;
+    let core = Core::start(config).await.expect("core starts");
+    Node { core, _dir: dir }
+}
+
 /// 用真实监听端口构造 loopback 对端地址。
 fn peer_info(node: &Node) -> DeviceInfo {
     DeviceInfo {
@@ -279,6 +292,207 @@ async fn on_demand_fetch_pulls_file_and_gates_on_full_trust() {
         tokio::fs::read(dest.join("doc.txt")).await.unwrap(),
         b"pull me over ATP!"
     );
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn quic_roundtrip_transfer() {
+    // A 出站连接强制走 QUIC（里程碑 C1，CONNECT_DESIGN.md §5）；B 照常起（TCP+QUIC
+    // 都在监听，QUIC 用同一端口号，见 aa4c-transfer::quic::listen）。
+    let a = spawn_node_quic().await;
+    let b = spawn_node().await;
+    let a_id = a.core.self_info().id;
+    let b_id = b.core.self_info().id;
+
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "both sides pair");
+
+    let recv_dir = b._dir.path().join("inbox");
+    let src = a._dir.path().join("hello.txt");
+    tokio::fs::write(&src, b"AA4C over QUIC").await.unwrap();
+
+    let ev_b2 = b.core.subscribe();
+    let b_core = b.core.clone();
+    let recv_dir2 = recv_dir.clone();
+    tokio::spawn(async move {
+        let mut rx = ev_b2;
+        while let Ok(event) = rx.recv().await {
+            if let CoreEvent::TransferRequest { task } = event {
+                b_core
+                    .accept_transfer(&task.id, true, Some(recv_dir2.clone()))
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+
+    let mut ev_a2 = a.core.subscribe();
+    let task_id = a.core.send_files(&b_id, vec![src]).await.unwrap();
+
+    let done = timeout(WAIT, async {
+        loop {
+            match ev_a2.recv().await.unwrap() {
+                CoreEvent::TransferDone { task_id: t } if t == task_id => return true,
+                CoreEvent::TransferFailed { task_id: t, error } if t == task_id => {
+                    panic!("transfer failed: {error}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("transfer reaches terminal state");
+    assert!(done);
+
+    assert_eq!(
+        tokio::fs::read(recv_dir.join("hello.txt")).await.unwrap(),
+        b"AA4C over QUIC"
+    );
+    let a_tasks = a.core.list_transfers(10, 0).await.unwrap();
+    assert_eq!(a_tasks[0].status, TransferStatus::Done);
+    assert_eq!(a_tasks[0].peer, b_id);
+    let b_tasks = b.core.list_transfers(10, 0).await.unwrap();
+    assert_eq!(b_tasks[0].status, TransferStatus::Done);
+    assert_eq!(b_tasks[0].peer, a_id);
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}
+
+/// 在 A→B 方向转发超过 `cut_after` 字节后，静默丢弃后续 A→B 报文的 UDP 中继
+/// （QUIC 跑在 UDP 上，这是 `aa4c-transfer/tests/transfer.rs::cutting_proxy` 的 UDP
+/// 版本：模拟真实网络分区/掉线，而非任何一方主动发 Cancel）。B→A 方向照常转发。
+async fn cutting_udp_proxy(target: std::net::SocketAddr, cut_after: u64) -> std::net::SocketAddr {
+    use tokio::net::UdpSocket;
+
+    let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let addr = socket.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 65_535];
+        let mut client_addr: Option<std::net::SocketAddr> = None;
+        let mut forwarded = 0u64;
+        let mut cut = false;
+        loop {
+            let (n, from) = match socket.recv_from(&mut buf).await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            if from == target {
+                // B → A：一路转发，不掐断（连接的死活只由 A→B 方向的黑洞决定）
+                if let Some(c) = client_addr {
+                    let _ = socket.send_to(&buf[..n], c).await;
+                }
+                continue;
+            }
+            // A → B
+            client_addr = Some(from);
+            if cut {
+                continue; // 黑洞：静默丢弃，不回任何错误（模拟真实网络分区）
+            }
+            let _ = socket.send_to(&buf[..n], target).await;
+            forwarded += n as u64;
+            if forwarded >= cut_after {
+                cut = true;
+            }
+        }
+    });
+    addr
+}
+
+#[tokio::test]
+async fn quic_resume_after_disconnect() {
+    // A 出站强制走 QUIC。QUIC 自带 keep-alive + 8s 空闲超时（见 aa4c-transfer::quic::
+    // transport_config）：连接真正存活时 keep-alive 持续续命，只有黑洞代理让 keep-alive
+    // 也送不出去的真断连才会在约 8s 内被两端各自发现——这就是本测试的计时来源。
+    let a = spawn_node_quic().await;
+    let b = spawn_node().await;
+    let b_id = b.core.self_info().id;
+
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "both sides pair");
+
+    // 让 A 解析 B 时走 UDP 黑洞代理（而不是 B 的真实端口）：6 MiB 后黑洞，
+    // 确保第一块（4 MiB）完整落盘、第二块写到一半时"断网"。
+    let proxy = cutting_udp_proxy(peer_info(&b).addr.unwrap(), 6 * 1024 * 1024).await;
+    let mut rec = a.core.store.get_device(&b_id).await.unwrap().unwrap();
+    rec.last_addr = Some(proxy.to_string());
+    a.core.store.upsert_device(&rec).await.unwrap();
+
+    let recv_dir = b._dir.path().join("inbox");
+    let ev_b2 = b.core.subscribe();
+    let b_core = b.core.clone();
+    let recv_dir2 = recv_dir.clone();
+    tokio::spawn(async move {
+        let mut rx = ev_b2;
+        while let Ok(event) = rx.recv().await {
+            if let CoreEvent::TransferRequest { task } = event {
+                b_core
+                    .accept_transfer(&task.id, true, Some(recv_dir2.clone()))
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+
+    let src = a._dir.path().join("big.bin");
+    let content: Vec<u8> = (0..20 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    tokio::fs::write(&src, &content).await.unwrap();
+
+    // —— 第一次尝试：经黑洞代理，中途"断网" ——
+    let ev_a1 = a.core.subscribe();
+    let task1 = a.core.send_files(&b_id, vec![src.clone()]).await.unwrap();
+    assert!(
+        !timeout(Duration::from_secs(30), wait_terminal(ev_a1, &task1))
+            .await
+            .expect("first attempt reaches terminal state within 30s"),
+        "first attempt must fail (blackholed)"
+    );
+
+    let part = recv_dir.join("big.bin.aa4c-part");
+    let partial_len = tokio::fs::metadata(&part)
+        .await
+        .unwrap_or_else(|e| {
+            panic!("expected partial file kept for resume (not explicit cancel): {e}")
+        })
+        .len();
+    assert!(
+        partial_len >= 4 * 1024 * 1024,
+        "at least one full chunk should have landed before the blackhole, got {partial_len}"
+    );
+    assert!(partial_len < content.len() as u64);
+
+    // —— 第二次尝试：把 last_addr 改回 B 的真实地址，重新发起，应从续传起点继续 ——
+    let mut rec = a.core.store.get_device(&b_id).await.unwrap().unwrap();
+    rec.last_addr = peer_info(&b).addr.map(|a| a.to_string());
+    a.core.store.upsert_device(&rec).await.unwrap();
+
+    let ev_a2 = a.core.subscribe();
+    let task2 = a.core.send_files(&b_id, vec![src]).await.unwrap();
+    assert!(
+        timeout(WAIT, wait_terminal(ev_a2, &task2)).await.unwrap(),
+        "second attempt (resumed) should succeed"
+    );
+
+    // 内容完整正确（证明「重新流式读前缀喂 hasher」+「从续传偏移继续」的整套逻辑没错）
+    assert_eq!(
+        tokio::fs::read(recv_dir.join("big.bin")).await.unwrap(),
+        content
+    );
+    assert!(!part.exists(), "part file renamed away after success");
 
     a.core.shutdown().await.unwrap();
     b.core.shutdown().await.unwrap();

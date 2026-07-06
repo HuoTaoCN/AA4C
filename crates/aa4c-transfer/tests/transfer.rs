@@ -398,8 +398,9 @@ async fn mid_transfer_disconnect_fails_both_sides() {
     pair_nodes(&a, &b).await;
     auto_accept(&b);
 
-    // 经代理发送，2 MiB 后断开（握手 + Offer 足够通过）
-    let proxy = cutting_proxy(b.device.addr.unwrap(), 2 * 1024 * 1024).await;
+    // 经代理发送，6 MiB 后断开：默认 chunk_size=4 MiB，6 MiB 确保第一块完整落盘、
+    // 第二块写到一半时断连，才有「完整前缀 + 不完整尾部」可断言（而非卡在第一块中途）。
+    let proxy = cutting_proxy(b.device.addr.unwrap(), 6 * 1024 * 1024).await;
     let mut peer = b.device.clone();
     peer.addr = Some(proxy);
 
@@ -415,7 +416,18 @@ async fn mid_transfer_disconnect_fails_both_sides() {
         task_status(&b.store, &task_id).await,
         TransferStatus::Failed
     );
-    assert_no_part_files(&b.save_dir);
+    // V0.3 里程碑 C1（断点续传）起，非「明确取消」的中断（这里是网络断连）**保留**
+    // .aa4c-part 文件，供下次重新发起时续传（PROTOCOL.md §13）；只有明确取消
+    // （本地用户取消 / 对端主动 Cancel）才清理，见 sender_cancel_mid_transfer_cleans_up。
+    let part = b.save_dir.join("doomed.bin.aa4c-part");
+    let len = std::fs::metadata(&part)
+        .unwrap_or_else(|e| panic!("expected partial file kept for resume: {e}"))
+        .len();
+    assert!(
+        len >= 4 * 1024 * 1024,
+        "at least one full 4 MiB chunk should have landed before the cut, got {len}"
+    );
+    assert!(len < 64 * 1024 * 1024, "partial file should be incomplete");
 }
 
 #[tokio::test]

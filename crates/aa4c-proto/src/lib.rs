@@ -105,6 +105,23 @@ pub enum Message {
     FetchRequest {
         rel_path: String,
     },
+
+    // —— 断点续传（PROTOCOL.md §13 / CONNECT_DESIGN.md §5，里程碑 C1）——
+    /// 接收方在 `OfferAnswer{accept:true}` 之后**确定性地**紧跟发送（仅双方协商
+    /// proto ≥ `RESUME_PROTO_VERSION` 时）：报告每个文件已落盘 `.aa4c-part` 的可信
+    /// 续传起点。发送方据此从 `verified_bytes` 处续传，不必重发已确认部分。
+    ResumeReport {
+        task_id: TaskId,
+        progress: Vec<FileProgress>,
+    },
+}
+
+/// 断点续传进度条目（`ResumeReport` 载荷，PROTOCOL.md §13）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileProgress {
+    pub file_index: u32,
+    /// 可信续传起点（字节偏移）；发送方从此处继续，接收方从此处继续写入。
+    pub verified_bytes: u64,
 }
 
 /// 编码为完整帧（长度前缀 + 消息体）。
@@ -212,6 +229,7 @@ pub fn unexpected(msg: &Message) -> Aa4cError {
         Message::IndexRequest => "IndexRequest",
         Message::IndexEntries { .. } => "IndexEntries",
         Message::FetchRequest { .. } => "FetchRequest",
+        Message::ResumeReport { .. } => "ResumeReport",
     };
     Aa4cError::Protocol(format!("unexpected message: {variant}"))
 }
@@ -315,6 +333,44 @@ mod tests {
         assert_eq!(peer_of_b, id_a);
         assert_eq!(proto_a, PROTO_VERSION);
         assert_eq!(proto_b, PROTO_VERSION);
+    }
+
+    #[tokio::test]
+    async fn resume_report_roundtrips_and_appends_after_existing_variants() {
+        // 追加变体不影响既有编号：本测试与 message_roundtrip_over_stream 用同一批旧变体
+        // 混合编解码，任何一个变体的判别号被打乱都会在这里炸出来。
+        let samples = vec![
+            Message::Offer {
+                task_id: "t1".into(),
+                files: vec![FileMeta {
+                    rel_path: "a.bin".into(),
+                    size: 10,
+                }],
+            },
+            Message::ResumeReport {
+                task_id: "t1".into(),
+                progress: vec![
+                    FileProgress {
+                        file_index: 0,
+                        verified_bytes: 4 * 1024 * 1024,
+                    },
+                    FileProgress {
+                        file_index: 1,
+                        verified_bytes: 0,
+                    },
+                ],
+            },
+            Message::Cancel {
+                task_id: "t1".into(),
+                reason: "done".into(),
+            },
+        ];
+        let (mut a, mut b) = tokio::io::duplex(64 * 1024);
+        for msg in &samples {
+            write_message(&mut a, msg).await.unwrap();
+            let got = read_message(&mut b).await.unwrap();
+            assert_eq!(&got, msg);
+        }
     }
 
     #[tokio::test]

@@ -287,9 +287,7 @@ impl Core {
             .list_remote_index()
             .await?
             .into_iter()
-            .filter(|r| {
-                r.rel_path == rel_path && hash.map_or(true, |h| r.hash.as_deref() == Some(h))
-            })
+            .filter(|r| r.rel_path == rel_path && hash.is_none_or(|h| r.hash.as_deref() == Some(h)))
             .map(|r| r.device_id)
             .collect();
         if holders.is_empty() {

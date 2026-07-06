@@ -1,13 +1,12 @@
 //! 发送端会话（PROTOCOL.md §7 左列）。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use aa4c_proto::{client_hello, read_message, unexpected, write_message, Message};
 use aa4c_types::{Aa4cError, DeviceId, Result, TaskId, TransferStatus};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::time::timeout;
-use tokio_rustls::TlsConnector;
 use tokio_util::sync::CancellationToken;
 
 use crate::path::SendFile;
@@ -37,18 +36,9 @@ async fn drive(
     cancel: &CancellationToken,
 ) -> Result<()> {
     let t = svc.config.timeout;
-    let tcp = timeout(t, TcpStream::connect(job.addr))
-        .await
-        .map_err(|_| Aa4cError::Network("connect timeout".into()))??;
-    let config = svc.identity.tls_client_config(Some(&job.peer_id))?;
-    let mut stream = TlsConnector::from(Arc::new(config))
-        .connect(
-            tokio_rustls::rustls::pki_types::ServerName::try_from("aa4c").expect("static name"),
-            tcp,
-        )
-        .await?;
+    let mut stream = svc.dial(&job.peer_id, job.addr).await?;
 
-    let (hello_id, _proto) = client_hello(&mut stream, svc.identity.device_id()).await?;
+    let (hello_id, proto) = client_hello(&mut stream, svc.identity.device_id()).await?;
     if hello_id != job.peer_id {
         return Err(Aa4cError::Protocol("hello id != expected peer".into()));
     }
@@ -83,6 +73,23 @@ async fn drive(
         .update_task_status(&job.task_id, TransferStatus::Transferring, None)
         .await?;
 
+    // 断点续传（PROTOCOL.md §13，里程碑 C1）：proto ≥ RESUME_PROTO_VERSION 时接收方
+    // **确定性**紧跟一条 ResumeReport（不是尝试性的），两端都是同一批代码，不会缺席。
+    let resume: HashMap<u32, u64> = if proto >= aa4c_types::RESUME_PROTO_VERSION {
+        match timeout(t, read_message(&mut stream))
+            .await
+            .map_err(|_| Aa4cError::Network("resume report timeout".into()))??
+        {
+            Message::ResumeReport { progress, .. } => progress
+                .into_iter()
+                .map(|p| (p.file_index, p.verified_bytes))
+                .collect(),
+            other => return Err(unexpected(&other)),
+        }
+    } else {
+        HashMap::new()
+    };
+
     let mut progress = Progress::new(
         job.task_id.clone(),
         svc.events.clone(),
@@ -97,11 +104,16 @@ async fn drive(
         t,
         &mut progress,
         cancel,
+        &resume,
     )
     .await
 }
 
 /// 文件发送主循环（与连接建立解耦，便于协议级测试）。
+///
+/// `resume` 为每个文件的续传起点（file_index → verified_bytes，里程碑 C1）；
+/// 空表示不续传（V0.2 及更早对端，或按需拉取路径，行为与之前完全一致）。
+#[allow(clippy::too_many_arguments)]
 async fn transfer_files<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     task_id: &TaskId,
@@ -110,17 +122,44 @@ async fn transfer_files<S: AsyncRead + AsyncWrite + Unpin>(
     t: std::time::Duration,
     progress: &mut Progress,
     cancel: &CancellationToken,
+    resume: &HashMap<u32, u64>,
 ) -> Result<()> {
     for (index, file) in files.iter().enumerate() {
         let index =
             u32::try_from(index).map_err(|_| Aa4cError::Protocol("too many files".into()))?;
+        let resume_from = resume.get(&index).copied().unwrap_or(0);
+        if resume_from > 0 {
+            // 续传前缀记一次进度；此文件后续的重试不再重复计（send_file 本身不碰 progress）
+            progress.add(resume_from, &file.meta.rel_path).await;
+        }
         let mut attempts = 0u32;
         loop {
             if cancel.is_cancelled() {
                 let _ = write_message(stream, &cancel_msg(task_id)).await;
                 return Err(Aa4cError::Cancelled);
             }
-            let sent = send_file(stream, index, file, chunk_size, progress, cancel).await?;
+            let sent = match send_file(
+                stream,
+                index,
+                file,
+                chunk_size,
+                progress,
+                cancel,
+                resume_from,
+            )
+            .await
+            {
+                Ok(sent) => sent,
+                // send_file 内部（分块途中）检测到取消：这里补发 Cancel 通知对端，
+                // 否则对端只会看到连接静默直至超时——PROTOCOL.md §7 规则 3 要求
+                // 明确取消要通知对端清理 part 文件（V0.3 起未通知的中断会保留
+                // part 文件供续传，见 recv.rs 的 explicit_cancel）。
+                Err(Aa4cError::Cancelled) => {
+                    let _ = write_message(stream, &cancel_msg(task_id)).await;
+                    return Err(Aa4cError::Cancelled);
+                }
+                Err(e) => return Err(e),
+            };
             write_message(
                 stream,
                 &Message::FileDone {
@@ -144,7 +183,9 @@ async fn transfer_files<S: AsyncRead + AsyncWrite + Unpin>(
                         });
                     }
                     tracing::warn!(file = %file.meta.rel_path, attempt = attempts, "hash mismatch, retrying");
-                    progress.rollback(file.meta.size);
+                    // 只回退本次真正发送的部分：续传前缀的 credit 已经一次性记入且不重复，
+                    // 不应该被这里的重试回退掉。
+                    progress.rollback(file.meta.size - resume_from);
                 }
                 Message::Cancel { reason, .. } => {
                     return Err(Aa4cError::Network(format!("peer cancelled: {reason}")));
@@ -166,6 +207,10 @@ async fn transfer_files<S: AsyncRead + AsyncWrite + Unpin>(
 }
 
 /// 流式发送单个文件：分块发送，边读边算 BLAKE3，返回整文件哈希。
+///
+/// `resume_from > 0`：先重新流式读取源文件同样长度的前缀喂 hasher（保持整文件哈希
+/// 正确），从该偏移开始才真正通过网络发送——不在这里触碰 `progress`（调用方在
+/// [`transfer_files`] 里对每个文件只记一次续传前缀的进度，重试不重复计）。
 async fn send_file<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     index: u32,
@@ -173,13 +218,30 @@ async fn send_file<S: AsyncRead + AsyncWrite + Unpin>(
     chunk_size: usize,
     progress: &mut Progress,
     cancel: &CancellationToken,
+    resume_from: u64,
 ) -> Result<String> {
     let mut reader = tokio::fs::File::open(&file.abs).await?;
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; chunk_size];
     let mut offset: u64 = 0;
-    let mut remaining = file.meta.size;
 
+    if resume_from > 0 {
+        let mut remaining = resume_from;
+        while remaining > 0 {
+            let want = remaining.min(buf.len() as u64) as usize;
+            reader.read_exact(&mut buf[..want]).await.map_err(|_| {
+                Aa4cError::Protocol(format!(
+                    "file changed during transfer: {}",
+                    file.meta.rel_path
+                ))
+            })?;
+            hasher.update(&buf[..want]);
+            remaining -= want as u64;
+        }
+        offset = resume_from;
+    }
+
+    let mut remaining = file.meta.size - offset;
     while remaining > 0 {
         if cancel.is_cancelled() {
             return Err(Aa4cError::Cancelled);
@@ -220,6 +282,8 @@ fn cancel_msg(task_id: &TaskId) -> Message {
 /// 服务一次按需拉取（里程碑 4）：本端已读到对端 `FetchRequest` 并解析出共享文件，
 /// 现在在**同一入站连接**上反转角色当发送方——记一条 Send 任务、回 `Offer`、收
 /// `OfferAnswer` 后复用 [`transfer_files`] 把内容推给拉取方。收尾交由调用方 `finish_task`。
+///
+/// 拉取路径暂不支持续传（C1 范围内，见 V0.3_IMPLEMENTATION_PLAN.md C1 备注），恒传空表。
 pub(crate) async fn serve_fetch<S: AsyncRead + AsyncWrite + Unpin>(
     svc: &Arc<TransferService>,
     stream: &mut S,
@@ -298,6 +362,7 @@ pub(crate) async fn serve_fetch<S: AsyncRead + AsyncWrite + Unpin>(
         t,
         &mut progress,
         &cancel,
+        &HashMap::new(),
     )
     .await
 }
@@ -360,6 +425,7 @@ mod tests {
         let (mut a, mut b) = tokio::io::duplex(256 * 1024);
         let cancel = CancellationToken::new();
         let task_id = "t1".to_string();
+        let resume = HashMap::new();
         let (send_res, (done_count, task_done)) = tokio::join!(
             transfer_files(
                 &mut a,
@@ -369,6 +435,7 @@ mod tests {
                 Duration::from_secs(5),
                 &mut progress,
                 &cancel,
+                &resume,
             ),
             fake_receiver(&mut b, fail_acks),
         );

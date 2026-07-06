@@ -13,9 +13,7 @@ use aa4c_types::{
     Aa4cError, DeviceId, Direction, FileStatus, Result, TaskId, TransferFile, TransferStatus,
     TransferTask,
 };
-use tokio::net::TcpStream;
 use tokio::time::timeout;
-use tokio_rustls::TlsConnector;
 use tokio_util::sync::CancellationToken;
 
 use crate::path::sanitize_rel_path;
@@ -44,16 +42,7 @@ async fn drive(
     cancel: &CancellationToken,
 ) -> Result<()> {
     let t = svc.config.timeout;
-    let tcp = timeout(t, TcpStream::connect(job.addr))
-        .await
-        .map_err(|_| Aa4cError::Network("connect timeout".into()))??;
-    let config = svc.identity.tls_client_config(Some(&job.peer_id))?;
-    let mut stream = TlsConnector::from(Arc::new(config))
-        .connect(
-            tokio_rustls::rustls::pki_types::ServerName::try_from("aa4c").expect("static name"),
-            tcp,
-        )
-        .await?;
+    let mut stream = svc.dial(&job.peer_id, job.addr).await?;
 
     let (hello_id, proto) = client_hello(&mut stream, svc.identity.device_id()).await?;
     if hello_id != job.peer_id {
@@ -131,6 +120,7 @@ async fn drive(
     )
     .await?;
 
+    // 拉取路径暂不支持续传（C1 范围内，见 V0.3_IMPLEMENTATION_PLAN.md C1 备注），恒传空切片。
     crate::recv::receive_files(
         svc,
         &mut stream,
@@ -138,6 +128,7 @@ async fn drive(
         &[meta],
         &[rel],
         &save_dir,
+        &[],
         cancel,
     )
     .await

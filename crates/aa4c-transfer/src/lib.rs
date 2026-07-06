@@ -7,6 +7,7 @@
 mod fetch;
 mod path;
 mod progress;
+mod quic;
 mod recv;
 mod send;
 
@@ -29,8 +30,20 @@ use tokio_util::sync::CancellationToken;
 /// 事件发送端（与 aa4c-core 的事件总线同型）。
 pub type EventSender = broadcast::Sender<CoreEvent>;
 
-/// 已完成 TLS 握手的入站服务端流（与配对模块同型）。
+/// 已完成 TLS 握手的入站服务端流（与配对模块同型）。局域网配对目前只走这条具体类型
+/// （见 [`IncomingPairDispatch`]）；索引/拉取的入站分流走下面泛化的 [`SharedStream`]，
+/// 因为它们还要支持 QUIC 入站连接（里程碑 C1，CONNECT_DESIGN.md §5）。
 pub type IncomingTlsStream = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+
+/// 标记 trait：任何同时实现 `AsyncRead + AsyncWrite`（且 `Unpin + Send`）的双工流都自动满足，
+/// 用于把 TCP+TLS 与 QUIC 两种入站/出站连接抹平成同一个可动态分发的类型
+/// （里程碑 C1：索引交换/按需拉取要在两种承载层上跑同一套分发逻辑，见 CONNECT_DESIGN.md §5）。
+pub trait AsyncDuplex: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> AsyncDuplex for T {}
+
+/// 装箱的双工流：索引/拉取分流钩子的入参类型（TCP 或 QUIC 均可，见 [`AsyncDuplex`]）。
+/// 配对（[`IncomingPairDispatch`]）范围仍限局域网 TCP，未纳入此抽象（V0.3 未做远程配对）。
+pub type SharedStream = Box<dyn AsyncDuplex>;
 
 /// 统一监听器读到 `PairRequest` 后的配对分流钩子。
 ///
@@ -53,8 +66,8 @@ pub trait IncomingPairDispatch: Send + Sync + 'static {
 /// 与配对钩子同构：传输层只负责把已握手的入站连接交出去，索引语义（完全信任过滤、
 /// 共享范围限定路径）全部归 Core。实现内部应自行 spawn 处理并写回 `IndexEntries`。
 pub trait IncomingIndexDispatch: Send + Sync + 'static {
-    /// 接管一条已读出 Hello + `IndexRequest` 的入站连接；`peer_id` 为对端证书指纹。
-    fn dispatch(&self, stream: IncomingTlsStream, peer_id: DeviceId);
+    /// 接管一条已读出 Hello + `IndexRequest` 的入站连接（TCP 或 QUIC）；`peer_id` 为对端证书指纹。
+    fn dispatch(&self, stream: SharedStream, peer_id: DeviceId);
 }
 
 /// 解析成功的待回推文件（里程碑 4 按需拉取）。
@@ -91,6 +104,11 @@ pub struct TransferConfig {
     pub max_concurrent_tasks: usize,
     /// 协议等待超时（PROTOCOL.md §8）。
     pub timeout: Duration,
+    /// 出站连接优先走 QUIC（里程碑 C1 的测试/联调开关；正式的「按可达性自动选择
+    /// 直连/打洞/中继」逻辑收口在里程碑 C4，见 CONNECT_DESIGN.md §11）。默认 `false`
+    /// 不影响任何现有行为；仅当为 `true` 且本机 QUIC 监听已就绪时才生效，否则报错
+    /// （调用方不应该在没有 QUIC 端点时开启此项）。
+    pub prefer_quic: bool,
 }
 
 impl Default for TransferConfig {
@@ -100,6 +118,7 @@ impl Default for TransferConfig {
             default_save_dir: std::env::temp_dir().join("AA4C"),
             max_concurrent_tasks: 4,
             timeout: Duration::from_secs(60),
+            prefer_quic: false,
         }
     }
 }
@@ -118,6 +137,9 @@ pub struct TransferService {
     pub(crate) index_dispatch: OnceLock<Arc<dyn IncomingIndexDispatch>>,
     /// 共享文件解析器（Core 注入；未注入时入站 `FetchRequest` 直接断开）。
     pub(crate) fetch_resolver: OnceLock<Arc<dyn SharedFileResolver>>,
+    /// QUIC 端点（`start_listener` best-effort 绑定成功后写入；绑定失败则永远是空，
+    /// 出站连接自动回落 TCP，见 [`dial`]）。同一端点兼做出站连接，quinn 官方推荐用法。
+    pub(crate) quic_endpoint: OnceLock<quinn::Endpoint>,
 }
 
 impl TransferService {
@@ -139,6 +161,7 @@ impl TransferService {
             pair_dispatch: OnceLock::new(),
             index_dispatch: OnceLock::new(),
             fetch_resolver: OnceLock::new(),
+            quic_endpoint: OnceLock::new(),
         })
     }
 
@@ -158,6 +181,9 @@ impl TransferService {
     }
 
     /// 启动 TLS 监听。`port` 被占用时自动向后递增（最多 16 个），返回实际端口。
+    ///
+    /// 同时 best-effort 绑定 QUIC（UDP 同一端口号，见 CONNECT_DESIGN.md §5）：绑不上
+    /// 只警告，不阻断启动——没有 QUIC 就回落纯局域网 TCP 行为，不影响 V0.1/V0.2 既有能力。
     pub async fn start_listener(self: &Arc<Self>, port: u16) -> Result<u16> {
         let listener = bind_with_fallback(port).await?;
         let actual = listener.local_addr()?.port();
@@ -183,6 +209,17 @@ impl TransferService {
             }
         });
         tracing::info!(port = actual, "transfer listener started");
+
+        match quic::listen(self.clone(), &self.identity, actual) {
+            Ok(endpoint) => {
+                let _ = self.quic_endpoint.set(endpoint);
+                tracing::info!(port = actual, "quic listener started");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, port = actual, "quic listener unavailable, WAN transport disabled");
+            }
+        }
+
         Ok(actual)
     }
 
@@ -242,6 +279,42 @@ impl TransferService {
         Ok(task_id)
     }
 
+    /// 出站连接：按配置选 QUIC 或 TCP+TLS，抹平成同一个装箱双工流（里程碑 C1）。
+    ///
+    /// `prefer_quic=false`（默认）：走既有 TCP+TLS 路径，与 V0.1/V0.2 完全一致、零回归。
+    /// `prefer_quic=true`：要求本机 QUIC 端点已就绪（`start_listener` 绑定成功），否则报错——
+    /// 这是里程碑 C1 的测试/联调专用开关，「按可达性自动选择」的正式逻辑在里程碑 C4。
+    pub(crate) async fn dial(
+        &self,
+        peer_id: &DeviceId,
+        addr: std::net::SocketAddr,
+    ) -> Result<SharedStream> {
+        if self.config.prefer_quic {
+            let endpoint = self.quic_endpoint.get().ok_or_else(|| {
+                Aa4cError::Network("prefer_quic set but quic endpoint not available".into())
+            })?;
+            let stream = quic::connect(endpoint, &self.identity, peer_id, addr).await?;
+            return Ok(Box::new(stream));
+        }
+
+        use tokio::net::TcpStream;
+        use tokio::time::timeout;
+        use tokio_rustls::TlsConnector;
+
+        let t = self.config.timeout;
+        let tcp = timeout(t, TcpStream::connect(addr))
+            .await
+            .map_err(|_| Aa4cError::Network("connect timeout".into()))??;
+        let config = self.identity.tls_client_config(Some(peer_id))?;
+        let stream = TlsConnector::from(Arc::new(config))
+            .connect(
+                tokio_rustls::rustls::pki_types::ServerName::try_from("aa4c").expect("static name"),
+                tcp,
+            )
+            .await?;
+        Ok(Box::new(stream))
+    }
+
     /// 向某完全信任设备拉取共享索引（SYNC_DESIGN.md §3.3，里程碑 3）。
     ///
     /// 建连 → 握手（校验证书指纹）→ `IndexRequest` → 分批读 `IndexEntries` 直至 `last`。
@@ -252,21 +325,10 @@ impl TransferService {
         addr: std::net::SocketAddr,
     ) -> Result<Vec<aa4c_proto::IndexItem>> {
         use aa4c_proto::{client_hello, read_message, write_message, Message};
-        use tokio::net::TcpStream;
         use tokio::time::timeout;
-        use tokio_rustls::TlsConnector;
 
         let t = self.config.timeout;
-        let tcp = timeout(t, TcpStream::connect(addr))
-            .await
-            .map_err(|_| Aa4cError::Network("connect timeout".into()))??;
-        let config = self.identity.tls_client_config(Some(peer_id))?;
-        let mut stream = TlsConnector::from(Arc::new(config))
-            .connect(
-                tokio_rustls::rustls::pki_types::ServerName::try_from("aa4c").expect("static name"),
-                tcp,
-            )
-            .await?;
+        let mut stream = self.dial(peer_id, addr).await?;
 
         let (hello_id, proto) = client_hello(&mut stream, self.identity.device_id()).await?;
         if &hello_id != peer_id {

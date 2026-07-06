@@ -16,7 +16,7 @@ version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/HuoTaoCN/AA4C"
-rust-version = "1.77"
+rust-version = "1.85"
 
 [workspace.dependencies]
 # 内部 crates
@@ -36,6 +36,9 @@ tokio-util = "0.7"
 mdns-sd = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+# 广域网会话层（CONNECT_DESIGN.md §5，里程碑 C1）：rustls-ring 特性解析到与上面同一套
+# rustls/ring 版本树（已核实，无重复 crypto provider），零额外证书栈
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rcgen = "0.13"
 x509-parser = "0.16"
 blake3 = "1"

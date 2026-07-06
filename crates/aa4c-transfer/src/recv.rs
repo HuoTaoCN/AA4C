@@ -1,26 +1,33 @@
 //! 接收端会话（PROTOCOL.md §7 右列）。
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use aa4c_identity::device_id_from_cert;
-use aa4c_proto::{read_message, server_hello, unexpected, write_message, FileMeta, Message};
-use aa4c_types::{
-    Aa4cError, CoreEvent, Direction, FileStatus, Result, TaskId, TransferFile, TransferStatus,
-    TransferTask,
+use aa4c_proto::{
+    read_message, server_hello, unexpected, write_message, FileMeta, FileProgress, Message,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use aa4c_types::{
+    Aa4cError, CoreEvent, DeviceId, Direction, FileStatus, Result, TaskId, TransferFile,
+    TransferStatus, TransferTask,
+};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use crate::path::{dedup_target, sanitize_rel_path};
 use crate::progress::Progress;
-use crate::TransferService;
+use crate::{SharedStream, TransferService};
 
 type TlsServerStream = tokio_rustls::server::TlsStream<TcpStream>;
 
-/// 入站连接入口：握手、trusted 校验、按首消息分流。
+/// TCP+TLS 入站连接入口：握手、trusted 校验、按首消息分流。
+///
+/// `PairRequest` 走这里专属处理（配对目前只支持局域网 TCP，未纳入 QUIC，见
+/// CONNECT_DESIGN.md）；其余消息（Offer/IndexRequest/FetchRequest）委托给
+/// [`dispatch_shared`]，与 QUIC 入站（[`run_incoming_quic`]）共用同一套逻辑。
 pub(crate) async fn run_incoming(
     svc: Arc<TransferService>,
     mut stream: TlsServerStream,
@@ -35,7 +42,7 @@ pub(crate) async fn run_incoming(
             .ok_or_else(|| Aa4cError::Protocol("peer presented no certificate".into()))?;
         device_id_from_cert(certs)?
     };
-    let (hello_id, _proto) = server_hello(&mut stream, svc.identity.device_id()).await?;
+    let (hello_id, proto) = server_hello(&mut stream, svc.identity.device_id()).await?;
     if hello_id != cert_id {
         return Err(Aa4cError::Protocol("hello id != certificate id".into()));
     }
@@ -49,6 +56,74 @@ pub(crate) async fn run_incoming(
     let first = timeout(t, read_message(&mut stream))
         .await
         .map_err(|_| Aa4cError::Network("first message timeout".into()))??;
+
+    // 配对：仅此路径支持（走具体的 TCP+TLS 类型，PairingManager 需要读取 TCP 对端地址）。
+    if let Message::PairRequest { device, public_key } = first {
+        return match svc.pair_dispatch.get() {
+            Some(dispatch) => {
+                dispatch.dispatch(stream, cert_id, device, public_key);
+                Ok(())
+            }
+            None => {
+                let _ = write_message(
+                    &mut stream,
+                    &Message::PairReject {
+                        reason: "pairing not available".into(),
+                    },
+                )
+                .await;
+                Err(Aa4cError::Protocol("pairing dispatch not wired".into()))
+            }
+        };
+    }
+
+    dispatch_shared(svc, Box::new(stream), cert_id, trusted, proto, first).await
+}
+
+/// QUIC 入站连接入口：接受第一条 bidi 流、握手、trusted 校验，走与 TCP 相同的共享分发
+/// （里程碑 C1，CONNECT_DESIGN.md §5）。配对不支持 QUIC，遇到 `PairRequest` 直接拒绝
+/// （见 [`dispatch_shared`]）。
+pub(crate) async fn run_incoming_quic(
+    svc: Arc<TransferService>,
+    connection: quinn::Connection,
+) -> Result<()> {
+    let t = svc.config.timeout;
+    let cert_id = crate::quic::peer_device_id(&connection)?;
+    let (send, recv) = connection
+        .accept_bi()
+        .await
+        .map_err(|e| Aa4cError::Network(format!("quic accept stream: {e}")))?;
+    let mut stream = tokio::io::join(recv, send);
+
+    let (hello_id, proto) = server_hello(&mut stream, svc.identity.device_id()).await?;
+    if hello_id != cert_id {
+        return Err(Aa4cError::Protocol("hello id != certificate id".into()));
+    }
+    let trusted = svc
+        .store
+        .get_device(&cert_id)
+        .await?
+        .map(|d| d.trusted)
+        .unwrap_or(false);
+
+    let first = timeout(t, read_message(&mut stream))
+        .await
+        .map_err(|_| Aa4cError::Network("first message timeout".into()))??;
+
+    dispatch_shared(svc, Box::new(stream), cert_id, trusted, proto, first).await
+}
+
+/// 共享分流：入站连接读出首消息为 Offer/IndexRequest/FetchRequest 时的处理，
+/// TCP 与 QUIC 通用（里程碑 C1）。`PairRequest` 在此仅作为「不支持」处理——
+/// 配对目前只走 [`run_incoming`] 专属路径，不会以这个消息类型进入本函数。
+async fn dispatch_shared(
+    svc: Arc<TransferService>,
+    mut stream: SharedStream,
+    cert_id: DeviceId,
+    trusted: bool,
+    proto: u16,
+    first: Message,
+) -> Result<()> {
     match first {
         Message::Offer { task_id, files } => {
             if !trusted {
@@ -56,14 +131,14 @@ pub(crate) async fn run_incoming(
                 let _ = write_message(
                     &mut stream,
                     &Message::Cancel {
-                        task_id,
+                        task_id: task_id.clone(),
                         reason: "not_paired".into(),
                     },
                 )
                 .await;
                 return Err(Aa4cError::NotPaired(cert_id));
             }
-            let result = session(&svc, &mut stream, &cert_id, task_id.clone(), files).await;
+            let result = session(&svc, &mut stream, &cert_id, task_id.clone(), files, proto).await;
             svc.finish_task(&task_id, result).await;
             Ok(())
         }
@@ -112,23 +187,9 @@ pub(crate) async fn run_incoming(
                 }
             }
         }
-        // 配对连接：交给 Core 注入的分流钩子（PairingManager 适配器）
-        Message::PairRequest { device, public_key } => match svc.pair_dispatch.get() {
-            Some(dispatch) => {
-                dispatch.dispatch(stream, cert_id, device, public_key);
-                Ok(())
-            }
-            None => {
-                let _ = write_message(
-                    &mut stream,
-                    &Message::PairReject {
-                        reason: "pairing not available".into(),
-                    },
-                )
-                .await;
-                Err(Aa4cError::Protocol("pairing dispatch not wired".into()))
-            }
-        },
+        Message::PairRequest { .. } => Err(Aa4cError::Protocol(
+            "pairing is not supported on this transport".into(),
+        )),
         other => Err(unexpected(&other)),
     }
 }
@@ -143,14 +204,18 @@ struct OpenFile {
     written: u64,
 }
 
-/// 接收会话主循环。
-async fn session(
+/// 接收会话主循环。`proto` 为握手协商版本，决定是否交换断点续传信息（PROTOCOL.md §13）。
+async fn session<S>(
     svc: &Arc<TransferService>,
-    stream: &mut TlsServerStream,
+    stream: &mut S,
     peer_id: &str,
     task_id: TaskId,
     files: Vec<FileMeta>,
-) -> Result<()> {
+    proto: u16,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let t = svc.config.timeout;
 
     // 路径净化（任何非法路径 → 整个任务拒绝）
@@ -205,15 +270,69 @@ async fn session(
         .update_task_status(&task_id, TransferStatus::Transferring, None)
         .await?;
 
+    // 断点续传（PROTOCOL.md §13，里程碑 C1）：双方协商 proto ≥ RESUME_PROTO_VERSION 时
+    // **确定性**交换（不是尝试性的）——接收方探测已落盘的 .aa4c-part，回告可信续传起点。
+    let resume = if proto >= aa4c_types::RESUME_PROTO_VERSION {
+        let progress = resume_progress(&save_dir, &rel_paths, &files).await;
+        write_message(
+            stream,
+            &Message::ResumeReport {
+                task_id: task_id.clone(),
+                progress: progress.clone(),
+            },
+        )
+        .await?;
+        progress
+    } else {
+        Vec::new()
+    };
+
     receive_files(
-        svc, stream, &task_id, &files, &rel_paths, &save_dir, &cancel,
+        svc, stream, &task_id, &files, &rel_paths, &save_dir, &resume, &cancel,
     )
     .await
+}
+
+/// 断点续传：把已落盘 `.aa4c-part` 截断到 4 MiB 边界作为「安全前缀」（PROTOCOL.md §13）。
+///
+/// 不做逐块签名比对——只信任「完整的 4 MiB 块」，丢弃末尾不足一块的余量（可能是上次
+/// 传输中途断连造成的半截写入）。这在任何 chunk_size 配置下都安全：最终会在 `FileDone`
+/// 时对整个文件重新校验完整哈希，前缀只要不是「假想」而是真被完整写入过就绝对正确。
+async fn resume_progress(
+    save_dir: &std::path::Path,
+    rel_paths: &[PathBuf],
+    files: &[FileMeta],
+) -> Vec<FileProgress> {
+    const BLOCK: u64 = aa4c_types::CHUNK_SIZE as u64;
+    let mut out = Vec::new();
+    for (idx, rel) in rel_paths.iter().enumerate() {
+        let target = save_dir.join(rel);
+        let file_name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let part = target.with_file_name(format!("{file_name}.aa4c-part"));
+        let Ok(meta) = tokio::fs::metadata(&part).await else {
+            continue;
+        };
+        let size = meta.len().min(files[idx].size);
+        let verified = (size / BLOCK) * BLOCK;
+        if verified > 0 {
+            out.push(FileProgress {
+                file_index: idx as u32,
+                verified_bytes: verified,
+            });
+        }
+    }
+    out
 }
 
 /// 接收文件主循环（PROTOCOL.md §7 右列，已与「接受/握手」解耦）：
 /// 收 `Chunk`/`FileDone`、回 `FileAck`、`TaskDone` 收尾。入站推送（[`session`]）与
 /// 按需拉取（拉取方反向接收，里程碑 4）共用此循环；`stream` 泛型，故两种连接皆可。
+///
+/// `resume` 为按需续传的起点报告（里程碑 C1；拉取路径固定传空切片，暂不支持续传）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn receive_files<S>(
     svc: &Arc<TransferService>,
     stream: &mut S,
@@ -221,6 +340,7 @@ pub(crate) async fn receive_files<S>(
     files: &[FileMeta],
     rel_paths: &[PathBuf],
     save_dir: &std::path::Path,
+    resume: &[FileProgress],
     cancel: &CancellationToken,
 ) -> Result<()>
 where
@@ -234,14 +354,32 @@ where
         svc.store.clone(),
         total,
     );
+
+    let resume_map: HashMap<u32, u64> = resume
+        .iter()
+        .map(|p| (p.file_index, p.verified_bytes))
+        .collect();
+    // 续传前缀一次性记入进度（后续同一文件的重试不会重复调用此处，见下方 rollback 修正）。
+    for p in resume {
+        progress
+            .add(p.verified_bytes, &files[p.file_index as usize].rel_path)
+            .await;
+    }
+
     let mut done = vec![false; files.len()];
     let mut current: Option<OpenFile> = None;
     let mut parts_created: Vec<PathBuf> = Vec::new();
     let max_chunk = svc.config.chunk_size * 2;
+    // 是否为「明确取消」（本地用户取消 / 对端主动发 Cancel）：只有这种情况才清理 part
+    // 文件（PROTOCOL.md §7 规则 3）。网络掉线、超时、协议错误等**意外**中断保留 part
+    // 文件——这正是断点续传的前提（里程碑 C1），下次重新发起时 `resume_progress`
+    // 才有东西可续。孤儿 part 文件的过期清理不在本里程碑范围内。
+    let mut explicit_cancel = false;
 
     let result = loop {
         let msg = tokio::select! {
             () = cancel.cancelled() => {
+                explicit_cancel = true;
                 let _ = write_message(stream, &Message::Cancel {
                     task_id: task_id.clone(),
                     reason: "cancelled by receiver".into(),
@@ -263,12 +401,18 @@ where
                 if idx >= files.len() || done[idx] || len as usize > max_chunk {
                     break Err(Aa4cError::Protocol("invalid chunk header".into()));
                 }
-                // 新文件或重传重启（offset 0 且无打开文件）
+                let expected_start = resume_map.get(&file_index).copied().unwrap_or(0);
+                // 新文件或重传重启（offset 等于该文件的续传起点且无打开文件）
                 if current.as_ref().map(|c| c.index) != Some(file_index) {
-                    if current.is_some() || offset != 0 {
+                    if current.is_some() || offset != expected_start {
                         break Err(Aa4cError::Protocol("out-of-order chunk".into()));
                     }
-                    let open = open_part(save_dir, &rel_paths[idx], file_index).await;
+                    let open = if expected_start > 0 {
+                        open_part_resumed(save_dir, &rel_paths[idx], file_index, expected_start)
+                            .await
+                    } else {
+                        open_part(save_dir, &rel_paths[idx], file_index).await
+                    };
                     match open {
                         Ok(open) => {
                             parts_created.push(open.part.clone());
@@ -297,12 +441,21 @@ where
                 if idx >= files.len() || done[idx] {
                     break Err(Aa4cError::Protocol("unexpected FileDone".into()));
                 }
-                // 空文件：没有任何 Chunk，直接建空文件
+                let expected_start = resume_map.get(&file_index).copied().unwrap_or(0);
+                // 没有任何 Chunk 直接收到 FileDone：要么真是空文件，要么整份都已从续传
+                // 起点确认（发送方无需再传任何字节）——两种情况统一按 expected_start
+                // 判定，取代原来只认「size==0」的窄条件。
                 if current.as_ref().map(|c| c.index) != Some(file_index) {
-                    if current.is_some() || files[idx].size != 0 {
+                    if current.is_some() || expected_start != files[idx].size {
                         break Err(Aa4cError::Protocol("FileDone without chunks".into()));
                     }
-                    match open_part(save_dir, &rel_paths[idx], file_index).await {
+                    let open = if expected_start > 0 {
+                        open_part_resumed(save_dir, &rel_paths[idx], file_index, expected_start)
+                            .await
+                    } else {
+                        open_part(save_dir, &rel_paths[idx], file_index).await
+                    };
+                    match open {
                         Ok(open) => {
                             parts_created.push(open.part.clone());
                             current = Some(open);
@@ -328,7 +481,9 @@ where
                     break Err(e);
                 }
                 if !ok {
-                    progress.rollback(written);
+                    // 只回退本次真正重收的部分：续传前缀的 credit（一次性记入，见上文）保留，
+                    // 否则同一连接内的重试会反复扣掉本不该扣的已确认字节。
+                    progress.rollback(written - expected_start);
                 }
             }
             Message::TaskDone { .. } => {
@@ -339,13 +494,14 @@ where
                 break Err(Aa4cError::Protocol("TaskDone before all files".into()));
             }
             Message::Cancel { reason, .. } => {
+                explicit_cancel = true;
                 break Err(Aa4cError::Network(format!("peer cancelled: {reason}")));
             }
             other => break Err(unexpected(&other)),
         }
     };
 
-    if result.is_err() {
+    if result.is_err() && explicit_cancel {
         cleanup_parts(&parts_created).await;
     }
     result
@@ -381,6 +537,55 @@ async fn open_part(
         file,
         hasher: blake3::Hasher::new(),
         written: 0,
+    })
+}
+
+/// 打开一个已确认前 `verified_bytes` 字节的 part 文件，续传写入（PROTOCOL.md §13，
+/// 里程碑 C1）：重新流式读取已验证前缀喂 hasher（重建增量哈希状态，不做逐块签名
+/// 比对——安全性来自「这些字节真被完整写入过」，见 [`resume_progress`] 的注释），
+/// 不截断文件，从 `verified_bytes` 处继续写。
+async fn open_part_resumed(
+    save_dir: &std::path::Path,
+    rel: &std::path::Path,
+    index: u32,
+    verified_bytes: u64,
+) -> Result<OpenFile> {
+    let target = save_dir.join(rel);
+    if let Some(parent) = target.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let file_name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let part = target.with_file_name(format!("{file_name}.aa4c-part"));
+
+    let mut hasher = blake3::Hasher::new();
+    let mut reader = tokio::fs::File::open(&part).await?;
+    let mut buf = vec![0u8; 1024 * 1024];
+    let mut remaining = verified_bytes;
+    while remaining > 0 {
+        let want = remaining.min(buf.len() as u64) as usize;
+        reader.read_exact(&mut buf[..want]).await?;
+        hasher.update(&buf[..want]);
+        remaining -= want as u64;
+    }
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false) // 关键：续传要保留已确认前缀，绝不能截断
+        .open(&part)
+        .await?;
+    file.seek(std::io::SeekFrom::Start(verified_bytes)).await?;
+
+    Ok(OpenFile {
+        index,
+        part,
+        target,
+        file,
+        hasher,
+        written: verified_bytes,
     })
 }
 

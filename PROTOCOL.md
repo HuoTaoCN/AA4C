@@ -23,9 +23,9 @@
 | 常量 | 值 |
 |------|-----|
 | 协议版本（V0.1，局域网传输/配对） | `proto = 1` |
-| 协议版本（V0.2，追加索引交换 / 按需拉取，**当前**） | `proto = 2` |
-| 协议版本（V0.3 广域网 QUIC/Relay 草案） | `proto ≥ 3`（Part B，未定稿） |
-| 默认端口 | 42420（TCP；广域网草案同端口 UDP 用于 QUIC/打洞） |
+| 协议版本（V0.2，追加索引交换 / 按需拉取） | `proto = 2` |
+| 协议版本（V0.3 里程碑 C1，QUIC 会话层 + 断点续传，**当前**） | `proto = 3` |
+| 默认端口 | 42420（TCP；QUIC 同端口 UDP，Part B §10） |
 | mDNS 服务类型 | `_aa4c._tcp.local.` |
 | 最大帧长 | 16 MiB |
 | 分块大小 | 4 MiB |
@@ -221,9 +221,11 @@ struct IndexItem { rel_path: String, size: u64, hash: Option<String> }
 
 ---
 
-# Part B — 广域网 QUIC/Relay（proto ≥ 3，V0.3 设计草案）
+# Part B — 广域网 QUIC/Relay（proto ≥ 3）
 
-> ⚠️ 以下为设计草案，V0.3 开发前需评审定稿。原则：**广域网版是既有协议的超集**，帧层、消息层、安全层不变，只扩展会话层与发现层；届时握手协议版本再上抬（`proto ≥ 3`）。
+> §10（QUIC 会话层）与 §13（断点续传）**已实现**（里程碑 C1，`PROTO_VERSION = 3`）；
+> §11（信令）/ §12（连接阶梯）/ §15 其余部分仍是设计草案，随 C2 起的里程碑落地。
+> 原则：**广域网版是既有协议的超集**，帧层、消息层、安全层不变，只扩展会话层与发现层。
 > 历史备注：早期草案曾把这套广域网能力称作「proto v2」；V0.2 已把 LAN 内的握手版本占用为 `proto = 2`（索引/拉取），故广域网演进顺延到 `proto ≥ 3`，本文其余处的「v2」按此语境理解。
 > 应用层设计（连接阶梯、自建信令/中继、远程能力复用、分享链接）见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)。
 > **V0.3 已确认：Rendezvous / Relay 仅自建**，下文提到的「官方公益节点」不在 V0.3 范围，留待更后续评估。
@@ -234,12 +236,12 @@ struct IndexItem { rel_path: String, size: u64, hash: Option<String> }
 - 优先 P2P 直连（打洞），失败时回退 Relay 中继
 - 不引入账号体系：设备身份依旧是密钥对，Rendezvous 服务器只做"电话簿"，看不到内容
 
-## 10. 会话层升级：QUIC
+## 10. 会话层升级：QUIC（已实现，里程碑 C1）
 
-- 广域网传输通道改用 **QUIC**（quinn），TLS 1.3 内建，证书固定规则与 §2 相同；UDP 端口与 TCP 监听端口同号
-- **首版单流等价迁移**：一条 bidi 流上原样运行既有 ATP 消息序（收发循环已泛型化，直接复用）；
-  **单任务多流**（控制一条流 + 每文件独立流，并行与独立重传）留作打洞落地后的性能优化
-- v1/v2 TCP 通道保留作为局域网路径；QUIC 通道上握手协商 `proto ≥ 3`
+- 广域网传输通道改用 **QUIC**（quinn），TLS 1.3 内建，证书固定规则与 §2 相同；UDP 端口与 TCP 监听端口同号，`start_listener` best-effort 绑定（失败只警告，回落纯 TCP）
+- **首版单流等价迁移**（已实现）：每次逻辑会话开一条新 QUIC 连接 + 一条 bidi 流，`tokio::io::join` 拼成 `AsyncRead+AsyncWrite`，既有 ATP 收发循环零改动直接复用；**单任务多流**（每文件独立流、并行与独立重传）留作打洞落地后的性能优化
+- v1/v2 TCP 通道保留作为局域网路径；QUIC 通道上握手协商 `proto = 3`；出站是否走 QUIC 由 `TransferConfig.prefer_quic` 控制（里程碑 C1 仅作测试/联调开关，默认 `false` 不影响任何现有行为；「按可达性自动选择」的正式逻辑收口在里程碑 C4）
+- **keep-alive + 空闲超时**（`aa4c-transfer::quic::transport_config`）：2s 心跳 + 8s 空闲超时——应用层等待用户确认可长达 60s，心跳持续续命，只有心跳本身也送不出去的真断连才会在约 8s 内被两端各自发现
 
 ## 11. 发现层升级：`aa4c-server` 信令（Part C 定稿字段）
 
@@ -286,20 +288,31 @@ RelayClose
 - Relay 限速与配额由自建节点运营者配置；`session_token` 一次性 + 短 TTL，由信令侧发放、进程内校验
 - 中继流量计入"连接质量"显示，UI 提示"通过中继传输，速度可能较慢"
 
-## 13. 断点续传（proto ≥ 3）
+## 13. 断点续传（proto ≥ 3，已实现，里程碑 C1）
 
 **不修改既有 `Offer` 变体**（bincode enum 只允许追加，改字段会破 v1/v2 解码）。新增追加变体：
 
 ```rust
-// 接收方在 OfferAnswer{accept:true} 之后紧跟发送（仅 proto ≥ 3 通道）：
+// 接收方在 OfferAnswer{accept:true} 之后紧跟发送：
 ResumeReport {
     task_id: TaskId,
     progress: Vec<FileProgress>,   // { file_index, verified_bytes }
 }
 ```
 
-- 接收方对 `.aa4c-part` 已落盘部分按 4 MiB 块重算哈希，`verified_bytes` = 连续可信前缀长度
-- 发送方收到后对相应文件从 `verified_bytes` 处续传（Chunk offset 起点非零）；未收到则从头发送
+- **确定性交换**（不是尝试性的）：双方协商 `proto ≥ 3` 时，接收方**必定**紧跟发送这条消息
+  （哪怕 `progress` 为空）；发送方**必定**等待读取。proto < 3 的对端两边都不发送/不等待，
+  行为与旧版完全一致。
+- **`verified_bytes` 的计算**：接收方把已落盘的 `.aa4c-part` 长度向下截断到 4 MiB 边界
+  （`aa4c_types::CHUNK_SIZE`），只信任**完整写入过的整块**，丢弃末尾不足一块的余量（可能是
+  上次中断时的半截写入）——不做逐块签名比对，安全性来自「最终 `FileDone` 仍会对整个文件重新
+  校验完整哈希」，前缀只要是真被完整写入过就绝对正确。
+- 发送方对相应文件从 `verified_bytes` 处续传：重新流式读取源文件同样长度的前缀喂 BLAKE3
+  hasher（保持整文件哈希正确），从该偏移开始才真正发送 `Chunk`（offset 非零）。接收方同理
+  重新流式读取已落盘前缀喂 hasher，从偏移续写（不截断 part 文件）。
+- **只有「明确取消」才清理 `.aa4c-part`**（本地用户取消 / 对端主动发 `Cancel`，PROTOCOL.md
+  §7 规则 3 的原意）；网络掉线、超时等**意外**中断保留 part 文件——这正是续传的前提。孤儿
+  part 文件的过期清理不在本里程碑范围内。
 - proto < 3 通道不发送此消息，行为与 v1/v2 完全一致
 
 ## 14. 版本协商与兼容
