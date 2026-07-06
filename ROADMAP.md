@@ -68,7 +68,7 @@
 - 远程同步、远程发送
 - 分享链接
 
-> 设计详见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)；线路层见 [PROTOCOL.md](PROTOCOL.md) Part B。
+> 设计详见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)；实现计划见 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)；线路层见 [PROTOCOL.md](PROTOCOL.md) Part B。
 
 ---
 

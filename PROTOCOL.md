@@ -236,23 +236,35 @@ struct IndexItem { rel_path: String, size: u64, hash: Option<String> }
 
 ## 10. 会话层升级：QUIC
 
-- v2 传输通道改用 **QUIC**（quinn），TLS 1.3 内建，证书固定规则与 §2 相同
-- 单任务多流：控制消息一条流，每个文件独立流（替代 §7 的顺序传输，支持并行与独立重传）
-- v1 TCP 通道保留作为局域网回退
+- 广域网传输通道改用 **QUIC**（quinn），TLS 1.3 内建，证书固定规则与 §2 相同；UDP 端口与 TCP 监听端口同号
+- **首版单流等价迁移**：一条 bidi 流上原样运行既有 ATP 消息序（收发循环已泛型化，直接复用）；
+  **单任务多流**（控制一条流 + 每文件独立流，并行与独立重传）留作打洞落地后的性能优化
+- v1/v2 TCP 通道保留作为局域网路径；QUIC 通道上握手协商 `proto ≥ 3`
 
-## 11. 发现层升级：Rendezvous 服务
+## 11. 发现层升级：`aa4c-server` 信令（Part C 定稿字段）
 
-设备通过 WSS 长连接注册到 Rendezvous 服务器（自部署或官方公益节点）：
+自建 **`aa4c-server`**（单进程，信令 + 中继合一，见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md) §1.1）。
+服务器身份与设备同构：**Ed25519 密钥对 + 自签证书，证书指纹写进服务器地址**
+（`aa4c://host:port#<指纹前16位hex>`），客户端连接时校验 pin，不依赖 CA / 域名。
+
+客户端 ↔ 服务器为**一条 TLS 长连接**，复用本协议帧层（4 字节大端长度 + bincode），
+消息族为独立的 `ServerMessage` enum（独立 `server_proto` 版本，遵守「只追加变体」）。
+消息职责（字段随里程碑 2 在 Part C 定稿）：
 
 ```
-POST register   { device_id, signed_at, signature, endpoints[] }
-GET  lookup     { device_id } → { endpoints[], relay_hint }
-WS   signal     （打洞信令转发：候选地址交换）
+SrvHello / SrvHelloAck        协商 server_proto；服务器下发能力与中继端点
+Challenge / ChallengeReply    服务器发 nonce，设备私钥签名——身份验证不依赖时钟
+Register                      候选端点 + proto/版本 + 已配对设备允许名单；TTL 续约
+Lookup / LookupReply          查询目标端点；需已过挑战 且 查询方在目标允许名单内
+Signal                        打洞信令盲转发（ICE 候选交换）
+RelayRequest / RelayGrant     申请中继会话，发放一次性 session_token（进程内登记）
 ```
 
-- 注册消息由设备私钥签名，服务器验签防止 DeviceId 抢注
-- 服务器只存储 `device_id → 公网端点`，**无文件元数据、无内容、无社交关系**
-- 查询限制：只能查询"已配对设备"（请求需携带双方配对关系证明：双方公钥的互签记录）
+- 服务器只存「端点映射 + 允许名单」，**无文件元数据、无内容**
+- 查询授权 = **允许名单 + 挑战应答**（初稿的「双方互签配对证明」因吊销漏洞弃用：
+  名单随每次注册刷新，解除配对即自然吊销）
+- 寻址规则：**查谁，去谁的 home server 查**；打洞信令与中继会话使用**被叫方**的服务器；
+  对端服务器地址（`devices.server_hint`）在配对时交换落库
 
 ## 12. 连接建立顺序（ICE-like）
 
@@ -271,22 +283,24 @@ RelayData   <opaque bytes>         // 端到端 TLS，Relay 不可解密
 RelayClose
 ```
 
-- Relay 限速与配额由节点运营者配置；官方节点默认 10 Mbps/会话
+- Relay 限速与配额由自建节点运营者配置；`session_token` 一次性 + 短 TTL，由信令侧发放、进程内校验
 - 中继流量计入"连接质量"显示，UI 提示"通过中继传输，速度可能较慢"
 
-## 13. 断点续传（v2）
+## 13. 断点续传（proto ≥ 3）
 
-`Offer` 扩展可选字段：
+**不修改既有 `Offer` 变体**（bincode enum 只允许追加，改字段会破 v1/v2 解码）。新增追加变体：
 
 ```rust
-Offer {
-    task_id, files,
-    resume: Option<Vec<FileProgress>>,  // { file_index, verified_bytes }
+// 接收方在 OfferAnswer{accept:true} 之后紧跟发送（仅 proto ≥ 3 通道）：
+ResumeReport {
+    task_id: TaskId,
+    progress: Vec<FileProgress>,   // { file_index, verified_bytes }
 }
 ```
 
-- 接收方对 `.aa4c-part` 已落盘部分按 4 MiB 块重算哈希，回告可信偏移量
-- 发送方从 `verified_bytes` 处续传
+- 接收方对 `.aa4c-part` 已落盘部分按 4 MiB 块重算哈希，`verified_bytes` = 连续可信前缀长度
+- 发送方收到后对相应文件从 `verified_bytes` 处续传（Chunk offset 起点非零）；未收到则从头发送
+- proto < 3 通道不发送此消息，行为与 v1/v2 完全一致
 
 ## 14. 版本协商与兼容
 
@@ -295,13 +309,17 @@ Offer {
 - mDNS TXT 的 `proto` 字段提前告知能力，避免无效尝试
 - 新增消息只允许追加 enum 变体；后续引入 capability flags 做细粒度协商
 
-## 15. 安全考量（v2 新增面）
+## 15. 安全考量（广域网新增面）
 
 | 威胁 | 对策 |
 |------|------|
-| Rendezvous 服务器作恶/被攻破 | 只存端点映射；注册验签；端到端加密使其无法读取内容 |
-| DeviceId 枚举扫描 | lookup 需配对关系证明；速率限制 |
-| Relay 流量分析 | v2 不承诺抗流量分析（非目标）；记录在 SECURITY.md 威胁模型 |
-| 打洞信令伪造 | 信令消息由设备私钥签名 |
+| 服务器作恶/被攻破 | 只存端点映射 + 允许名单；端到端加密使其无法读取内容；自建=自有信任域 |
+| 服务器身份冒充 | 证书指纹写进服务器地址（`aa4c://…#fp`），连接即校验，无 TOFU 窗口 |
+| DeviceId 枚举扫描 | Lookup 需挑战应答证明身份 + 在目标允许名单内；速率限制 |
+| 解除配对后仍可查询 | 允许名单随每次注册刷新，吊销自然发生（无永久凭据） |
+| 时钟漂移 / 重放 | 身份验证用 challenge-response（nonce），不依赖设备时钟 |
+| 打洞信令伪造 | 信令经已挑战验证的长连接转发，消息由设备私钥签名 |
+| 中继滥用（陌生人蹭带宽） | session_token 仅经信令发放（已配对 + 允许名单），一次性 + 短 TTL |
+| Relay 流量分析 | 不承诺抗流量分析（非目标）；记录在 SECURITY.md 威胁模型 |
 
 详细威胁模型见 [SECURITY.md](SECURITY.md)。

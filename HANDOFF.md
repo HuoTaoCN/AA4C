@@ -33,7 +33,8 @@
 | 协议 proto→2 + 同步版本门槛 | ✅ | `d1d147a` | `PROTO_VERSION=2` + `SYNC_PROTO_VERSION`：索引/拉取发起方按协商版本 gate，遇 v1 对端优雅跳过；mDNS TXT `proto=2`；新增桌面联调钩子 `AA4C_DATA_DIR`/`AA4C_DEVICE_NAME`（同机跑多实例）+ `scripts/dev-two-nodes.sh`。**⚠️ 与 v0.2.0-preview 同步不再互通** |
 | 同步收尾：实时监听 + 拉取落点镜像 | ✅ | `9dfe1ad` | `notify`（`notify-debouncer-mini`，2s 去抖）实时监听共享范围目录、随范围增删对齐（定时 300s + 传输完成兜底）；按需拉取按分组匹配落回本机对应范围原结构（原黄条目转绿），未命中回落 Inbox。含监听重扫测试 |
 | v0.2.0-preview.2 发布 | ✅ | `bf403ba` | 打包预览版：V0.2 跨设备同步全链路 + proto=2 随三平台包/APK 发布（GitHub Release，prerelease）；`e53fb53` 修 CI `cargo audit`（忽略 quick-xml 传递依赖 DoS 公告） |
-| **V0.3 设计（Connect）** | 🚀 进行中 | — | 新增 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)：连接阶梯（LAN→公网→打洞→**自建 Relay**）+ 自建 Rendezvous 信令 + QUIC 会话 + 远程同步/发送复用 + 分享链接；DATABASE_SCHEMA §4c（`shares`/`share_access`）、PROTOCOL Part B、ROADMAP 同步。仅设计未实现 |
+| V0.3 设计（Connect）v1 | ✅ | `df92c7b` | 新增 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)：连接阶梯 + 自建信令/中继 + QUIC + 远程能力复用 + 分享链接；DATABASE_SCHEMA §4c、PROTOCOL Part B、ROADMAP 同步 |
+| **V0.3 设计评审修订 + 实现计划** | 🚀 进行中 | — | 设计定稿 v2：服务器身份=密钥对+地址内指纹、允许名单+挑战应答取代互签 proof、单进程 `aa4c-server`、信令复用帧层 bincode（弃 HTTP/WS）、单 `server_url` 默认关、分享仅已索引内容、**中继提前到打洞前**；新增 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)（C1–C6，C1 细化到可直接执行）。仅设计未实现 |
 
 整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。**V0.2 同步五个里程碑（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取 / 冲突标记）全部落地**（SYNC_DESIGN.md §10）；线路协议已升到 `proto=2` 并对同步路径按版本 gate（与 v0.2.0-preview 的同步不再互通，趁预发布窗口对齐）。**真机 GUI 走查已人工跑通**（`scripts/dev-two-nodes.sh` 起两实例：配对 → 互标我的设备 → 黄「可下载」→ 点黄拉取转绿 → 同名不同内容「多版本」并列，均正常）。
 
@@ -128,19 +129,15 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：V0.3 里程碑 1（QUIC 会话层）
+## 四、下一步：V0.3 里程碑 C1（QUIC 会话层 + 断点续传）
 
-**V0.2 已全部完成并发布**（五个同步里程碑 + 实时监听 + 拉取镜像 + proto=2；已过真机双实例走查，`v0.2.0-preview.2` 三平台包/APK 已发，CI 全绿）。**V0.3 设计已定稿**：见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（基础设施**仅自建 Rendezvous/Relay**，不做官方节点）。按 CONNECT_DESIGN §11 的里程碑推进：
+**V0.2 已全部完成并发布**（`v0.2.0-preview.2`，CI 全绿）。**V0.3 设计已定稿（v2，经评审修订）**：[CONNECT_DESIGN.md](CONNECT_DESIGN.md)（§12 是已确认决策清单，**不要重开已定案讨论**）。实现拆解见 **[V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)**（C1–C6；顺序已定：**中继 C3 先于打洞 C5**，远程可用在 C3 成立）。
 
-- **里程碑 1（下一步）**：QUIC 会话层——广域网通道用 quinn，证书固定规则复用 V0.1，单任务多流；`Hello.proto` 协商 + v1 TCP 回退（proto 顺延到 `≥ 3`）；断点续传（`Offer.resume` 按块重算哈希回告可信偏移）。**先独立于信令交付**：两端手填地址即可验证 QUIC 传输 + 续传，把风险最大的传输层单独跑通，信令/打洞/中继再逐档叠加。落点新 crate（暂名 `aa4c-wan` 或扩 `aa4c-transfer`，实现前定）。
-- 里程碑 2：自建 Rendezvous 信令（注册/查询带配对证明/信令）+ 客户端接入；配对时互签 proof 落库。
-- 里程碑 3：NAT 打洞（STUN 反射地址 + 信令交换候选 + 双向打洞 → QUIC）。
-- 里程碑 4：自建 Relay 中继（打洞失败回退，盲转发）+ 连接质量显示。
-- 里程碑 5：远程同步/发送（V0.2 索引交换 + V0.1 ATP 跑到远程通道；在线判定并入 Rendezvous）。
-- 里程碑 6：分享链接（`shares`/`share_access` 表、token/权限/过期/吊销/访问记录；先局域网落地）。可与传输层并行。
-- **可随时补的 V0.2 尾巴**（不阻塞 V0.3）：Inbox 按来源设备+时间分组、`IndexSummary` 摘要优化（先比整体哈希再决定是否全量拉）、冲突的版本历史 / 自动合并。
+- **下一步 = C1**：QUIC 会话层（quinn，证书固定复用，**单流等价迁移**——收发循环已泛型化可直接复用）+ `ResumeReport` 断点续传（**追加变体，绝不改既有 `Offer`**）。不依赖服务器，两端手填地址验证。计划文档里 C1 有步骤级拆解 + 验收清单 + 范围外清单，照做即可。
+- C1 最大风险：**quinn 与现有 tokio-rustls 的 rustls 版本/加密后端对齐**，动手前先看 `Cargo.lock`。
+- **可随时补的 V0.2 尾巴**（不阻塞 V0.3）：Inbox 按来源设备+时间分组、`IndexSummary` 摘要优化、冲突版本历史 / 自动合并。
 
-> ⚠️ 版本兼容：`v0.2.0-preview.2`（proto=2）与 `v0.2.0-preview`（proto=1）**跨设备同步不互通**；与 v0.1.x 因 `DeviceInfo.trust_level` 无法配对。V0.3 起 proto 顺延到 `≥ 3`，仍向后兼容降级。
+> ⚠️ 版本兼容：`v0.2.0-preview.2`（proto=2）与 `v0.2.0-preview`（proto=1）**跨设备同步不互通**；与 v0.1.x 因 `DeviceInfo.trust_level` 无法配对。C1 起 proto 升 3，仍向后兼容降级。
 
 ### A1 已完成要点（Android 适配）
 
@@ -178,4 +175,4 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - **`cargo test --workspace` 会跨 crate 并行跑测试二进制**，单独 `cargo test -p X` 过不代表 workspace 过。提交前务必跑一次完整 `cargo test --workspace`。
 - **lib 内联单测 ≠ 集成测试**：`cargo test -p X --test Y` 只跑集成测试，漏掉 `src/*.rs` 里的 `#[cfg(test)]`。要 `--lib` 或直接 `--workspace` 覆盖全部。
 
-V0.2 已全部实现并发布，V0.3 设计已定稿（[CONNECT_DESIGN.md](CONNECT_DESIGN.md)，仅自建 Relay）。对 Agent 直接说"**开始 V0.3 里程碑 1**"（QUIC 会话层 + 断点续传，先两端手填地址跑通）即可继续。
+V0.2 已全部实现并发布；V0.3 设计定稿 v2 + 实现计划就绪。对 Agent 直接说"**开始 V0.3 里程碑 C1**"即可继续——按 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md) 的 C1 步骤执行（QUIC 单流迁移 + ResumeReport 续传，先手填地址跑通，勿动 CONNECT_DESIGN §12 已定案项）。

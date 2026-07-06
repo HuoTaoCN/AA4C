@@ -231,17 +231,29 @@ CREATE INDEX idx_sync_conflicts_path ON sync_conflicts(rel_path);
 ## 4c. V0.3 表结构（远程连接 + 分享，设计定稿、尚未建表）
 
 > 对应 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（AA Connect）。仅设计，随 V0.3 里程碑落地。
-> 连接配置（`rendezvous_url` / `relay_url` / `enable_remote`）复用现有 `settings` KV 表，不新增表。
+> 连接配置复用现有 `settings` KV 表（不新增表）：**`server_url`**（自建 `aa4c-server` 地址，
+> 格式 `aa4c://host:port#<证书指纹前16位hex>`，中继端点由服务器下发、不单独配置）、
+> **`enable_remote`**（远程总开关，**默认 `false`**）。
+
+### 4c.0 devices 增列 —— 对端 home server（CONNECT_DESIGN §3.4）
+
+```sql
+ALTER TABLE devices ADD COLUMN server_hint TEXT;  -- 对端自建服务器地址（含指纹），可空
+```
+
+- 配对时交换写入，此后随对端注册续约刷新；远程 `resolve_peer` 据此向**对端的** home server 发起 Lookup。
+- 纯局域网设备（对端未配置服务器）为 NULL，行为退化为 V0.2。
 
 ### 4c.1 shares —— 分享记录（CONNECT_DESIGN §7）
 
 ```sql
 CREATE TABLE shares (
     id          TEXT PRIMARY KEY,                -- UUID
-    token       TEXT NOT NULL UNIQUE,            -- 高熵随机串，即访问能力（capability）
-    rel_path    TEXT NOT NULL,                   -- 被分享的文件/文件夹（本机绝对或限定路径，落地时定）
+    token       TEXT NOT NULL UNIQUE,            -- ≥128bit 熵随机串（base58），即访问能力（capability）
+    rel_path    TEXT NOT NULL,                   -- 被分享的目标：限定路径，必须落在共享范围内（已索引），
+                                                 -- 复用 V0.2 resolve_shared 解析与防穿越边界
     permission  TEXT NOT NULL DEFAULT 'read'
-                CHECK (permission IN ('read','readwrite')),  -- V0.3 首版建议只用 read
+                CHECK (permission IN ('read','readwrite')),  -- V0.3 首版只用 read（readwrite 留余量）
     expires_at  INTEGER,                         -- 绝对过期时间（unix 毫秒）；NULL=长期
     status      TEXT NOT NULL DEFAULT 'open'
                 CHECK (status IN ('open','revoked')),

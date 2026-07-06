@@ -6,7 +6,7 @@
 
 ### Added
 
-- V0.3 设计文档：新增 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（AA Connect —— 突破局域网）。确定基础设施**仅自建 Rendezvous/Relay**（不做官方公益节点）；设计连接阶梯（局域网直连 → 公网直连 → NAT 打洞 → 自建 Relay 中继）、自建信令服务（注册/查询带配对证明/打洞信令）、QUIC 会话层（证书固定复用 + 单任务多流 + 断点续传）、远程同步/发送（复用 V0.2 索引交换 + V0.1 ATP，不新增数据语义）、分享链接（token/权限/过期/访问记录，指定好友/设备、非社区）。同步更新 DATABASE_SCHEMA（§4c `shares` / `share_access`）、PROTOCOL（Part B 标注仅自建）、ROADMAP。仅设计，未实现。
+- V0.3 设计文档（定稿 v2，经评审修订）：新增 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（AA Connect —— 突破局域网）与 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)（里程碑 C1–C6 实现计划，C1 细化到步骤级）。核心决策：基础设施**仅自建**且**单进程 `aa4c-server`**（信令+中继合一，token 进程内校验）；服务器身份与设备同构（密钥对 + 自签证书，**指纹写进地址** `aa4c://host:port#fp`，零 CA / 零域名）；查询授权用**允许名单（注册时上传）+ 挑战应答**（初稿互签 proof 因吊销漏洞弃用，解除配对即自然吊销、不依赖设备时钟）；寻址「查谁去谁的 home server」（`devices.server_hint` 正式字段）；信令协议复用帧层 bincode 长连接（不引入 HTTP/WS）；设置收敛单 `server_url` + `enable_remote` **默认关**；QUIC 首版**单流等价迁移**（复用既有泛型收发循环），断点续传用追加变体 `ResumeReport`（不改既有 `Offer`）；分享仅限已配对好友 + 已索引内容（复用 `resolve_shared` 边界）+ 默认只读；里程碑顺序**中继先于打洞**（打洞降级为提速优化，远程可用在 C3 成立）。同步更新 DATABASE_SCHEMA（§4c `shares`/`share_access`/`devices.server_hint`/settings 键）、PROTOCOL（Part B §10/11/13/15 重写）、ROADMAP、HANDOFF。仅设计，未实现。
 
 ## [0.2.0-preview.2] - 2026-07-03
 
