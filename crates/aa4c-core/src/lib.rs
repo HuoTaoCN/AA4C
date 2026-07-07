@@ -75,6 +75,8 @@ pub struct Core {
     listen_port: u16,
     /// 平台注入的缺省接收目录（用户未设置时 get_settings 的回落值）。
     save_dir_fallback: String,
+    /// 唤醒自建服务器常驻连接立即重新注册（里程碑 C3，见 `server_link::spawn_register_loop`）。
+    register_notify: Arc<tokio::sync::Notify>,
 }
 
 impl Core {
@@ -141,6 +143,14 @@ impl Core {
         transfer.set_pair_dispatch(Arc::new(dispatch::PairDispatch::new(pairing.clone())));
         transfer.set_index_dispatch(Arc::new(dispatch::IndexServe::new(store.clone())));
         transfer.set_fetch_resolver(Arc::new(dispatch::FetchServe::new(store.clone())));
+        // 中继拨号器（连接阶梯第 4 档，里程碑 C3）：未开启远程/未配置服务器时其内部
+        // 会自行报错，不影响任何现有行为（同其余注入钩子的「未注入即不启用」惯例）。
+        transfer.set_relay_dialer(Arc::new(server_link::RelayDialerImpl::new(
+            store.clone(),
+            identity.clone(),
+            fallback_name.clone(),
+            save_dir_fallback.clone(),
+        )));
 
         // 6. 启动监听（端口占用自动递增，返回真实端口）
         //    端口优先级：显式覆盖（config 非默认值，如测试用 0）> 已保存设置
@@ -176,12 +186,13 @@ impl Core {
 
         // 10. 自建服务器注册续约（CONNECT_DESIGN.md §3.2，里程碑 C2）：未开启远程 /
         //     未配置服务器时循环内部直接跳过，不影响任何现有行为
-        server_link::spawn_register_loop(
+        let register_notify = server_link::spawn_register_loop(
             store.clone(),
             identity.clone(),
             actual_port,
             fallback_name.clone(),
             save_dir_fallback.clone(),
+            transfer.clone(),
         );
 
         tracing::info!(
@@ -200,6 +211,7 @@ impl Core {
             self_info,
             listen_port: actual_port,
             save_dir_fallback,
+            register_notify,
         }))
     }
 

@@ -1,11 +1,25 @@
-//! 自建服务器客户端接入（CONNECT_DESIGN.md §3，PROTOCOL.md Part C，里程碑 C2）。
+//! 自建服务器客户端接入（CONNECT_DESIGN.md §3/§4，PROTOCOL.md Part C，里程碑 C2 信令 +
+//! C3 中继）。
 //!
 //! 鉴权复用 mTLS：连接时不在 TLS 层做证书固定（服务器身份此前未知），握手后从对端
 //! 证书读出 device_id，与 `server_url` 里的指纹前缀比对（CONNECT_DESIGN §3.1）；
 //! 不实现设计稿里的 `Challenge`/`ChallengeReply`，理由见 `aa4c_proto::server` 模块文档。
 //!
-//! 每次操作都是一条独立短连接（连接 → `SrvHello` → 一次 `Register` 或 `Lookup` → 断开），
-//! 不维护常驻信令连接——简单，且不需要处理"并发访问同一条流"的问题。
+//! `register_once`/`lookup_once` 仍是一次性短连接（连接 → `SrvHello` → 一次
+//! `Register`/`Lookup` → 断开），分别用于 `resolve_peer` 的远程兜底查询、以及
+//! `server_link` 自身单测直接验证协议语义。[`spawn_register_loop`] 额外维持一条
+//! **常驻**连接（里程碑 C3）：在同一条连接上周期性续约 `Register`，并 `select!` 着监听
+//! 服务器推送的 `IncomingRelay`——这是 CONNECT_DESIGN.md §3.4「被叫方与其 home server
+//! 保持长连接，信令可达」的落地，也是中继（连接阶梯第 4 档）能被对端主动联系到的前提。
+//! 断连/出错即退避重连。
+//!
+//! **设置变更 / 解除配对等「立即生效」场景不再另开一次性连接去 `Register`**——早期实现
+//! 这样做过，但会与常驻连接的自身注册竞争：一次性连接发完 `Register` 立刻断开，若它
+//! 恰好在常驻连接之后抢到了 `pushable` 登记，断开时的清理会把常驻连接刚登记好的活
+//! 通道顶掉，直到常驻连接的下一轮周期续约（最长 TTL/3）才能恢复——这段窗口内推送会
+//! 悄悄丢失（实测踩到的真实竞态，见 `spawn_register_loop` 返回的 `Notify` 用法）。
+//! 现在统一用 `notify_one()` 唤醒常驻连接自己立刻重新注册：只有一条连接会调用
+//! `Register`，从根上不存在竞争。
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -15,6 +29,7 @@ use aa4c_identity::{device_id_from_cert, Identity};
 use aa4c_proto::server::{unexpected, ServerMessage, SERVER_PROTO_VERSION};
 use aa4c_proto::{read_message, write_message};
 use aa4c_store::Store;
+use aa4c_transfer::{RelayDialFuture, RelayDialer, SharedStream, TransferService};
 use aa4c_types::{Aa4cError, DeviceId, Result, ServerAddr};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -22,8 +37,16 @@ use tokio_rustls::TlsConnector;
 
 const OP_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 未开启远程 / 未配置服务器 / 上次失败时的常规轮询间隔（用于感知设置变化）。
-const IDLE_POLL: Duration = Duration::from_secs(20);
+/// 未开启远程 / 未配置服务器 / 上次失败时的重新检查间隔（用于感知设置变化，以及
+/// 常驻连接断线后的重连间隔）。刻意选得很短：`enable_remote` 从关到开必须尽快让常驻
+/// 连接接上（否则中继推送在这段窗口内完全收不到，见 `nudge_register` 只是一次性短连接、
+/// 不能替代常驻连接本身及时建立）；自建服务器是个人自托管场景，高频探测的开销可忽略。
+const IDLE_POLL: Duration = Duration::from_secs(2);
+
+/// 等待 `RelayOpenAck` 的超时：略大于服务器侧的中继 token TTL（8s，见 `aa4c_server`），
+/// 因为撮合可能要等到对端也完成它自己的 `RelayOpen` 才会回 ack。刻意选得较短：真正可达
+/// 的对端几个 RTT 就能撮合上；对端确实不可达时，这就是连接阶梯第 4 档失败前的最长等待。
+const RELAY_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 连接服务器并完成 `SrvHello` 握手；校验证书指纹前缀。返回可继续读写 `ServerMessage` 的流。
 async fn connect(
@@ -96,6 +119,11 @@ fn primary_local_ip() -> Option<std::net::IpAddr> {
 }
 
 /// 注册本机端点 + 当前已配对设备允许名单；成功返回服务器建议的续约 TTL（秒）。
+///
+/// 生产路径不再调用它（常驻连接的注册逻辑内联在 [`run_persistent_session`] 里，见模块
+/// 文档「不再另开一次性连接」）——只留给下面的确定性单测直接验证 `Register`/`RegisterAck`
+/// 协议语义，故整个函数仅在测试构建里编译。
+#[cfg(test)]
 pub(crate) async fn register_once(
     identity: &Identity,
     server_url: &str,
@@ -146,84 +174,246 @@ pub(crate) async fn lookup_once(
     }
 }
 
-/// 单次注册尝试：读取当前设置，未开启/未配置直接跳过；成功返回服务器建议的续约间隔。
-async fn register_tick(
-    store: &Store,
+/// 中继数据面拨号（里程碑 C3）：在一条**新**连接上发 `RelayOpen{token}`，等待撮合
+/// （对端也完成它自己的 `RelayOpen` 后服务器才会回 ack），成功后这条连接即是中继裸管道
+/// （`aa4c_transfer::TransferService::dial`/`accept_external` 会在其上再叠一层设备间 TLS）。
+async fn relay_open(
     identity: &Identity,
-    listen_port: u16,
-    fallback_name: &str,
-    fallback_save_dir: &str,
-) -> Option<u64> {
-    let settings = crate::settings::load(store, fallback_name, fallback_save_dir)
-        .await
-        .ok()?;
-    if !settings.enable_remote {
-        return None;
+    addr: &ServerAddr,
+    session_token: String,
+) -> Result<SharedStream> {
+    let mut stream = connect(identity, addr).await?;
+    write_message(&mut stream, &ServerMessage::RelayOpen { session_token }).await?;
+    match timeout(
+        RELAY_OPEN_TIMEOUT,
+        read_message::<_, ServerMessage>(&mut stream),
+    )
+    .await
+    .map_err(|_| Aa4cError::Network("relay open ack timeout".into()))??
+    {
+        ServerMessage::RelayOpenAck { ok: true } => Ok(Box::new(stream)),
+        ServerMessage::RelayOpenAck { ok: false } => Err(Aa4cError::Network(
+            "relay session rejected or expired".into(),
+        )),
+        other => Err(unexpected(&other)),
     }
-    let server_url = settings.server_url?;
-    let allow_list: Vec<DeviceId> = store
-        .list_paired_devices()
-        .await
-        .ok()?
-        .into_iter()
-        .map(|d| d.id)
-        .collect();
-    match register_once(identity, &server_url, listen_port, allow_list).await {
-        Ok(ttl) => Some(ttl),
-        Err(e) => {
-            tracing::debug!(error = %e, "server register failed");
-            None
+}
+
+/// 连接阶梯第 4 档的拨号入口（里程碑 C3）：先向（简化模型下自己配置的）服务器申请
+/// 中继会话拿 token，再用它 `RelayOpen`。目标是否可达/在线都不在这里区分成败——不可达时
+/// 只是在 [`relay_open`] 的超时窗口内等不到对端而失败，效果一致（见 `ServerMessage` 文档）。
+async fn relay_dial(
+    identity: &Identity,
+    server_url: &str,
+    peer_id: &DeviceId,
+) -> Result<SharedStream> {
+    let addr = ServerAddr::parse(server_url)?;
+    let mut req_stream = connect(identity, &addr).await?;
+    write_message(
+        &mut req_stream,
+        &ServerMessage::RelayRequest {
+            target: peer_id.clone(),
+        },
+    )
+    .await?;
+    let token = match timeout(
+        OP_TIMEOUT,
+        read_message::<_, ServerMessage>(&mut req_stream),
+    )
+    .await
+    .map_err(|_| Aa4cError::Network("relay grant timeout".into()))??
+    {
+        ServerMessage::RelayGrant { session_token, .. } => session_token,
+        other => return Err(unexpected(&other)),
+    };
+    relay_open(identity, &addr, token).await
+}
+
+/// 把服务器推送来的一次 `IncomingRelay` 变成一条入站连接，交给传输层的统一分流
+/// （`TransferService::accept_external`，里程碑 C3）。失败只记日志——申请方（对端）会在
+/// 自己的 `RelayOpen` 超时窗口里感知失败，不需要这里再报告什么。
+fn spawn_relay_accept(
+    identity: Arc<Identity>,
+    addr: ServerAddr,
+    session_token: String,
+    from: DeviceId,
+    transfer: Arc<TransferService>,
+) {
+    tokio::spawn(async move {
+        match relay_open(&identity, &addr, session_token).await {
+            Ok(stream) => transfer.accept_external(stream),
+            Err(e) => {
+                tracing::debug!(error = %e, from = %from, "failed to accept incoming relay")
+            }
+        }
+    });
+}
+
+/// 中继拨号器：注入给 `aa4c-transfer::TransferService`，实现连接阶梯第 4 档
+/// （里程碑 C3）。只读当前设置，不持有任何长期状态。
+pub(crate) struct RelayDialerImpl {
+    store: Store,
+    identity: Arc<Identity>,
+    fallback_name: String,
+    fallback_save_dir: String,
+}
+
+impl RelayDialerImpl {
+    pub(crate) fn new(
+        store: Store,
+        identity: Arc<Identity>,
+        fallback_name: String,
+        fallback_save_dir: String,
+    ) -> Self {
+        Self {
+            store,
+            identity,
+            fallback_name,
+            fallback_save_dir,
         }
     }
 }
 
-/// 立即触发一次注册（不阻塞调用方；失败只记日志）。设置变更 / 解除配对等让允许名单或
-/// 服务器地址变化的操作应调用此函数，避免等到下一次周期轮询（CONNECT_DESIGN §3.2）。
-pub(crate) fn nudge_register(
-    store: Store,
-    identity: Arc<Identity>,
-    listen_port: u16,
-    fallback_name: String,
-    fallback_save_dir: String,
-) {
-    tokio::spawn(async move {
-        let _ = register_tick(
-            &store,
-            &identity,
-            listen_port,
-            &fallback_name,
-            &fallback_save_dir,
-        )
-        .await;
-    });
+impl RelayDialer for RelayDialerImpl {
+    fn dial(&self, peer_id: DeviceId) -> RelayDialFuture {
+        let store = self.store.clone();
+        let identity = self.identity.clone();
+        let fallback_name = self.fallback_name.clone();
+        let fallback_save_dir = self.fallback_save_dir.clone();
+        Box::pin(async move {
+            let settings =
+                crate::settings::load(&store, &fallback_name, &fallback_save_dir).await?;
+            if !settings.enable_remote {
+                return Err(Aa4cError::Network(
+                    "remote not enabled, no relay available".into(),
+                ));
+            }
+            let server_url = settings.server_url.ok_or_else(|| {
+                Aa4cError::Network("no server configured, no relay available".into())
+            })?;
+            relay_dial(&identity, &server_url, &peer_id).await
+        })
+    }
 }
 
-/// 后台注册续约循环：开启远程时按 TTL/3 续约，未开启/失败时用较长的常规轮询间隔
-/// 感知设置变化（CONNECT_DESIGN §3.2「周期性续约」）。
+/// 单次注册尝试：读取当前设置，未开启/未配置直接跳过；成功返回服务器建议的续约间隔。
+/// 后台常驻连接循环（里程碑 C3）：未开启远程 / 未配置服务器时按 `IDLE_POLL` 轮询感知
+/// 设置变化；一旦开启，建一条连接并在其上按 TTL/3 周期续约 `Register`，同时
+/// `select!` 监听服务器推送的 `IncomingRelay`（CONNECT_DESIGN.md §3.2/§3.4）。
+/// 连接断开/出错即退避 `IDLE_POLL` 后重连——不做指数退避，中继场景对重连及时性更敏感，
+/// 固定间隔足够简单且可预期。
+///
+/// 返回一个 `Notify`：设置变更 / 解除配对等需要「立即生效」的操作应 `notify_one()`
+/// 唤醒本循环——不管它当前是在「未开启，睡轮询间隔」还是「已连接，等下次续约」，都会
+/// 立刻重新检查设置 / 重新注册，而不是傻等到 `IDLE_POLL`/续约窗口自然到期
+/// （这不只是体验优化：`IncomingRelay` 推送要靠这条常驻连接活着才收得到，见
+/// `RelayDialerImpl`；等轮询周期会在「刚解除配对就需要中继」这类场景里造成真实的
+/// 时间窗口，中继请求会因为对端的常驻连接还没重新连上而找不到人）。
 pub(crate) fn spawn_register_loop(
     store: Store,
     identity: Arc<Identity>,
     listen_port: u16,
     fallback_name: String,
     fallback_save_dir: String,
-) {
+    transfer: Arc<TransferService>,
+) -> Arc<tokio::sync::Notify> {
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let notify_task = notify.clone();
     tokio::spawn(async move {
         loop {
-            let ttl = register_tick(
+            if let Err(e) = run_persistent_session(
                 &store,
                 &identity,
                 listen_port,
                 &fallback_name,
                 &fallback_save_dir,
+                &transfer,
+                &notify_task,
             )
-            .await;
-            let wait = match ttl {
-                Some(secs) => Duration::from_secs((secs / 3).max(3)),
-                None => IDLE_POLL,
-            };
-            tokio::time::sleep(wait).await;
+            .await
+            {
+                tracing::debug!(error = %e, "persistent server session ended, will retry");
+            }
+            tokio::select! {
+                () = tokio::time::sleep(IDLE_POLL) => {}
+                () = notify_task.notified() => {}
+            }
         }
     });
+    notify
+}
+
+/// 一次「建连 → 周期续约 + 监听推送」的完整会话；返回即代表这条连接已经不能用了
+/// （未开启远程时立即 `Ok(())` 短路，外层等 `IDLE_POLL` 或 `notify` 后重新检查设置）。
+async fn run_persistent_session(
+    store: &Store,
+    identity: &Arc<Identity>,
+    listen_port: u16,
+    fallback_name: &str,
+    fallback_save_dir: &str,
+    transfer: &Arc<TransferService>,
+    notify: &tokio::sync::Notify,
+) -> Result<()> {
+    let settings = crate::settings::load(store, fallback_name, fallback_save_dir).await?;
+    if !settings.enable_remote {
+        return Ok(());
+    }
+    let server_url = settings
+        .server_url
+        .ok_or_else(|| Aa4cError::Network("enable_remote but no server_url configured".into()))?;
+    let addr = ServerAddr::parse(&server_url)?;
+    let mut stream = connect(identity, &addr).await?;
+
+    loop {
+        let allow_list: Vec<DeviceId> = store
+            .list_paired_devices()
+            .await?
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        write_message(
+            &mut stream,
+            &ServerMessage::Register {
+                endpoints: local_candidate_endpoints(listen_port),
+                proto: aa4c_types::PROTO_VERSION,
+                allow_list,
+            },
+        )
+        .await?;
+        let ttl_secs = match timeout(OP_TIMEOUT, read_message::<_, ServerMessage>(&mut stream))
+            .await
+            .map_err(|_| Aa4cError::Network("register ack timeout".into()))??
+        {
+            ServerMessage::RegisterAck { ttl_secs } => ttl_secs,
+            other => return Err(unexpected(&other)),
+        };
+        let renew_after = Duration::from_secs((ttl_secs / 3).max(3));
+        let deadline = tokio::time::Instant::now() + renew_after;
+
+        // 在下次续约前的窗口里，一边等超时/被 notify 唤醒一边监听服务器推送的 IncomingRelay
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep_until(deadline) => break,
+                () = notify.notified() => break,
+                msg = read_message::<_, ServerMessage>(&mut stream) => {
+                    match msg? {
+                        ServerMessage::IncomingRelay { session_token, from } => {
+                            spawn_relay_accept(
+                                identity.clone(),
+                                addr.clone(),
+                                session_token,
+                                from,
+                                transfer.clone(),
+                            );
+                        }
+                        other => {
+                            tracing::debug!(error = %unexpected(&other), "unexpected message on persistent server link");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

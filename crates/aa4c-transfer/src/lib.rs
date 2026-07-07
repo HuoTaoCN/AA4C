@@ -91,6 +91,23 @@ pub trait SharedFileResolver: Send + Sync + 'static {
 pub type ResolveFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Option<ResolvedFetch>> + Send>>;
 
+/// 连接阶梯第 4 档：中继兜底拨号（里程碑 C3，CONNECT_DESIGN.md §2/§4）。
+///
+/// 由 Core 注入（实现内部会去连自建服务器申请 `RelayRequest`/`RelayOpen`，这些协议细节
+/// 都在 `aa4c-core::server_link`，传输层不感知服务器地址/mTLS-vs-Challenge 这些取舍）。
+/// 返回的是**中继裸管道**（尚未叠加设备间 mTLS）——[`TransferService::dial`] 收到后会
+/// 像对待新拨的 TCP 连接一样在其上再做一次设备间 `TlsConnector::connect`，语义与直连
+/// 完全对称（中继只是换了一层承载）。
+pub trait RelayDialer: Send + Sync + 'static {
+    /// 尝试为 `peer_id` 建一条中继裸管道；不可达/未配置服务器/对端不在线均返回 `Err`
+    /// （调用方 [`TransferService::dial`] 会把它当作「这一档也失败了」处理）。
+    fn dial(&self, peer_id: DeviceId) -> RelayDialFuture;
+}
+
+/// [`RelayDialer::dial`] 的返回（避免引入 async-trait 依赖）。
+pub type RelayDialFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<SharedStream>> + Send>>;
+
 /// 接收方用户决定：（是否接收，保存目录覆盖）。
 type AcceptDecision = (bool, Option<PathBuf>);
 
@@ -140,6 +157,9 @@ pub struct TransferService {
     /// QUIC 端点（`start_listener` best-effort 绑定成功后写入；绑定失败则永远是空，
     /// 出站连接自动回落 TCP，见 [`dial`]）。同一端点兼做出站连接，quinn 官方推荐用法。
     pub(crate) quic_endpoint: OnceLock<quinn::Endpoint>,
+    /// 中继拨号器（Core 注入；未注入时连接阶梯只到「公网直连」为止，直连失败即报错，
+    /// 见 [`dial`]，里程碑 C3）。
+    pub(crate) relay_dialer: OnceLock<Arc<dyn RelayDialer>>,
 }
 
 impl TransferService {
@@ -162,6 +182,7 @@ impl TransferService {
             index_dispatch: OnceLock::new(),
             fetch_resolver: OnceLock::new(),
             quic_endpoint: OnceLock::new(),
+            relay_dialer: OnceLock::new(),
         })
     }
 
@@ -178,6 +199,24 @@ impl TransferService {
     /// 注入共享文件解析器（Core 在装配阶段调用一次）。重复设置无效。
     pub fn set_fetch_resolver(&self, resolver: Arc<dyn SharedFileResolver>) {
         let _ = self.fetch_resolver.set(resolver);
+    }
+
+    /// 注入中继拨号器（Core 在装配阶段调用一次）。重复设置无效。
+    pub fn set_relay_dialer(&self, dialer: Arc<dyn RelayDialer>) {
+        let _ = self.relay_dialer.set(dialer);
+    }
+
+    /// 接管一条已就绪的外部入站裸管道（目前仅用于中继数据面，里程碑 C3）：在其上
+    /// 叠加一次设备间 TLS accept，再走与 TCP/QUIC 入站完全相同的握手 + 分流
+    /// （[`recv::run_incoming_external`]）。Core 的 `server_link` 在收到服务器推送的
+    /// `IncomingRelay` 并完成 `RelayOpen` 撮合后调用本方法。
+    pub fn accept_external(self: &Arc<Self>, stream: SharedStream) {
+        let svc = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = recv::run_incoming_external(svc, stream).await {
+                tracing::warn!(error = %e, "incoming relay session ended with error");
+            }
+        });
     }
 
     /// 启动 TLS 监听。`port` 被占用时自动向后递增（最多 16 个），返回实际端口。
@@ -233,8 +272,12 @@ impl TransferService {
             .ok_or_else(|| Aa4cError::NotPaired(peer.id.clone()))?;
         let addr = peer
             .addr
-            .or_else(|| record.last_addr.as_deref().and_then(|s| s.parse().ok()))
-            .ok_or_else(|| Aa4cError::DeviceNotFound(peer.id.clone()))?;
+            .or_else(|| record.last_addr.as_deref().and_then(|s| s.parse().ok()));
+        // 没有任何直连地址：还有中继兜底（里程碑 C3）才继续，否则和以前一样直接报错
+        // （连接阶梯第 4 档不需要预先解析地址，但至少要有个能问的服务器，见 `RelayDialer`）。
+        if addr.is_none() && self.relay_dialer.get().is_none() {
+            return Err(Aa4cError::DeviceNotFound(peer.id.clone()));
+        }
 
         let files = path::build_manifest(&paths).await?;
         let total: u64 = files.iter().map(|f| f.meta.size).sum();
@@ -279,17 +322,25 @@ impl TransferService {
         Ok(task_id)
     }
 
-    /// 出站连接：按配置选 QUIC 或 TCP+TLS，抹平成同一个装箱双工流（里程碑 C1）。
+    /// 出站连接：按配置选 QUIC 或 TCP+TLS，直连失败（或压根没有地址）时落到中继兜底，
+    /// 抹平成同一个装箱双工流（里程碑 C1 QUIC/TCP，里程碑 C3 中继）。
     ///
     /// `prefer_quic=false`（默认）：走既有 TCP+TLS 路径，与 V0.1/V0.2 完全一致、零回归。
-    /// `prefer_quic=true`：要求本机 QUIC 端点已就绪（`start_listener` 绑定成功），否则报错——
-    /// 这是里程碑 C1 的测试/联调专用开关，「按可达性自动选择」的正式逻辑在里程碑 C4。
+    /// `prefer_quic=true`：要求本机 QUIC 端点已就绪且已解析出地址，否则报错，不落中继——
+    /// 这是里程碑 C1 的测试/联调专用开关，不参与连接阶梯的自动降级。
+    ///
+    /// `addr` 为 `None`（本档、直连都没解析出地址）时直接尝试中继；`Some` 但连接失败时
+    /// 也会尝试中继（只要 Core 注入了 [`RelayDialer`]）——这正是连接阶梯第 4 档
+    /// （CONNECT_DESIGN.md §2）：没配置服务器/没有中继拨号器时原样报错，行为与 V0.2 一致。
     pub(crate) async fn dial(
         &self,
         peer_id: &DeviceId,
-        addr: std::net::SocketAddr,
+        addr: Option<std::net::SocketAddr>,
     ) -> Result<SharedStream> {
         if self.config.prefer_quic {
+            let addr = addr.ok_or_else(|| {
+                Aa4cError::Network("prefer_quic set but no address resolved".into())
+            })?;
             let endpoint = self.quic_endpoint.get().ok_or_else(|| {
                 Aa4cError::Network("prefer_quic set but quic endpoint not available".into())
             })?;
@@ -297,6 +348,29 @@ impl TransferService {
             return Ok(Box::new(stream));
         }
 
+        if let Some(addr) = addr {
+            match self.dial_tcp(peer_id, addr).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => {
+                    if self.relay_dialer.get().is_none() {
+                        return Err(e);
+                    }
+                    tracing::debug!(peer = %peer_id, error = %e, "direct dial failed, falling back to relay");
+                }
+            }
+        }
+
+        let dialer = self.relay_dialer.get().ok_or_else(|| {
+            Aa4cError::Network("no reachable address and no relay configured".into())
+        })?;
+        self.dial_via_relay(dialer.as_ref(), peer_id).await
+    }
+
+    async fn dial_tcp(
+        &self,
+        peer_id: &DeviceId,
+        addr: std::net::SocketAddr,
+    ) -> Result<SharedStream> {
         use tokio::net::TcpStream;
         use tokio::time::timeout;
         use tokio_rustls::TlsConnector;
@@ -315,6 +389,26 @@ impl TransferService {
         Ok(Box::new(stream))
     }
 
+    /// 连接阶梯第 4 档：中继拨号器只给一条裸管道，设备间 mTLS 仍在这里叠加——与直连
+    /// 路径完全对称（[`dial_tcp`]），对端感知不到底下换了承载（里程碑 C3）。
+    async fn dial_via_relay(
+        &self,
+        dialer: &dyn RelayDialer,
+        peer_id: &DeviceId,
+    ) -> Result<SharedStream> {
+        use tokio_rustls::TlsConnector;
+
+        let raw = dialer.dial(peer_id.clone()).await?;
+        let config = self.identity.tls_client_config(Some(peer_id))?;
+        let stream = TlsConnector::from(Arc::new(config))
+            .connect(
+                tokio_rustls::rustls::pki_types::ServerName::try_from("aa4c").expect("static name"),
+                raw,
+            )
+            .await?;
+        Ok(Box::new(stream))
+    }
+
     /// 向某完全信任设备拉取共享索引（SYNC_DESIGN.md §3.3，里程碑 3）。
     ///
     /// 建连 → 握手（校验证书指纹）→ `IndexRequest` → 分批读 `IndexEntries` 直至 `last`。
@@ -328,7 +422,7 @@ impl TransferService {
         use tokio::time::timeout;
 
         let t = self.config.timeout;
-        let mut stream = self.dial(peer_id, addr).await?;
+        let mut stream = self.dial(peer_id, Some(addr)).await?;
 
         let (hello_id, proto) = client_hello(&mut stream, self.identity.device_id()).await?;
         if &hello_id != peer_id {

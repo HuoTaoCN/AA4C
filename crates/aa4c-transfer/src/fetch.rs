@@ -42,7 +42,7 @@ async fn drive(
     cancel: &CancellationToken,
 ) -> Result<()> {
     let t = svc.config.timeout;
-    let mut stream = svc.dial(&job.peer_id, job.addr).await?;
+    let mut stream = svc.dial(&job.peer_id, Some(job.addr)).await?;
 
     let (hello_id, proto) = client_hello(&mut stream, svc.identity.device_id()).await?;
     if hello_id != job.peer_id {

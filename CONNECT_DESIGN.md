@@ -179,7 +179,7 @@ RelayClose
 
 1. ✅ **QUIC 会话层**：quinn + 证书固定复用 + 单流等价迁移 + `ResumeReport` 断点续传；两端手填地址即可验证，不依赖服务器。PROTOCOL 已定稿 proto=3 协商与流用法（§10/§13）。
 2. ✅ **`aa4c-server` 信令**（`crates/aa4c-server`，只做信令面，中继面留给 C3）：注册（允许名单 + TTL 续约，覆盖式替换即吊销机制）/ 查询 / 客户端接入（`aa4c-core::server_link`，上线注册、`resolve_peer` 回落 Lookup）。鉴权复用 mTLS，未实现设计初稿的 `Challenge`/`ChallengeReply`（理由见 PROTOCOL.md §11）。`devices.server_hint` 列已建表，但配对协议尚未交换它——寻址目前只覆盖「自己的多台设备共用同一服务器」，跨服务器好友寻址留待后续（见 §12 表格与仍待实现列表）。PROTOCOL 已定稿 Part C（§11）。交付含 Dockerfile + `scripts/dev-server.sh` + release Linux 二进制。
-3. **Relay 中继**：同进程加中继面（`RelayRequest/Grant` + `RelayOpen/Data/Close` 盲转发）；连接阶梯「LAN → 公网直连 → 中继」贯通——**远程可用自此成立**（可发 preview）。
+3. ✅ **Relay 中继**（`crates/aa4c-server`，同进程加中继面）：`RelayRequest/Grant` 换一次性短 TTL token（8s）+ `RelayOpen/OpenAck` 撮合后**裸字节透明转发**（对设计稿 `RelayData`/`RelayClose` 的一处收敛，理由见 PROTOCOL.md §11/§12）；被叫方靠一条**常驻连接**收 `IncomingRelay` 推送（`aa4c-core::server_link::spawn_register_loop`，用 `Notify` 让设置变更立即生效，取代早期「一次性连接也发 Register」踩过的竞态坑——见下方表格）；`aa4c-transfer` 新增 `RelayDialer` 注入点（出站兜底）与 `accept_external`（入站接入统一分流）。连接阶梯「LAN → 公网直连 → 中继」贯通——**远程可用自此成立**（可发 preview）。e2e 覆盖：强制走中继完成一次真实文件传输、过期/复用 token 被拒绝。
 4. **远程同步 / 发送**：V0.2 索引交换 + 按需拉取、V0.1 AA 发送跑到远程通道；在线判定并入注册在期；连接质量 UI。
 5. **NAT 打洞**：STUN 反射地址探测 + 信令交换候选 + 双向打洞 → QUIC 直连（提速优化，失败无损可用性）；视情况在此后做单任务多流优化。
 6. **分享链接**：`shares`/`share_access` 表 + 生成 / 管理 / 吊销 / 访问记录 + token 鉴权 + deep-link（`aa4c://`）注册；先局域网落地。**可与 3–5 并行**。
@@ -203,5 +203,9 @@ RelayClose
 | 里程碑顺序 | **中继先于打洞**：打洞是提速优化不是可达前提；远程可用在里程碑 3 成立 | §11 |
 | 账号体系 | 不引入，设备与服务器身份都是密钥对 | §1 / §3.1 |
 | 能力复用 | 远程同步 / 发送直接复用 V0.2 索引交换 + V0.1 ATP，不新增数据语义 | §6 |
+| 中继数据面（里程碑 3 实现收敛） | **不实现设计初稿的 `RelayData`/`RelayClose`**：`RelayOpen`+`RelayOpenAck` 撮合成功后连接直接转入裸字节透明转发，省去逐包重新编解码帧头；效果等价（服务器仍只盲转发字节、不解密），`session_token` 一次性——首次被 `RelayOpen` 触碰即从登记表移除，无论撮合成败 | §4，PROTOCOL.md §11/§12 |
+| 中继 token TTL | 8s（`aa4c_server::RELAY_TOKEN_TTL`）：合法撮合只需几个 RTT，这个窗口只在对端确实不可达时才会被等满——越短失败越快，不拖累连接阶梯整体失败延迟 | §4 |
+| 常驻连接与「立即生效」（里程碑 3） | `enable_remote=true` 时维持一条常驻连接周期续约 `Register` 并监听 `IncomingRelay` 推送；设置变更/解除配对用 `Notify` 唤醒**同一条**连接立刻重新注册，不再另开一次性连接——早期实现让一次性连接也发 `Register`，会与常驻连接抢服务器侧的推送登记槽位，一次性连接断开时的清理会把常驻连接刚登记好的活通道顶掉，直到下一轮周期续约（最长 TTL/3）才恢复，这段窗口内的中继推送悄悄丢失（实测踩到的真实竞态） | §3.2/§3.4，`aa4c-core::server_link` |
+| 中继会话授权边界 | `RelayRequest`/`RelayOpen` 本身不查允许名单（服务器不理解「配对」语义）；真正的安全边界在被叫方自己——中继裸管道撮合后跑的仍是设备间 mTLS + `trusted` 检查，未配对请求方在协议层被拒绝，和直连路径完全同构 | §4，PROTOCOL.md §15 |
 
 仍待实现阶段细化：配对协议交换 `server_hint` 的具体消息设计（跨服务器好友寻址的前提）、STUN 服务器来源（打洞里程碑再定：复用公共 STUN 或 aa4c-server 兼做）、打洞成功率兜底参数、匿名（未配对）分享的鉴权模型（后置）、读写分享（后置）、多服务器联邦（后置）、iOS 后台长连接受限的退化方案。

@@ -779,3 +779,79 @@ async fn server_lookup_denies_device_not_in_allow_list() {
     b.core.shutdown().await.unwrap();
     c.core.shutdown().await.unwrap();
 }
+
+/// 里程碑 C3 验收：强制走连接阶梯第 4 档（中继）完成一次真实文件传输
+/// （V0.3_IMPLEMENTATION_PLAN.md C3「e2e：强制走中继路径完成一次传输」）。
+///
+/// 局域网直连 / 公网直连都要让它们确定性地失败，而不是依赖真实网络不可达（这台开发机
+/// 上一切本来就互通）：关掉 A 自己的 mDNS 浏览（`resolve_peer` 的第一档直接找不到任何
+/// 设备），把 A 落库的 B 最后地址钉成本机一个确定没有监听者的端口（第二档直连立即被
+/// connection refused，而不是等超时）。剩下唯一能用的就是中继——服务器把 A、B 的连接
+/// 撮合起来，设备间 mTLS 在这条裸管道上原样握手，ATP 原样跑完。
+#[tokio::test]
+async fn forced_relay_path_completes_a_transfer() {
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let b_id = b.core.self_info().id;
+    let (_server, _server_dir, server_url) = spawn_server().await;
+
+    // 正常配对（局域网直连，配对本身不在本里程碑范围内）
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "both sides pair");
+
+    enable_remote(&a.core, &server_url).await;
+    enable_remote(&b.core, &server_url).await;
+    // B 的常驻连接（`server_link::spawn_register_loop`）需要真实的连接+握手时间才能把自己
+    // 登记成"可被推送 IncomingRelay"（`register_notify` 只消掉轮询等待，消不掉这段真实
+    // 网络往返）；没有可等待的事件（C4 才会补连接质量事件），这里用短暂定长等待让它
+    // 落地，避免第一次中继请求因为 B 还没注册上而白白等满一轮 token TTL 才失败重试。
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // 逼连接阶梯只剩中继这一档：关掉 A 自己的 mDNS（第 1 档），把 B 的落库地址钉成
+    // 一个确定没人监听的本机端口（第 2 档立即 connection refused，不必等超时）。
+    a.core.discovery.stop().await.unwrap();
+    let mut rec = a.core.store.get_device(&b_id).await.unwrap().unwrap();
+    rec.last_addr = Some("127.0.0.1:1".to_string());
+    a.core.store.upsert_device(&rec).await.unwrap();
+
+    let recv_dir = b._dir.path().join("inbox");
+    let src = a._dir.path().join("via-relay.txt");
+    tokio::fs::write(&src, b"delivered purely through relay")
+        .await
+        .unwrap();
+    let ev_b2 = b.core.subscribe();
+    let b_core = b.core.clone();
+    let recv_dir2 = recv_dir.clone();
+    tokio::spawn(async move {
+        let mut rx = ev_b2;
+        while let Ok(event) = rx.recv().await {
+            if let CoreEvent::TransferRequest { task } = event {
+                b_core
+                    .accept_transfer(&task.id, true, Some(recv_dir2.clone()))
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+
+    let ev_a2 = a.core.subscribe();
+    let task_id = retry_send_files(&a.core, &b_id, vec![src.clone()])
+        .await
+        .expect("relay dialer is wired, send queues even with no direct address");
+    wait_transfer_done(ev_a2, &task_id).await;
+    assert_eq!(
+        tokio::fs::read(recv_dir.join("via-relay.txt"))
+            .await
+            .unwrap(),
+        b"delivered purely through relay"
+    );
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}

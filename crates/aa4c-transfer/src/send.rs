@@ -19,7 +19,8 @@ const MAX_RETRIES: u32 = 2;
 pub(crate) struct SendJob {
     pub task_id: TaskId,
     pub peer_id: DeviceId,
-    pub addr: std::net::SocketAddr,
+    /// `None`：连接阶梯前三档都没解析出地址，直接尝试中继（里程碑 C3，见 `TransferService::dial`）。
+    pub addr: Option<std::net::SocketAddr>,
     pub files: Vec<SendFile>,
     pub total: u64,
 }

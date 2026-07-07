@@ -15,6 +15,7 @@ use aa4c_types::{
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
+use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 
 use crate::path::{dedup_target, sanitize_rel_path};
@@ -95,6 +96,49 @@ pub(crate) async fn run_incoming_quic(
         .map_err(|e| Aa4cError::Network(format!("quic accept stream: {e}")))?;
     let mut stream = tokio::io::join(recv, send);
 
+    let (hello_id, proto) = server_hello(&mut stream, svc.identity.device_id()).await?;
+    if hello_id != cert_id {
+        return Err(Aa4cError::Protocol("hello id != certificate id".into()));
+    }
+    let trusted = svc
+        .store
+        .get_device(&cert_id)
+        .await?
+        .map(|d| d.trusted)
+        .unwrap_or(false);
+
+    let first = timeout(t, read_message(&mut stream))
+        .await
+        .map_err(|_| Aa4cError::Network("first message timeout".into()))??;
+
+    dispatch_shared(svc, Box::new(stream), cert_id, trusted, proto, first).await
+}
+
+/// 中继入站连接入口（里程碑 C3）：`stream` 是已撮合的中继裸管道（`aa4c-core::server_link`
+/// 完成 `RelayOpen` 后交给 [`crate::TransferService::accept_external`]），本函数在其上
+/// **叠加一次设备间 TLS accept**，随后与 TCP/QUIC 入站完全同构——`dispatch_shared` 分不出
+/// 底下换了承载。配对不支持中继（同 QUIC，见 [`dispatch_shared`] 的 `PairRequest` 分支）。
+pub(crate) async fn run_incoming_external(
+    svc: Arc<TransferService>,
+    raw: SharedStream,
+) -> Result<()> {
+    let t = svc.config.timeout;
+    let tls_config = svc.identity.tls_server_config(None)?;
+    let acceptor = TlsAcceptor::from(Arc::new(tls_config));
+    let mut stream = acceptor
+        .accept(raw)
+        .await
+        .map_err(|e| Aa4cError::Network(format!("relay tls accept: {e}")))?;
+
+    let cert_id = {
+        let certs = stream
+            .get_ref()
+            .1
+            .peer_certificates()
+            .and_then(|c| c.first())
+            .ok_or_else(|| Aa4cError::Protocol("peer presented no certificate".into()))?;
+        device_id_from_cert(certs)?
+    };
     let (hello_id, proto) = server_hello(&mut stream, svc.identity.device_id()).await?;
     if hello_id != cert_id {
         return Err(Aa4cError::Protocol("hello id != certificate id".into()));

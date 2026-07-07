@@ -166,15 +166,13 @@ impl Core {
         Ok(())
     }
 
-    /// 立即触发一次注册续约（不阻塞调用方；未开启/未配置/失败都只记日志，见 `server_link`）。
+    /// 立即触发常驻连接重新注册（不阻塞调用方；未开启/未配置/失败都只记日志，见
+    /// `server_link`）。设置变更（刚打开 `enable_remote` / 服务器地址变化）、解除配对
+    /// 等需要「立即生效」的操作都调用它——`register_notify` 唤醒常驻连接跳过
+    /// `IDLE_POLL`/续约窗口，立刻用最新的设置/允许名单重新 `Register`（里程碑 C3；
+    /// 不再另开一次性连接，理由见 `server_link` 模块文档）。
     fn nudge_register(&self) {
-        server_link::nudge_register(
-            self.store.clone(),
-            self.identity.clone(),
-            self.listen_port,
-            self.self_info.name.clone(),
-            self.save_dir_fallback.clone(),
-        );
+        self.register_notify.notify_one();
     }
 
     // —— 同步：共享范围 + 本地索引（SYNC_DESIGN.md §3/§6，里程碑 2）——

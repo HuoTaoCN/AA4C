@@ -243,18 +243,17 @@ struct IndexItem { rel_path: String, size: u64, hash: Option<String> }
 - v1/v2 TCP 通道保留作为局域网路径；QUIC 通道上握手协商 `proto = 3`；出站是否走 QUIC 由 `TransferConfig.prefer_quic` 控制（里程碑 C1 仅作测试/联调开关，默认 `false` 不影响任何现有行为；「按可达性自动选择」的正式逻辑收口在里程碑 C4）
 - **keep-alive + 空闲超时**（`aa4c-transfer::quic::transport_config`）：2s 心跳 + 8s 空闲超时——应用层等待用户确认可长达 60s，心跳持续续命，只有心跳本身也送不出去的真断连才会在约 8s 内被两端各自发现
 
-## 11. 发现层升级：`aa4c-server` 信令（Part C，已实现信令面，里程碑 C2）
+## 11. 发现层升级：`aa4c-server` 信令 + 中继（Part C，已实现信令面 + 中继面，里程碑 C2+C3）
 
-自建 **`aa4c-server`**（单进程，见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md) §1.1；本里程碑只做
-信令面，中继面 `RelayRequest`/`RelayGrant`/`RelayOpen`/`Signal` 留给 C3/C5 按同样的「只追加」
-纪律加入）。服务器身份与设备同构：**Ed25519 密钥对 + 自签证书，证书指纹写进服务器地址**
-（`aa4c://host:port#<指纹前16位hex>`，`aa4c_types::ServerAddr::parse` 解析），客户端连接时
-校验对端证书指纹是否以此前缀开头，不依赖 CA / 域名。
+自建 **`aa4c-server`**（单进程，见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md) §1.1；打洞信令
+`Signal` 留给 C5）。服务器身份与设备同构：**Ed25519 密钥对 + 自签证书，证书指纹写进服务器
+地址**（`aa4c://host:port#<指纹前16位hex>`，`aa4c_types::ServerAddr::parse` 解析），客户端
+连接时校验对端证书指纹是否以此前缀开头，不依赖 CA / 域名。
 
 客户端 ↔ 服务器为**一条 TLS 长连接**，复用本协议帧层（4 字节大端长度 + bincode；`encode_frame`
 /`decode_body`/`read_message`/`write_message` 已泛型化，两套协议共用同一套帧实现）。消息族为
 独立的 `ServerMessage` enum（`aa4c_proto::server`），独立 `server_proto` 版本，遵守「只追加
-变体」。C2 已实现字段：
+变体」。已实现字段（C2 信令 + C3 中继）：
 
 ```rust
 enum ServerMessage {
@@ -264,6 +263,13 @@ enum ServerMessage {
     RegisterAck { ttl_secs: u64 },
     Lookup { device_id: DeviceId },
     LookupReply { endpoints: Vec<SocketAddr> },   // 未注册/已过期/不在名单内一律空列表
+
+    // —— 里程碑 C3：中继面 ——
+    RelayRequest { target: DeviceId },                       // C→S：申请到 target 的中继会话
+    RelayGrant { session_token: String, ttl_secs: u64 },     // S→C：一次性短 TTL token
+    IncomingRelay { session_token: String, from: DeviceId }, // S→C：推给被叫方的常驻连接
+    RelayOpen { session_token: String },   // C→S（新连接）：凭 token 开中继数据面
+    RelayOpenAck { ok: bool },              // S→C：撮合结果，ok=true 后转入裸字节透明转发
 }
 ```
 
@@ -275,9 +281,33 @@ enum ServerMessage {
   指纹，不在消息里重复携带。
 - **注册**：`Register` 覆盖式整体替换该设备在服务器的登记（含端点与允许名单）；服务器
   额外把连接的观测源地址并入 `endpoints`（免 STUN 的反射地址，同机/同网时天然可用）。
-  TTL = 60s（`aa4c_server::REGISTER_TTL`），客户端约每 TTL/3 续约（`aa4c-core::server_link`
-  的后台循环）；设置变更 / 解除配对会立即触发一次续约，不必等下一轮周期。全内存态，
-  无持久化——进程重启即清空，客户端靠周期续约自愈。
+  TTL = 60s（`aa4c_server::REGISTER_TTL`），客户端约每 TTL/3 续约。全内存态，无持久化——
+  进程重启即清空，客户端靠周期续约自愈。
+- **常驻连接（里程碑 C3）**：`enable_remote=true` 时 `aa4c-core::server_link` 维持**一条**
+  长连接，在其上周期续约 `Register`，同时 `select!` 监听服务器推送的 `IncomingRelay`——
+  这是被叫方能收到中继会话通知的前提（CONNECT_DESIGN.md §3.4）。设置变更 / 解除配对等
+  「立即生效」场景通过 `tokio::sync::Notify` 唤醒这条连接立刻重新注册，**不再另开一次性
+  连接**：早期实现试过让一次性连接也发 `Register`，会与常驻连接抢 `pushable` 登记槽位——
+  一次性连接发完消息就断开，若它抢到了槽位，断开时的清理会把常驻连接刚登记好的活通道
+  顶掉，直到下一轮周期续约（最长 TTL/3）才能恢复，这段窗口内的中继推送会悄悄丢失（实测
+  踩到的真实竞态，不是假设）。现在从根上只有一条连接会调用 `Register`，不存在竞争。
+- **中继面（里程碑 C3，连接阶梯第 4 档）**：`RelayRequest` 换一次性 token（`RELAY_TOKEN_TTL`
+  = 8s，`aa4c_server::RELAY_TOKEN_TTL`）；服务器 best-effort 把 `IncomingRelay` 推给
+  `target` 当前的常驻连接（找不到就静默，不区分「未开启远程」/「不在线」/「从未存在」，
+  防探测）。双方各自在**新连接**上 `RelayOpen{token}`，服务器按 token 撮合（`oneshot`
+  把先到者的连接交给后到者所在的任务），两侧都到齐才回 `RelayOpenAck{ok:true}`；此后连接
+  **转入裸字节透明转发**（`tokio::io::copy_bidirectional`），不再是 `ServerMessage` 帧——
+  这是对设计稿的一处收敛：设计稿把数据面写成独立的 `RelayOpen`/`RelayData`/`RelayClose`
+  三个消息，本实现只留 `RelayOpen`+`RelayOpenAck`，撮合后直接裸转发，省掉逐包重新编解码
+  帧头的开销，效果等价（服务器依然只盲转发字节、不解密、token 一次性——被首次 `RelayOpen`
+  触碰即从登记表移除，无论撮合成败）。设备间 mTLS 在这条裸管道上原样握手（`TlsConnector`/
+  `TlsAcceptor` 泛型于任意 `AsyncRead+AsyncWrite`，同 QUIC 复用既有收发循环的道理），之后
+  是与直连完全相同的 ATP。Token TTL 选得短：合法撮合只需要几个 RTT，这个窗口只在对端确实
+  不可达时才会被等满，越短失败越快，不拖累连接阶梯整体的失败延迟。
+- **传输层接入**：`aa4c-transfer::TransferService::dial` 直连失败（或压根没解析出地址）时，
+  若 Core 注入了 `RelayDialer`（`aa4c-core::server_link::RelayDialerImpl`）就落到中继；
+  入站侧新增 `TransferService::accept_external`，把中继撮合好的裸管道接进与 TCP/QUIC 入站
+  完全相同的 TLS-accept + 分流管线（`recv::run_incoming_external`）。
 - **查询授权 = mTLS 身份 + 允许名单**（初稿的「双方互签配对证明」因吊销漏洞弃用）：
   `Lookup` 只在目标设备**当前**登记的允许名单包含查询方时返回非空端点列表；**吊销自然
   发生**——覆盖式 `Register` 本身就是吊销机制，不需要任何显式吊销协议，下一次注册的名单
@@ -296,19 +326,21 @@ enum ServerMessage {
 
 1. **局域网直连**：mDNS 发现（同 v1）
 2. **公网直连**：对端 endpoints 中有可达公网地址
-3. **UDP 打洞**：通过 Rendezvous 信令交换 STUN 探测到的反射地址，双向同时发包打洞，成功后升级 QUIC
-4. **Relay 中继**：双方各自连接 Relay，Relay 盲转发加密字节流
+3. **UDP 打洞**：通过 Rendezvous 信令交换 STUN 探测到的反射地址，双向同时发包打洞，成功后升级 QUIC（里程碑 C5，未实现）
+4. **Relay 中继**（已实现，里程碑 C3）：双方各自连接自建服务器，服务器盲转发加密字节流
 
-Relay 协议：
+Relay 协议（`ServerMessage`，见 §11；`aa4c_transfer::TransferService::dial` 落到这一档时的
+入参 `addr` 可以是 `None`——第 1/2 档都没解析出地址也不阻断，直接尝试中继）：
 
 ```
-RelayOpen   { session_token }      // token 由信令阶段协商，Relay 不知道双方身份
-RelayData   <opaque bytes>         // 端到端 TLS，Relay 不可解密
-RelayClose
+RelayOpen    { session_token }   // C→S（新连接），token 由 RelayRequest/RelayGrant 换来
+RelayOpenAck { ok: bool }        // S→C：ok=true 后这条连接转入裸字节透明转发
 ```
 
+- `ok=true` 之后不再有 `ServerMessage` 帧，纯字节直通对侧，直到任一方关闭连接（对应设计稿
+  设想的 `RelayClose`——这里是隐式的：EOF/错误自然终止转发，见 §11 收敛说明）。
 - Relay 限速与配额由自建节点运营者配置；`session_token` 一次性 + 短 TTL，由信令侧发放、进程内校验
-- 中继流量计入"连接质量"显示，UI 提示"通过中继传输，速度可能较慢"
+- 中继流量计入"连接质量"显示，UI 提示"通过中继传输，速度可能较慢"（连接质量上报本身留给里程碑 C4）
 
 ## 13. 断点续传（proto ≥ 3，已实现，里程碑 C1）
 
@@ -348,13 +380,14 @@ ResumeReport {
 
 | 威胁 | 对策 |
 |------|------|
-| 服务器作恶/被攻破 | 只存端点映射 + 允许名单；端到端加密使其无法读取内容；自建=自有信任域 |
+| 服务器作恶/被攻破 | 只存端点映射 + 允许名单 + 短 TTL 中继 token；端到端加密使其无法读取内容；自建=自有信任域 |
 | 服务器身份冒充 | 证书指纹写进服务器地址（`aa4c://…#fp`），连接即校验，无 TOFU 窗口 |
-| DeviceId 枚举扫描 | Lookup 需挑战应答证明身份 + 在目标允许名单内；速率限制 |
+| DeviceId 枚举扫描 | 身份验证用 mTLS（见 §11），Lookup 需在目标允许名单内才返回非空端点；未注册/不在名单/已过期一律回空列表、不区分原因 |
 | 解除配对后仍可查询 | 允许名单随每次注册刷新，吊销自然发生（无永久凭据） |
-| 时钟漂移 / 重放 | 身份验证用 challenge-response（nonce），不依赖设备时钟 |
-| 打洞信令伪造 | 信令经已挑战验证的长连接转发，消息由设备私钥签名 |
-| 中继滥用（陌生人蹭带宽） | session_token 仅经信令发放（已配对 + 允许名单），一次性 + 短 TTL |
+| 时钟漂移 / 重放 | 身份验证复用 mTLS 握手本身的密钥持有证明，不依赖设备时钟、不需要 nonce（见 §11 的 mTLS 收敛说明） |
+| 打洞信令伪造 | 留给里程碑 C5：设计上信令经已验证身份的常驻连接转发，消息由设备私钥签名 |
+| 中继会话被冒领 | `RelayRequest`/`RelayOpen` 本身不检查允许名单（服务器不理解「配对」语义，见 §11）——真正的安全边界在**被叫方自己**：中继裸管道撮合后跑的仍是设备间 mTLS + `dispatch_shared` 的 `trusted` 检查，未配对的请求方在协议层被 `NotPaired` 拒绝，和直连路径完全同构。中继只是换了一层承载，不改变谁能真正建立会话 |
+| 中继滥用（陌生人蹭带宽/占用连接） | `session_token` 一次性 + 短 TTL（8s，见 §11/§12），被首次 `RelayOpen` 触碰即从服务器登记表移除；限速/配额由自建节点运营者配置 |
 | Relay 流量分析 | 不承诺抗流量分析（非目标）；记录在 SECURITY.md 威胁模型 |
 
 详细威胁模型见 [SECURITY.md](SECURITY.md)。
