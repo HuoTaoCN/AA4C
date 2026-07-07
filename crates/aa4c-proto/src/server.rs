@@ -11,9 +11,9 @@
 //! TLS 的签名依赖。这是本里程碑对 CONNECT_DESIGN 初稿的收敛，安全属性等价（甚至更强，
 //! 因为身份绑定在整条连接上而非单条消息）。
 //!
-//! C2 只定义信令所需变体（`SrvHello`/`Register`/`Lookup`）；C3（本文件现状）按「只追加」
-//! 纪律加入中继面变体（`RelayRequest`/`RelayGrant`/`IncomingRelay`/`RelayOpen`/
-//! `RelayOpenAck`，见下方各变体文档）；打洞信令 `Signal` 留到 C5。
+//! C2 只定义信令所需变体（`SrvHello`/`Register`/`Lookup`）；C3 按「只追加」纪律加入中继面
+//! 变体（`RelayRequest`/`RelayGrant`/`IncomingRelay`/`RelayOpen`/`RelayOpenAck`，见下方各
+//! 变体文档）；C5（本文件现状）加入打洞信令 `Signal`/`IncomingSignal`。
 //!
 //! **中继面与设计稿的一处收敛**：设计稿（CONNECT_DESIGN.md §4）把中继数据面写成独立的
 //! `RelayOpen`/`RelayData`/`RelayClose` 三个消息，本实现只保留 `RelayOpen`（+ 一次
@@ -87,6 +87,24 @@ pub enum ServerMessage {
     /// `RelayOpen` 的结果：`true` 表示两侧已撮合，这条连接即将转入透明转发；`false`
     /// 表示 token 不存在/已过期/已被使用，连接随即关闭。
     RelayOpenAck { ok: bool },
+
+    /// 打洞候选交换（里程碑 C5，CONNECT_DESIGN.md §2 连接阶梯第 3 档）：在**发起方自己
+    /// 维持的常驻连接**上发出（这样对端的回信——同样是一条 `Signal`——才能作为
+    /// `IncomingSignal` 推送回同一条连接，见 [`ServerMessage::IncomingSignal`]）。
+    /// `candidates` 是发起方的本机候选（局域网地址 + 反射地址，反射地址由
+    /// `aa4c-server` 自带的 QUIC 反射端点探测得到，见 PROTOCOL.md）。
+    Signal {
+        target: DeviceId,
+        candidates: Vec<SocketAddr>,
+    },
+    /// 服务器推送（S→C，走目标设备的常驻连接）：有人发来一份候选想跟本机打洞。
+    /// 收到后应答的一方（无论是不是同时也在等一份 `IncomingSignal` 回信）都应该
+    /// **反向回一条 `Signal`**（带上自己的候选）并尝试向 `candidates` 打洞——两侧
+    /// 各自发起的 QUIC 连接互相"捅穿"NAT 映射，成功即为连接阶梯第 3 档。
+    IncomingSignal {
+        from: DeviceId,
+        candidates: Vec<SocketAddr>,
+    },
 }
 
 /// 统一的"意外消息"错误（只给变体名，不泄露 payload，呼应 [`crate::unexpected`]）。
@@ -103,6 +121,8 @@ pub fn unexpected(msg: &ServerMessage) -> Aa4cError {
         ServerMessage::IncomingRelay { .. } => "IncomingRelay",
         ServerMessage::RelayOpen { .. } => "RelayOpen",
         ServerMessage::RelayOpenAck { .. } => "RelayOpenAck",
+        ServerMessage::Signal { .. } => "Signal",
+        ServerMessage::IncomingSignal { .. } => "IncomingSignal",
     };
     Aa4cError::Protocol(format!("unexpected server message: {variant}"))
 }
@@ -146,6 +166,14 @@ mod tests {
                 session_token: "tok-1".into(),
             },
             ServerMessage::RelayOpenAck { ok: true },
+            ServerMessage::Signal {
+                target: "dd".repeat(32),
+                candidates: vec!["203.0.113.5:42420".parse().unwrap()],
+            },
+            ServerMessage::IncomingSignal {
+                from: "aa".repeat(32),
+                candidates: vec!["198.51.100.9:42420".parse().unwrap()],
+            },
         ];
         let (mut a, mut b) = tokio::io::duplex(64 * 1024);
         for msg in &samples {

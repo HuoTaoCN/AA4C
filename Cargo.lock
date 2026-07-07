@@ -90,6 +90,7 @@ dependencies = [
  "aa4c-identity",
  "aa4c-proto",
  "aa4c-types",
+ "quinn",
  "rustls",
  "tempfile",
  "tokio",

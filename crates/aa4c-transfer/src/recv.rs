@@ -94,7 +94,11 @@ pub(crate) async fn run_incoming_quic(
         .accept_bi()
         .await
         .map_err(|e| Aa4cError::Network(format!("quic accept stream: {e}")))?;
-    let mut stream = tokio::io::join(recv, send);
+    // `QuicDuplex` 把 `connection` 和流绑在一起：`IndexRequest` 的分流是转交给 Core 的
+    // 钩子后立即返回（钩子内部自己 spawn，不等它跑完），若只传流、让这里的 `connection`
+    // 局部变量随本函数返回而丢弃，钩子那个后台任务还没来得及读写就会先撞见连接被关
+    // （`Offer`/`FetchRequest` 分支全程 `.await` 到底，不受影响，见 `quic::QuicDuplex` 文档）。
+    let mut stream = crate::quic::QuicDuplex::new(connection, recv, send);
 
     let (hello_id, proto) = server_hello(&mut stream, svc.identity.device_id()).await?;
     if hello_id != cert_id {

@@ -166,11 +166,13 @@ pub enum CoreEvent {
     SyncIndexUpdated,
 }
 
-/// 一次连接实际走的档位（CONNECT_DESIGN.md §2 连接阶梯，里程碑 C4）。
+/// 一次连接实际走的档位（CONNECT_DESIGN.md §2 连接阶梯，里程碑 C4 + C5）。
+/// `Punch`（打洞后升级成的直连）在前端 UI 上并入「直连」显示，不单独暴露成第三个词。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionVia {
     Direct,
+    Punch,
     Relay,
 }
 ```

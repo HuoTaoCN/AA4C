@@ -46,6 +46,19 @@ async fn spawn_node_quic() -> Node {
     Node { core, _dir: dir }
 }
 
+/// 同 [`spawn_node`]，但关掉连接阶梯第 3 档（打洞，里程碑 C5 的测试专用开关，见
+/// `TransferConfig::disable_punch`）。回环环境下打洞天然可达、总会成功，专门验证
+/// 「中继兜底」的测试要靠这个开关把打洞挡掉，才能真正逼出第 4 档。
+async fn spawn_node_no_punch() -> Node {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = CoreConfig::new(dir.path().to_path_buf());
+    config.listen_port = 0;
+    config.transfer.default_save_dir = dir.path().join("downloads");
+    config.transfer.disable_punch = true;
+    let core = Core::start(config).await.expect("core starts");
+    Node { core, _dir: dir }
+}
+
 /// 用真实监听端口构造 loopback 对端地址。
 fn peer_info(node: &Node) -> DeviceInfo {
     DeviceInfo {
@@ -788,9 +801,15 @@ async fn server_lookup_denies_device_not_in_allow_list() {
 /// 设备），把 A 落库的 B 最后地址钉成本机一个确定没有监听者的端口（第二档直连立即被
 /// connection refused，而不是等超时）。剩下唯一能用的就是中继——服务器把 A、B 的连接
 /// 撮合起来，设备间 mTLS 在这条裸管道上原样握手，ATP 原样跑完。
+///
+/// A 用 [`spawn_node_no_punch`] 而不是 [`spawn_node`]：里程碑 C5 加入打洞（连接阶梯
+/// 第 3 档，排在中继之前）后，回环环境没有真实 NAT，打洞会稳定成功，这个测试原本
+/// "强制中继" 的手法其实会被打洞截胡——实测验证过（见 CHANGELOG），必须显式关掉
+/// 打洞才能真正测到第 4 档；末尾对 `ConnectionVia::Relay` 的断言就是防止这个回归
+/// 再次悄悄发生。
 #[tokio::test]
 async fn forced_relay_path_completes_a_transfer() {
-    let a = spawn_node().await;
+    let a = spawn_node_no_punch().await;
     let b = spawn_node().await;
     let b_id = b.core.self_info().id;
     let (_server, _server_dir, server_url) = spawn_server().await;
@@ -840,10 +859,26 @@ async fn forced_relay_path_completes_a_transfer() {
         }
     });
 
-    let ev_a2 = a.core.subscribe();
+    let mut ev_a2 = a.core.subscribe();
     let task_id = retry_send_files(&a.core, &b_id, vec![src.clone()])
         .await
         .expect("relay dialer is wired, send queues even with no direct address");
+    let via = timeout(WAIT, async {
+        loop {
+            if let CoreEvent::TransferConnected { task_id: t, via } = ev_a2.recv().await.unwrap() {
+                if t == task_id {
+                    return via;
+                }
+            }
+        }
+    })
+    .await
+    .expect("connected event arrives");
+    assert_eq!(
+        via,
+        aa4c_types::ConnectionVia::Relay,
+        "disable_punch should force the ladder down to tier 4 (relay), not silently succeed via punch"
+    );
     wait_transfer_done(ev_a2, &task_id).await;
     assert_eq!(
         tokio::fs::read(recv_dir.join("via-relay.txt"))
@@ -860,10 +895,11 @@ async fn forced_relay_path_completes_a_transfer() {
 /// （也够不到落库地址），也能通过自建服务器 + 中继同步到对方的共享索引
 /// （CONNECT_DESIGN.md §6「远程同步」；此前 `sync_exchange` 只认 mDNS 在线快照，是本
 /// 里程碑要补的缺口）。复用 `forced_relay_path_completes_a_transfer` 的同一套「逼连接
-/// 阶梯只剩中继」手法。
+/// 阶梯只剩中继」手法——同样要用 [`spawn_node_no_punch`]，理由见那个测试的文档
+/// （里程碑 C5 加入打洞后，回环环境会让打洞抢在中继之前成功）。
 #[tokio::test]
 async fn remote_index_exchange_reaches_peer_via_relay() {
-    let a = spawn_node().await;
+    let a = spawn_node_no_punch().await;
     let b = spawn_node().await;
     let b_id = b.core.self_info().id;
     let (_server, _server_dir, server_url) = spawn_server().await;
@@ -915,6 +951,96 @@ async fn remote_index_exchange_reaches_peer_via_relay() {
     assert_eq!(remote.len(), 1, "remote index synced purely through relay");
     assert_eq!(remote[0].rel_path, "shared/doc.txt");
     assert_eq!(remote[0].device_id, b_id);
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}
+
+/// 里程碑 C5 验收：连接阶梯第 3 档（NAT 打洞）完成一次真实文件传输
+/// （V0.3_IMPLEMENTATION_PLAN.md C5）。
+///
+/// 手法与 `forced_relay_path_completes_a_transfer` 完全一致（关 A 的 mDNS + 把 B 的
+/// 落库地址钉成死端口，逼直连两档确定性失败），唯一区别是这次**不**关闭打洞
+/// （用默认的 [`spawn_node`]）——回环环境没有真实 NAT，候选交换 + `quic::connect`
+/// 应该在中继之前就把连接接上。断言 `ConnectionVia::Punch` 而不仅仅是「传输成功」，
+/// 因为不这么断言的话，测试就分不清是真的走了打洞、还是又被谁不小心改成了直连或
+/// 中继（同样的教训促成了 `forced_relay_path_completes_a_transfer` 那边的修复）。
+///
+/// 局域网内是否真的绕过了 NAT 无法在这台机器上验证（CONNECT_DESIGN.md 已注明打洞
+/// 成功率需要人工双网络验证）——这里验证的是候选交换 + 反射地址探测 + 双向
+/// `quic::connect` 这一整套接线在正确的输入下能跑通，不是"真实 NAT 穿透"本身。
+#[tokio::test]
+async fn forced_punch_path_completes_a_transfer() {
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let b_id = b.core.self_info().id;
+    let (_server, _server_dir, server_url) = spawn_server().await;
+
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "both sides pair");
+
+    enable_remote(&a.core, &server_url).await;
+    enable_remote(&b.core, &server_url).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // 让 B 的常驻连接落地
+
+    a.core.discovery.stop().await.unwrap();
+    let mut rec = a.core.store.get_device(&b_id).await.unwrap().unwrap();
+    rec.last_addr = Some("127.0.0.1:1".to_string());
+    a.core.store.upsert_device(&rec).await.unwrap();
+
+    let recv_dir = b._dir.path().join("inbox");
+    let src = a._dir.path().join("via-punch.txt");
+    tokio::fs::write(&src, b"delivered purely through nat punching")
+        .await
+        .unwrap();
+    let ev_b2 = b.core.subscribe();
+    let b_core = b.core.clone();
+    let recv_dir2 = recv_dir.clone();
+    tokio::spawn(async move {
+        let mut rx = ev_b2;
+        while let Ok(event) = rx.recv().await {
+            if let CoreEvent::TransferRequest { task } = event {
+                b_core
+                    .accept_transfer(&task.id, true, Some(recv_dir2.clone()))
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+
+    let mut ev_a2 = a.core.subscribe();
+    let task_id = retry_send_files(&a.core, &b_id, vec![src.clone()])
+        .await
+        .expect("punch or relay dialer is wired, send queues even with no direct address");
+    let via = timeout(WAIT, async {
+        loop {
+            if let CoreEvent::TransferConnected { task_id: t, via } = ev_a2.recv().await.unwrap() {
+                if t == task_id {
+                    return via;
+                }
+            }
+        }
+    })
+    .await
+    .expect("connected event arrives");
+    assert_eq!(
+        via,
+        aa4c_types::ConnectionVia::Punch,
+        "loopback has no real NAT, punch should win before ever falling to relay"
+    );
+    wait_transfer_done(ev_a2, &task_id).await;
+    assert_eq!(
+        tokio::fs::read(recv_dir.join("via-punch.txt"))
+            .await
+            .unwrap(),
+        b"delivered purely through nat punching"
+    );
 
     a.core.shutdown().await.unwrap();
     b.core.shutdown().await.unwrap();

@@ -15,6 +15,8 @@
 
 #![forbid(unsafe_code)]
 
+mod reflect;
+
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -175,6 +177,15 @@ pub async fn run(config: ServerConfig) -> Result<Arc<Server>> {
         }
     });
 
+    // 打洞探测端点（里程碑 C5，连接阶梯第 3 档）：best-effort，绑不上只警告——没有它
+    // 只是打洞这一档失效，其余阶梯（直连/中继）不受影响，同 QUIC 对设备端的降级惯例。
+    match reflect::spawn(server.identity.clone(), local_addr.port()) {
+        Ok(port) => tracing::info!(port, "reflect endpoint listening"),
+        Err(e) => {
+            tracing::warn!(error = %e, "reflect endpoint unavailable, NAT hole punching disabled")
+        }
+    }
+
     tracing::info!(
         addr = %local_addr,
         device_id = %server.device_id(),
@@ -302,6 +313,21 @@ async fn handle_connection(server: Arc<Server>, mut stream: ServerTlsStream) -> 
                     ServerMessage::RelayOpen { session_token } => {
                         // 数据面：接管这条连接，不再回到本循环（无论撮合成败都直接结束本函数）。
                         return handle_relay_open(server, stream, session_token).await;
+                    }
+                    ServerMessage::Signal { target, candidates } => {
+                        // 打洞候选转发（里程碑 C5）：纯盲转发，不回执给发起方——发起方
+                        // 在自己等待 `IncomingSignal` 回信的超时里感知失败，同 RelayRequest
+                        // 的防探测考量（target 不在线/未开启远程都静默，不区分原因）。
+                        // 必须发在**发起方自己的常驻连接**上：回信是对端也发一条 `Signal`
+                        // 给发起方，会被当作 `IncomingSignal` 推送回同一条连接
+                        // （见 `aa4c-core::server_link`）。
+                        if let Some(tx) = server.pushable.lock().expect("pushable lock").get(&target)
+                        {
+                            let _ = tx.send(ServerMessage::IncomingSignal {
+                                from: cert_id.clone(),
+                                candidates,
+                            });
+                        }
                     }
                     other => {
                         tracing::debug!(error = %unexpected(&other), "closing connection");
@@ -639,6 +665,129 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    /// B 维持常驻连接并 `Register`；A 在**自己的**常驻连接上发 `Signal`：B 应在自己的
+    /// 常驻连接上收到 `IncomingSignal`（里程碑 C5，CONNECT_DESIGN.md §2 连接阶梯第 3 档）。
+    /// 未注册/不在线的目标静默丢弃，不回执给发起方——同 `RelayRequest` 的防探测考量。
+    #[tokio::test]
+    async fn signal_pushes_incoming_signal_to_registered_peer() {
+        let server = start_test_server().await;
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a = Identity::load_or_generate(dir_a.path()).unwrap();
+        let b = Identity::load_or_generate(dir_b.path()).unwrap();
+
+        // 双方都维持常驻连接（A 也要注册，才能在自己这条连接上收到 B 的回信）
+        let mut stream_a = connect_client(&server, &a).await;
+        write_message(
+            &mut stream_a,
+            &ServerMessage::Register {
+                endpoints: vec![],
+                proto: aa4c_types::PROTO_VERSION,
+                allow_list: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        let _: ServerMessage = read_message(&mut stream_a).await.unwrap(); // RegisterAck
+
+        let mut stream_b = connect_client(&server, &b).await;
+        write_message(
+            &mut stream_b,
+            &ServerMessage::Register {
+                endpoints: vec![],
+                proto: aa4c_types::PROTO_VERSION,
+                allow_list: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        let _: ServerMessage = read_message(&mut stream_b).await.unwrap(); // RegisterAck
+
+        // A 在自己的常驻连接上发 Signal 给 B
+        let a_candidates = vec!["10.0.0.5:42420".parse().unwrap()];
+        write_message(
+            &mut stream_a,
+            &ServerMessage::Signal {
+                target: b.device_id().clone(),
+                candidates: a_candidates.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // B 应在自己的常驻连接上收到推送
+        match timeout(
+            Duration::from_secs(2),
+            read_message::<_, ServerMessage>(&mut stream_b),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        {
+            ServerMessage::IncomingSignal { from, candidates } => {
+                assert_eq!(from, *a.device_id());
+                assert_eq!(candidates, a_candidates);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        // B 回信：自己的候选经 Signal 发回，A 应在自己的常驻连接上收到 IncomingSignal
+        let b_candidates = vec!["10.0.0.9:42420".parse().unwrap()];
+        write_message(
+            &mut stream_b,
+            &ServerMessage::Signal {
+                target: a.device_id().clone(),
+                candidates: b_candidates.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        match timeout(
+            Duration::from_secs(2),
+            read_message::<_, ServerMessage>(&mut stream_a),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        {
+            ServerMessage::IncomingSignal { from, candidates } => {
+                assert_eq!(from, *b.device_id());
+                assert_eq!(candidates, b_candidates);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    /// `Signal` 目标未注册/不在线：静默丢弃，不给发起方任何回执（发起方靠自己的等待
+    /// 超时感知——这里只验证「不会因为目标不存在就报错或收到什么奇怪的东西」）。
+    #[tokio::test]
+    async fn signal_to_unregistered_target_is_silently_dropped() {
+        let server = start_test_server().await;
+        let dir_a = tempfile::tempdir().unwrap();
+        let a = Identity::load_or_generate(dir_a.path()).unwrap();
+
+        let mut stream_a = connect_client(&server, &a).await;
+        write_message(
+            &mut stream_a,
+            &ServerMessage::Signal {
+                target: "nope".repeat(16),
+                candidates: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        // 没有任何回执：短暂等待确认确实没有消息到达（不是漏发，是设计如此）
+        let res = timeout(
+            Duration::from_millis(200),
+            read_message::<_, ServerMessage>(&mut stream_a),
+        )
+        .await;
+        assert!(
+            res.is_err(),
+            "should not receive anything for unknown target"
+        );
     }
 
     /// 两条连接各自 `RelayOpen` 同一个 token：撮合后应能收发裸字节（里程碑 C3 数据面）。

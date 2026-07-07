@@ -30,6 +30,10 @@ use tokio_util::sync::CancellationToken;
 /// 事件发送端（与 aa4c-core 的事件总线同型）。
 pub type EventSender = broadcast::Sender<CoreEvent>;
 
+/// 打洞阶段单个候选地址的连接尝试上限（里程碑 C5）：真正打通的候选几个 RTT 就该有
+/// 响应，候选列表可能有好几个，不能让一个不通的候选拖累整条阶梯的失败延迟。
+const PUNCH_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// 已完成 TLS 握手的入站服务端流（与配对模块同型）。局域网配对目前只走这条具体类型
 /// （见 [`IncomingPairDispatch`]）；索引/拉取的入站分流走下面泛化的 [`SharedStream`]，
 /// 因为它们还要支持 QUIC 入站连接（里程碑 C1，CONNECT_DESIGN.md §5）。
@@ -108,6 +112,23 @@ pub trait RelayDialer: Send + Sync + 'static {
 pub type RelayDialFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<SharedStream>> + Send>>;
 
+/// 连接阶梯第 3 档：NAT 打洞候选交换（里程碑 C5，CONNECT_DESIGN.md §2）。
+///
+/// 由 Core 注入（实现内部会经自建服务器的常驻连接做 `Signal`/`IncomingSignal` 候选
+/// 交换，见 `aa4c-core::server_link`；传输层不感知服务器协议细节，只关心"给我一份
+/// 候选地址试试"）。传输层拿到候选后自己用现有 `quic::connect` 逐个尝试——第一个握手
+/// 成功的即为打洞直连（`ConnectionVia::Punch`）。实现内部**也会**顺带向 `peer_id`
+/// 打几个尽力而为的探测包（帮对方的真实连接尝试捅穿本机 NAT），这部分对调用方透明。
+pub trait PunchDialer: Send + Sync + 'static {
+    /// 尝试为 `peer_id` 换一份候选地址；交换失败/超时（对端不可达/未维持常驻连接/
+    /// 未配置服务器）均返回 `Err`，调用方会把它当作「这一档也失败了」直接落中继。
+    fn candidates(&self, peer_id: DeviceId) -> PunchFuture;
+}
+
+/// [`PunchDialer::candidates`] 的返回（避免引入 async-trait 依赖）。
+pub type PunchFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<std::net::SocketAddr>>> + Send>>;
+
 /// 接收方用户决定：（是否接收，保存目录覆盖）。
 type AcceptDecision = (bool, Option<PathBuf>);
 
@@ -126,6 +147,13 @@ pub struct TransferConfig {
     /// 不影响任何现有行为；仅当为 `true` 且本机 QUIC 监听已就绪时才生效，否则报错
     /// （调用方不应该在没有 QUIC 端点时开启此项）。
     pub prefer_quic: bool,
+    /// 跳过连接阶梯第 3 档（打洞，里程碑 C5）的测试/联调开关。默认 `false` 不影响任何
+    /// 现有行为；存在的唯一原因是**测试环境没有真实 NAT**——回环地址天然可达，打洞在
+    /// 任何测试/CI 环境下都会稳定成功，导致想专门验证「中继兜底」的测试其实从没真的
+    /// 走到中继（实测踩到：C3 的 `forced_relay_path_completes_a_transfer` 在 C5 加入
+    /// 打洞后悄悄变成了在测打洞，见 CHANGELOG）。开着这个开关能让相关测试确定性地
+    /// 绕过打洞，真正逼出第 4 档。
+    pub disable_punch: bool,
 }
 
 impl Default for TransferConfig {
@@ -136,6 +164,7 @@ impl Default for TransferConfig {
             max_concurrent_tasks: 4,
             timeout: Duration::from_secs(60),
             prefer_quic: false,
+            disable_punch: false,
         }
     }
 }
@@ -160,6 +189,8 @@ pub struct TransferService {
     /// 中继拨号器（Core 注入；未注入时连接阶梯只到「公网直连」为止，直连失败即报错，
     /// 见 [`dial`]，里程碑 C3）。
     pub(crate) relay_dialer: OnceLock<Arc<dyn RelayDialer>>,
+    /// 打洞拨号器（Core 注入；未注入时直接跳过第 3 档落中继，见 [`dial`]，里程碑 C5）。
+    pub(crate) punch_dialer: OnceLock<Arc<dyn PunchDialer>>,
 }
 
 impl TransferService {
@@ -183,6 +214,7 @@ impl TransferService {
             fetch_resolver: OnceLock::new(),
             quic_endpoint: OnceLock::new(),
             relay_dialer: OnceLock::new(),
+            punch_dialer: OnceLock::new(),
         })
     }
 
@@ -204,6 +236,54 @@ impl TransferService {
     /// 注入中继拨号器（Core 在装配阶段调用一次）。重复设置无效。
     pub fn set_relay_dialer(&self, dialer: Arc<dyn RelayDialer>) {
         let _ = self.relay_dialer.set(dialer);
+    }
+
+    /// 注入打洞拨号器（Core 在装配阶段调用一次）。重复设置无效。
+    pub fn set_punch_dialer(&self, dialer: Arc<dyn PunchDialer>) {
+        let _ = self.punch_dialer.set(dialer);
+    }
+
+    /// 反射地址探测（里程碑 C5，连接阶梯第 3 档打洞用）：见 `quic::reflexive_addr`。
+    /// 本机 QUIC 端点未就绪时直接报错——没有 QUIC 就没有打洞可言，同中继档「没有拨号器
+    /// 就报错」的降级逻辑一致。
+    pub async fn reflexive_addr(
+        &self,
+        reflect_addr: std::net::SocketAddr,
+        expected_fingerprint_prefix: &str,
+    ) -> Result<std::net::SocketAddr> {
+        let endpoint = self.quic_endpoint.get().ok_or_else(|| {
+            Aa4cError::Network("quic endpoint not available, cannot probe reflexive address".into())
+        })?;
+        quic::reflexive_addr(
+            endpoint,
+            &self.identity,
+            reflect_addr,
+            expected_fingerprint_prefix,
+        )
+        .await
+    }
+
+    /// 向 `peer_id` 打几个尽力而为的探测包（帮对方的真实连接尝试捅穿本机 NAT，里程碑
+    /// C5）：内部就是对每个候选地址发起一次 `quic::connect`，**完全不关心结果**——
+    /// 无论成败，NAT 映射该开的口子已经在发包那一刻开了，success/failure 只是这条
+    /// 连接本身要不要保留的问题，我们不需要保留它。本机没有 QUIC 端点时静默跳过。
+    pub fn punch_probe(self: &Arc<Self>, peer_id: DeviceId, candidates: Vec<std::net::SocketAddr>) {
+        let Some(endpoint) = self.quic_endpoint.get().cloned() else {
+            return;
+        };
+        let identity = self.identity.clone();
+        for addr in candidates {
+            let endpoint = endpoint.clone();
+            let identity = identity.clone();
+            let peer_id = peer_id.clone();
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    quic::connect(&endpoint, &identity, &peer_id, addr),
+                )
+                .await;
+            });
+        }
     }
 
     /// 接管一条已就绪的外部入站裸管道（目前仅用于中继数据面，里程碑 C3）：在其上
@@ -357,10 +437,38 @@ impl TransferService {
             match self.dial_tcp(peer_id, addr).await {
                 Ok(stream) => return Ok((stream, ConnectionVia::Direct)),
                 Err(e) => {
-                    if self.relay_dialer.get().is_none() {
+                    if self.punch_dialer.get().is_none() && self.relay_dialer.get().is_none() {
                         return Err(e);
                     }
-                    tracing::debug!(peer = %peer_id, error = %e, "direct dial failed, falling back to relay");
+                    tracing::debug!(peer = %peer_id, error = %e, "direct dial failed, falling back to punch/relay");
+                }
+            }
+        }
+
+        // 连接阶梯第 3 档：NAT 打洞（里程碑 C5）。没有 QUIC 端点就没有打洞可言
+        // （反射地址/候选连接都要用它），直接跳过落中继，同 `prefer_quic` 分支的降级逻辑；
+        // `disable_punch` 是测试/联调专用开关，见其文档。
+        if !self.config.disable_punch {
+            if let (Some(punch), Some(endpoint)) =
+                (self.punch_dialer.get(), self.quic_endpoint.get())
+            {
+                match punch.candidates(peer_id.clone()).await {
+                    Ok(candidates) => {
+                        for candidate in candidates {
+                            let attempt = tokio::time::timeout(
+                                PUNCH_CANDIDATE_TIMEOUT,
+                                quic::connect(endpoint, &self.identity, peer_id, candidate),
+                            )
+                            .await;
+                            if let Ok(Ok(stream)) = attempt {
+                                return Ok((Box::new(stream), ConnectionVia::Punch));
+                            }
+                        }
+                        tracing::debug!(peer = %peer_id, "punch candidates exchanged but none connected, falling back to relay");
+                    }
+                    Err(e) => {
+                        tracing::debug!(peer = %peer_id, error = %e, "punch candidate exchange failed, falling back to relay");
+                    }
                 }
             }
         }

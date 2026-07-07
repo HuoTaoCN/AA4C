@@ -13,6 +13,7 @@ use aa4c_transfer::{
     SharedFileResolver, SharedStream,
 };
 use aa4c_types::{DeviceId, DeviceInfo, TrustLevel};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::unified;
 
@@ -99,6 +100,7 @@ async fn serve_index(
             },
         )
         .await?;
+        finish_write_side(&mut stream).await;
         return Ok(());
     }
     while let Some(chunk) = chunks.next() {
@@ -112,7 +114,27 @@ async fn serve_index(
         )
         .await?;
     }
+    finish_write_side(&mut stream).await;
     Ok(())
+}
+
+/// 写完最后一批 `IndexEntries` 后，索引交换协议没有任何后续的应答消息——不像
+/// `Offer`/发送会话那样天然靠 `TaskDone`/`FileAck` 的最后一轮往返把连接"拖"到双方
+/// 都确认完成。如果写完就直接返回，调用方（`IncomingIndexDispatch::dispatch`）持有的
+/// `stream` 随之被丢弃，对 QUIC 承载来说这意味着底层连接立即被拆——而"写成功"只代表
+/// 数据进了本地发送缓冲区，不代表已经送达对端；直接丢连接会把还没来得及发出的最后
+/// 一批数据连同连接一起冲掉（实测踩到的真实竞态：QUIC 上稳定复现"connection lost"，
+/// TCP 因为内核发送缓冲区的宽容度而不容易触发，这也是这个 bug 从里程碑 1 引入
+/// QUIC 起就潜伏到现在才被里程碑 5 的打洞路径踩中的原因）。
+///
+/// 修法：显式半关闭写侧（`shutdown`，QUIC 下对应 `SendStream::finish`，确保排队的数据
+/// 连同 FIN 一起被送出），再读到对端也关闭它那侧为止——两边都确认"数据交接完毕"后
+/// 再真正丢弃连接。读到什么、读错什么都无所谓，只要这次读操作**完成**（无论是干净
+/// EOF 还是对端直接重置），就说明连接层面已经有了明确结果，可以放心收尾了。
+async fn finish_write_side(stream: &mut SharedStream) {
+    let _ = stream.shutdown().await;
+    let mut discard = [0u8; 1];
+    let _ = stream.read(&mut discard).await;
 }
 
 /// 共享文件解析器：把拉取方请求的限定展示路径解析为本机共享文件（SYNC_DESIGN.md §4）。

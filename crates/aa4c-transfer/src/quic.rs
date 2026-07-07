@@ -21,6 +21,12 @@ use crate::TransferService;
 const SERVER_NAME: &str = "aa4c";
 const ALPN: &[u8] = b"aa4c";
 
+/// `aa4c-server` 反射端点专用 ALPN（`aa4c_server::reflect`），与设备间传输 QUIC 区分
+/// （里程碑 C5，纯防御性加固，同 `ALPN` 的注释）。
+const REFLECT_ALPN: &[u8] = b"aa4c-reflect";
+/// 反射探测的等待上限：只是一次单向"告诉我我的地址"，不需要很久。
+const REFLECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// keep-alive + 空闲超时：本应用等待用户确认接收可长达 `TransferConfig::timeout`
 /// （默认 60s），比 quinn 默认的 30s 空闲超时还长——若什么都不做，慢用户会先被
 /// 传输层误判「空闲」强制断连。用 keep-alive（周期性 PING）在连接真正存活时持续
@@ -39,7 +45,67 @@ fn transport_config() -> Arc<quinn::TransportConfig> {
 
 /// 一条 QUIC bidi 流拼成的双工流：`RecvStream: AsyncRead`、`SendStream: AsyncWrite`，
 /// 直接喂给既有的 `client_hello`/`server_hello` 与收发循环，协议层无需感知底层是 QUIC。
-pub(crate) type QuicDuplex = tokio::io::Join<quinn::RecvStream, quinn::SendStream>;
+///
+/// **必须**随身带着 `Connection` 句柄，不能只留 `RecvStream`/`SendStream`：这两个流对象
+/// 不足以独立维持连接存活，`Connection` 句柄全部丢弃后 quinn 会认为这条连接不再需要而
+/// 关闭它——即使流本身还在被用。踩过这个坑：`IndexRequest` 的分流是「转交给 Core 注入的
+/// 钩子后立即返回」（钩子内部自己 `tokio::spawn`，不等它跑完，见
+/// `aa4c-core::dispatch::IndexServe`），如果 `run_incoming_quic` 只把流传下去、自己的
+/// `connection` 局部变量随函数返回而丢弃，钩子那个后台任务还没来得及读写就会遇到
+/// "connection lost"（`Offer`/`FetchRequest` 分支因为全程 `.await` 到底不受影响，只有
+/// fire-and-forget 的分支会踩到）。把 `Connection` 一起装进这个类型、跟流同生共死，
+/// 就不用在每个调用点都记得"顺手多存一个变量"。
+pub(crate) struct QuicDuplex {
+    inner: tokio::io::Join<quinn::RecvStream, quinn::SendStream>,
+    _connection: quinn::Connection,
+}
+
+impl QuicDuplex {
+    pub(crate) fn new(
+        connection: quinn::Connection,
+        recv: quinn::RecvStream,
+        send: quinn::SendStream,
+    ) -> Self {
+        Self {
+            inner: tokio::io::join(recv, send),
+            _connection: connection,
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for QuicDuplex {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for QuicDuplex {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
 
 /// 建 QUIC 端点并启动接收循环：每个入站连接的第一条 bidi 流按现有分发处理
 /// （`recv::run_incoming_quic`）。返回的 `Endpoint` 同时用于发起出站连接（见 [`connect`]），
@@ -114,7 +180,59 @@ pub(crate) async fn connect(
         .open_bi()
         .await
         .map_err(|e| Aa4cError::Network(format!("quic open stream: {e}")))?;
-    Ok(tokio::io::join(recv, send))
+    Ok(QuicDuplex::new(connection, recv, send))
+}
+
+/// 探测本机 QUIC 端点的反射地址（里程碑 C5，连接阶梯第 3 档打洞用）：连一次
+/// `aa4c-server` 自带的反射端点（`aa4c_server::reflect`），读回服务器观测到的己方源
+/// 地址。**必须用同一个 `endpoint`**（即真实设备间连接会用的那个 QUIC 端点/本地端口）
+/// 发起——NAT 的外部映射通常按"本地端口"分配，换个端口学到的映射对后续真实打洞
+/// 尝试就没有意义了。
+///
+/// `expected_fingerprint_prefix` 同 TCP 信令面的校验方式：TLS 层不预先固定期望对端
+/// （服务器身份此前未知，只有地址里的指纹前缀），握手后手动比对。
+pub(crate) async fn reflexive_addr(
+    endpoint: &quinn::Endpoint,
+    identity: &Identity,
+    addr: SocketAddr,
+    expected_fingerprint_prefix: &str,
+) -> Result<SocketAddr> {
+    let mut rustls_client = identity.tls_client_config(None)?;
+    rustls_client.alpn_protocols = vec![REFLECT_ALPN.to_vec()];
+    let quic_client = QuicClientConfig::try_from(rustls_client)
+        .map_err(|e| Aa4cError::Network(format!("reflect quic client config: {e}")))?;
+    let client_config = quinn::ClientConfig::new(Arc::new(quic_client));
+
+    let connecting = endpoint
+        .connect_with(client_config, addr, SERVER_NAME)
+        .map_err(|e| Aa4cError::Network(format!("reflect quic connect: {e}")))?;
+    let connection = tokio::time::timeout(REFLECT_TIMEOUT, connecting)
+        .await
+        .map_err(|_| Aa4cError::Network("reflect quic handshake timeout".into()))?
+        .map_err(|e| Aa4cError::Network(format!("reflect quic handshake: {e}")))?;
+
+    let server_id = peer_device_id(&connection)?;
+    if !server_id.starts_with(expected_fingerprint_prefix) {
+        return Err(Aa4cError::Protocol(
+            "reflect server fingerprint mismatch".into(),
+        ));
+    }
+
+    let mut recv = tokio::time::timeout(REFLECT_TIMEOUT, connection.accept_uni())
+        .await
+        .map_err(|_| Aa4cError::Network("reflect accept uni timeout".into()))?
+        .map_err(|e| Aa4cError::Network(format!("reflect accept uni: {e}")))?;
+    let bytes = tokio::time::timeout(REFLECT_TIMEOUT, recv.read_to_end(64))
+        .await
+        .map_err(|_| Aa4cError::Network("reflect read timeout".into()))?
+        .map_err(|e| Aa4cError::Network(format!("reflect read: {e}")))?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| Aa4cError::Protocol("reflect payload not utf8".into()))?;
+    let observed: SocketAddr = text
+        .parse()
+        .map_err(|_| Aa4cError::Protocol("reflect payload not a socket addr".into()))?;
+    connection.close(0u32.into(), b"done");
+    Ok(observed)
 }
 
 /// 从 QUIC 连接的 mTLS 对端证书取指纹（与 TCP 路径 `device_id_from_cert` 语义相同，

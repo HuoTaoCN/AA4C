@@ -190,7 +190,7 @@ impl Core {
 
         // 10. 自建服务器注册续约（CONNECT_DESIGN.md §3.2，里程碑 C2）：未开启远程 /
         //     未配置服务器时循环内部直接跳过，不影响任何现有行为
-        let register_notify = server_link::spawn_register_loop(
+        let (register_notify, signal_channel) = server_link::spawn_register_loop(
             store.clone(),
             identity.clone(),
             actual_port,
@@ -198,6 +198,16 @@ impl Core {
             save_dir_fallback.clone(),
             transfer.clone(),
         );
+        // 打洞拨号器（连接阶梯第 3 档，里程碑 C5）：同中继拨号器，未开启远程/未配置
+        // 服务器时其内部会自行报错，不影响任何现有行为。
+        transfer.set_punch_dialer(Arc::new(server_link::PunchDialerImpl::new(
+            store.clone(),
+            fallback_name.clone(),
+            save_dir_fallback.clone(),
+            actual_port,
+            transfer.clone(),
+            signal_channel,
+        )));
 
         tracing::info!(
             device = %self_info.name,

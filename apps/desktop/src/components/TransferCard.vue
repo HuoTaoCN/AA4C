@@ -26,11 +26,22 @@ const eta = computed(() =>
     ? etaText(props.task.totalBytes - props.task.transferredBytes, props.task.speedBps)
     : "",
 );
-// 连接质量（里程碑 C4）：只有发起方收得到 via 事件，接收一方本地任务上永远是 undefined，
-// 这时不显示徽标——不确定就不瞎猜，比显示错误的档位更诚实。
-const viaText = computed(() =>
-  props.task.via === "relay" ? "中继（较慢）" : props.task.via === "direct" ? "直连" : "",
-);
+// 连接质量（里程碑 C4/C5）：只有发起方收得到 via 事件，接收一方本地任务上永远是
+// undefined，这时不显示徽标——不确定就不瞎猜，比显示错误的档位更诚实。
+// `punch`（打洞后升级成的直连）在展示上并入「直连」，不单独暴露成第三个词——
+// 打洞只是"怎么找到对方"的手段，一旦连上就是货真价实的直连，用户不需要关心过程
+// （见 CONNECT_DESIGN.md §10）。
+const viaText = computed(() => {
+  switch (props.task.via) {
+    case "relay":
+      return "中继（较慢）";
+    case "direct":
+    case "punch":
+      return "直连";
+    default:
+      return "";
+  }
+});
 
 async function cancel() {
   try {

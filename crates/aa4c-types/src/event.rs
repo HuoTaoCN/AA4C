@@ -4,13 +4,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DeviceId, DeviceInfo, TaskId, TransferTask};
 
-/// 一次连接实际走的档位（CONNECT_DESIGN.md §2 连接阶梯，里程碑 C4 连接质量）。
-/// 局域网直连与公网直连对上层而言无区别，合并为 `Direct`；`Punch`（打洞后升级 QUIC 直连）
-/// 是里程碑 C5 才会真正产出的取值，这里预留枚举位置以后追加不破坏兼容。
+/// 一次连接实际走的档位（CONNECT_DESIGN.md §2 连接阶梯，里程碑 C4 连接质量 + C5 打洞）。
+/// 局域网直连与公网直连对上层而言无区别，合并为 `Direct`；`Punch` 是打洞成功后升级
+/// 成的 QUIC 直连（里程碑 C5）——虽然最终也是「直连」，但单独报出来是因为它经历了
+/// 候选交换这一步，值得让 UI 区分「一上来就直连」和「打洞打出来的直连」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionVia {
     Direct,
+    Punch,
     Relay,
 }
 

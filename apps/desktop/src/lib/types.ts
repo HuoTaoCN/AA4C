@@ -68,8 +68,9 @@ export interface Settings {
   enableRemote: boolean;
 }
 
-/** 一次连接实际走的档位（里程碑 C4 连接质量，见 CONNECT_DESIGN.md §2）。 */
-export type ConnectionVia = "direct" | "relay";
+/** 一次连接实际走的档位（里程碑 C4 连接质量 + C5 打洞，见 CONNECT_DESIGN.md §2）。
+ * `punch`（打洞后升级成的直连）在 UI 上并入「直连」显示，不单独暴露成第三个词。 */
+export type ConnectionVia = "direct" | "punch" | "relay";
 
 /** 共享范围种类：用户选的同步文件夹，或固定的「收到的」(自动维护)。 */
 export type ScopeKind = "folder" | "inbox";

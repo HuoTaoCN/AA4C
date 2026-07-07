@@ -243,12 +243,12 @@ struct IndexItem { rel_path: String, size: u64, hash: Option<String> }
 - v1/v2 TCP 通道保留作为局域网路径；QUIC 通道上握手协商 `proto = 3`；出站是否走 QUIC 由 `TransferConfig.prefer_quic` 控制（里程碑 C1 仅作测试/联调开关，默认 `false` 不影响任何现有行为；「按可达性自动选择」的正式逻辑收口在里程碑 C4）
 - **keep-alive + 空闲超时**（`aa4c-transfer::quic::transport_config`）：2s 心跳 + 8s 空闲超时——应用层等待用户确认可长达 60s，心跳持续续命，只有心跳本身也送不出去的真断连才会在约 8s 内被两端各自发现
 
-## 11. 发现层升级：`aa4c-server` 信令 + 中继（Part C，已实现信令面 + 中继面，里程碑 C2+C3）
+## 11. 发现层升级：`aa4c-server` 信令 + 中继 + 打洞（Part C，已实现信令面/中继面/打洞面，里程碑 C2+C3+C5）
 
-自建 **`aa4c-server`**（单进程，见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md) §1.1；打洞信令
-`Signal` 留给 C5）。服务器身份与设备同构：**Ed25519 密钥对 + 自签证书，证书指纹写进服务器
-地址**（`aa4c://host:port#<指纹前16位hex>`，`aa4c_types::ServerAddr::parse` 解析），客户端
-连接时校验对端证书指纹是否以此前缀开头，不依赖 CA / 域名。
+自建 **`aa4c-server`**（单进程，见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md) §1.1）。服务器身份
+与设备同构：**Ed25519 密钥对 + 自签证书，证书指纹写进服务器地址**（`aa4c://host:port#<指纹
+前16位hex>`，`aa4c_types::ServerAddr::parse` 解析），客户端连接时校验对端证书指纹是否以此
+前缀开头，不依赖 CA / 域名。
 
 客户端 ↔ 服务器为**一条 TLS 长连接**，复用本协议帧层（4 字节大端长度 + bincode；`encode_frame`
 /`decode_body`/`read_message`/`write_message` 已泛型化，两套协议共用同一套帧实现）。消息族为
@@ -270,6 +270,10 @@ enum ServerMessage {
     IncomingRelay { session_token: String, from: DeviceId }, // S→C：推给被叫方的常驻连接
     RelayOpen { session_token: String },   // C→S（新连接）：凭 token 开中继数据面
     RelayOpenAck { ok: bool },              // S→C：撮合结果，ok=true 后转入裸字节透明转发
+
+    // —— 里程碑 C5：打洞候选交换 ——
+    Signal { target: DeviceId, candidates: Vec<SocketAddr> },      // C→S：在自己的常驻连接上发出
+    IncomingSignal { from: DeviceId, candidates: Vec<SocketAddr> }, // S→C：推给目标的常驻连接
 }
 ```
 
@@ -308,6 +312,25 @@ enum ServerMessage {
   若 Core 注入了 `RelayDialer`（`aa4c-core::server_link::RelayDialerImpl`）就落到中继；
   入站侧新增 `TransferService::accept_external`，把中继撮合好的裸管道接进与 TCP/QUIC 入站
   完全相同的 TLS-accept + 分流管线（`recv::run_incoming_external`）。
+- **打洞面（里程碑 C5，连接阶梯第 3 档，排在中继之前）**：
+  - **反射地址探测**：`aa4c-server` 额外绑定一个轻量 QUIC 端点（`aa4c_server::reflect`，
+    与上面的 TCP 信令**同一个端口号**，ALPN 用 `aa4c-reflect` 与设备间传输 QUIC 区分）。
+    设备用自己**真正用于 P2P 的那个 QUIC 端点**连一次，服务器把 `Connection::remote_address()`
+    （NAT 之后观测到的源地址）经一条 uni 流原样回给它——自建版的 STUN binding response，
+    不引入公共 STUN 依赖。必须用同一个本地端口探测：NAT 的外部映射通常按本地端口分配，
+    换个端口的探测结果对后续真实打洞没有意义。不做身份鉴权（反射地址本身不敏感）。
+  - **候选交换**：发起方在**自己的常驻连接**上发 `Signal{target, candidates}`（本地候选 +
+    反射地址）；服务器盲转发给 target 当前的常驻连接，包成 `IncomingSignal{from, candidates}`
+    推送过去——复用中继面已有的 `pushable` 推送表，不需要新基础设施。收到 `IncomingSignal`
+    的一方要判断这条消息是不是自己正在等待的回信：**是**就转交给等待者；**不是**（即别人
+    发起的打洞请求）才需要反向探测自己的候选、向对方候选打几个尽力而为的探测包、把自己的
+    候选用同样的 `Signal` 回信——不做这个区分会导致两边对同一次交换无休止地互相"回信"
+    （实现时真实踩到的死循环，不是假设风险）。
+  - **打洞尝试**：发起方拿到候选后逐个 `quic::connect`，第一个握手成功即为打洞直连
+    （`ConnectionVia::Punch`）；候选交换失败/超时、或所有候选都连不上，均落到中继兜底。
+  - **测试注意**：回环/CI 环境没有真实 NAT，打洞会稳定成功——`TransferConfig::disable_punch`
+    是测试/联调专用开关（同 `prefer_quic` 的先例），让想专门验证中继的测试能确定性地绕过
+    打洞（早期没有这个开关时，C3 的中继测试在打洞加入后其实已经被悄悄截胡，见 CHANGELOG）。
 - **查询授权 = mTLS 身份 + 允许名单**（初稿的「双方互签配对证明」因吊销漏洞弃用）：
   `Lookup` 只在目标设备**当前**登记的允许名单包含查询方时返回非空端点列表；**吊销自然
   发生**——覆盖式 `Register` 本身就是吊销机制，不需要任何显式吊销协议，下一次注册的名单
@@ -326,11 +349,12 @@ enum ServerMessage {
 
 1. **局域网直连**：mDNS 发现（同 v1）
 2. **公网直连**：对端 endpoints 中有可达公网地址
-3. **UDP 打洞**：通过 Rendezvous 信令交换 STUN 探测到的反射地址，双向同时发包打洞，成功后升级 QUIC（里程碑 C5，未实现）
+3. **UDP 打洞**（已实现，里程碑 C5）：通过自建反射端点探测反射地址，`Signal`/`IncomingSignal`
+   交换候选，双向 `quic::connect` 打洞，成功后即为 QUIC 直连（`ConnectionVia::Punch`）
 4. **Relay 中继**（已实现，里程碑 C3）：双方各自连接自建服务器，服务器盲转发加密字节流
 
 Relay 协议（`ServerMessage`，见 §11；`aa4c_transfer::TransferService::dial` 落到这一档时的
-入参 `addr` 可以是 `None`——第 1/2 档都没解析出地址也不阻断，直接尝试中继）：
+入参 `addr` 可以是 `None`——第 1/2 档都没解析出地址也不阻断，先试打洞（第 3 档）再落中继）：
 
 ```
 RelayOpen    { session_token }   // C→S（新连接），token 由 RelayRequest/RelayGrant 换来
