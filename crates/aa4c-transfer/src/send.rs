@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use aa4c_proto::{client_hello, read_message, unexpected, write_message, Message};
-use aa4c_types::{Aa4cError, DeviceId, Result, TaskId, TransferStatus};
+use aa4c_types::{Aa4cError, CoreEvent, DeviceId, Result, TaskId, TransferStatus};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -37,7 +37,13 @@ async fn drive(
     cancel: &CancellationToken,
 ) -> Result<()> {
     let t = svc.config.timeout;
-    let mut stream = svc.dial(&job.peer_id, job.addr).await?;
+    let (mut stream, via) = svc.dial(&job.peer_id, job.addr).await?;
+    // 里程碑 C4 连接质量：只在这里报一次，UI 据此显示「直连/中继（较慢）」（不落库，见
+    // `CoreEvent::TransferConnected` 文档）。
+    let _ = svc.events.send(CoreEvent::TransferConnected {
+        task_id: job.task_id.clone(),
+        via,
+    });
 
     let (hello_id, proto) = client_hello(&mut stream, svc.identity.device_id()).await?;
     if hello_id != job.peer_id {

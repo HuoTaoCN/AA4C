@@ -1,6 +1,6 @@
 # AA4C 开发交接（换机指南）
 
-> 最后更新：2026-07-07。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
+> 最后更新：2026-07-07（V0.3 C4 完成）。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
 > 给 AI Agent：开工前先读本文档"当前进度"与"下一步"，再按 [AGENTS.md](AGENTS.md) 的必读清单工作。
 
 ## 一、当前进度
@@ -38,6 +38,7 @@
 | **V0.3 里程碑 C1（QUIC + 断点续传）** | ✅ | — | `aa4c-transfer/src/quic.rs`：QUIC 会话层（证书固定复用、单流等价迁移、keep-alive+8s 空闲超时）；`PROTO_VERSION=3` + `Message::ResumeReport`（追加变体）确定性断点续传（4 MiB 边界截断 + 重新流式喂哈希，不改 `Offer`）；只有明确取消才清理 `.aa4c-part`（顺带修了发送方内部取消不通知对端的既有小缺口）；`TransferConfig.prefer_quic` 测试开关；`IncomingIndexDispatch` 泛化到 `SharedStream`（TCP/QUIC 通用，配对仍限 TCP）；新增 e2e `quic_roundtrip_transfer` / `quic_resume_after_disconnect`（UDP 黑洞代理模拟真断连）；quinn 依赖与既有 rustls/ring 版本树验证对齐，`rust-version` 升 1.85 |
 | **V0.3 里程碑 C2（`aa4c-server` 信令面）** | ✅ | — | 新 crate `crates/aa4c-server`（lib+bin）：身份复用 `aa4c-identity`，鉴权复用 mTLS（**未实现设计初稿 Challenge/ChallengeReply**，理由见 PROTOCOL.md §11）；`aa4c-proto::server` 新增独立 `ServerMessage` 族（`SrvHello(Ack)`/`Register`+`RegisterAck`/`Lookup`+`LookupReply`，帧层复用泛型化的 `read_message`/`write_message`）；注册表全内存态，覆盖式 `Register` 即吊销机制，TTL=60s（`REGISTER_TTL`）；`aa4c-core` 新模块 `server_link.rs`（客户端接入 + 后台续约循环）；`Settings` 新增 `server_url`/`enable_remote`（默认关）；`resolve_peer` 增加向自己服务器 Lookup 的第三档兜底（跨服务器好友寻址需要的 `devices.server_hint` 已建表但线路层交换留待后续，范围有意缩小）；交付含 Dockerfile + `scripts/dev-server.sh` + CI release Linux 二进制；新增 7 个确定性单测（`aa4c-server` 4 个 + `server_link` 3 个，不经 mDNS）+ 2 个 Core e2e 测试 |
 | **V0.3 里程碑 C3（Relay 中继——远程可用自此成立）** | ✅ | — | `aa4c-server` 加中继面：`RelayRequest/Grant` 换一次性 token（8s TTL）+ `RelayOpen/OpenAck` 撮合后**裸字节透明转发**（对设计稿 `RelayData`/`RelayClose` 的收敛，不逐包重新编解码）；`RelayRequest` 不查允许名单，真正安全边界在被叫方自己的 `trusted` 检查（与直连同构）。`aa4c-core::server_link` 改用**一条常驻连接**周期续约 + 监听 `IncomingRelay` 推送，`Notify` 替代旧的一次性 `nudge_register` 连接立即生效——修了一个真实踩到的竞态（一次性连接与常驻连接抢推送登记槽位，断开时把常驻连接刚登记的活通道顶掉）。`aa4c-transfer` 新增 `RelayDialer` 注入 + `accept_external`（`dial()` 签名改 `Option<SocketAddr>`，直连失败/无地址时落中继）。新增 4 个 `aa4c-server` 单测 + Core e2e `forced_relay_path_completes_a_transfer`（强制走中继完成一次真实传输） |
+| **V0.3 里程碑 C4（远程同步/发送接入连接阶梯 + 连接质量 UI）** | ✅ | — | `sync_exchange` 此前只认 mDNS 在线快照，改为遍历全部完全信任配对设备，与 `resolve_peer` 共用同一套地址解析阶梯（新增 `orchestrate::resolve_addr`）；`DeviceFound` 即时触发之外新增 30s 周期定时器兜底远程设备。`fetch_index`/`fetch_file` 的 `addr` 改 `Option<SocketAddr>`，同 `send()` 落中继兜底；`Core::fetch_file` 不再局限于 mDNS 在线持有者。在线判定并入"最近一次远程索引同步是否新鲜"（90s 窗口）。连接质量：新增 `ConnectionVia`/`CoreEvent::TransferConnected`，`dial()` 返回值带上实际档位，只有发起方收得到、只存内存不落库。前端：设置页新增「远程连接」区块（服务器地址 + 开关），传输卡片按 `via` 显示「直连/中继（较慢）」徽标。新增 Core e2e `remote_index_exchange_reaches_peer_via_relay` + `aa4c_types` 的事件 JSON 形状测试 |
 
 整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。**V0.2 同步五个里程碑（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取 / 冲突标记）全部落地**（SYNC_DESIGN.md §10）；线路协议已升到 `proto=2` 并对同步路径按版本 gate（与 v0.2.0-preview 的同步不再互通，趁预发布窗口对齐）。**真机 GUI 走查已人工跑通**（`scripts/dev-two-nodes.sh` 起两实例：配对 → 互标我的设备 → 黄「可下载」→ 点黄拉取转绿 → 同名不同内容「多版本」并列，均正常）。
 
@@ -133,12 +134,12 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：V0.3 里程碑 C4（远程同步 / 发送集成 + 连接质量 UI）
+## 四、下一步：V0.3 里程碑 C5（NAT 打洞，提速优化）
 
-**V0.2 已全部完成并发布**（`v0.2.0-preview.2`，CI 全绿）。**V0.3 设计已定稿（v2）**：[CONNECT_DESIGN.md](CONNECT_DESIGN.md)（§12 是已确认决策清单，**不要重开已定案讨论**）。**里程碑 C1（QUIC 会话层 + 断点续传）、C2（`aa4c-server` 信令面）、C3（Relay 中继）均已实现**：`cargo test --workspace` 全绿，fmt/clippy 干净，无回归。实现拆解见 **[V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)**（C1–C6；顺序已定：**中继 C3 先于打洞 C5**，远程可用已在 C3 成立）。
+**V0.2 已全部完成并发布**（`v0.2.0-preview.2`，CI 全绿）。**V0.3 设计已定稿（v2）**：[CONNECT_DESIGN.md](CONNECT_DESIGN.md)（§12 是已确认决策清单，**不要重开已定案讨论**）。**里程碑 C1（QUIC 会话层 + 断点续传）、C2（`aa4c-server` 信令面）、C3（Relay 中继）、C4（远程同步/发送 + 连接质量）均已实现**：`cargo test --workspace` 全绿，fmt/clippy 干净，无回归。实现拆解见 **[V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)**（C1–C6；顺序已定：**中继 C3 先于打洞 C5**，远程可用已在 C3 成立，C4 起远程同步/发送/连接质量全线可用）。
 
-- **下一步 = C4**：连接阶梯已经贯通到「LAN → 公网直连 → 中继」（`TransferService::send`/`dial`），但 `fetch_index`/`fetch_file`（索引交换 + 按需拉取）目前**只走 mDNS 在线快照**（`sync_exchange::fetch_one` 直接 `dev.addr.is_none()` 短路，`Core::fetch_file` 也只在 `discovery.devices()` 里挑持有者）——远程同步/拉取还没接进 C2/C3 建好的连接阶梯，这是 C4 的核心工作。同时补「在线判定」（黄/红目前只看 mDNS 30s，需要并入"注册在期"）+ 连接质量 UI（本次连接走的是直连/中继，见 CONNECT_DESIGN.md §2）。
-- **C2 遗留、不阻塞 C3/C4 的已知缩小范围**：`devices.server_hint` 已建表但配对协议未交换它，`resolve_peer`/中继的 `RelayDialer` 目前都只查/连**自己配置的服务器**——跨服务器好友寻址还不可用，只覆盖「自己的多台设备」主场景；交换 server_hint 需要一条新的追加协议消息（`PairRequest`/`PairAccept`/`DeviceInfo` 是既有结构体，不能直接加字段），可以在 C4 顺手做，也可以单独一个小里程碑。
+- **下一步 = C5**：STUN 反射地址探测 + 服务器转发信令交换候选 + 双向同时发包打洞 → 成功后升级 QUIC 直连；这是**提速优化**，不是可达前提——失败直接落回已经在跑的中继（C3），不损可用性。需要新的 `ServerMessage::Signal`（打洞信令转发，只追加变体）。
+- **C4 遗留、不阻塞 C5 的已知缩小范围**：`devices.server_hint` 已建表但配对协议未交换它，`resolve_peer`/`sync_exchange`/中继的 `RelayDialer` 目前都只查/连**自己配置的服务器**——跨服务器好友寻址还不可用，只覆盖「自己的多台设备」主场景；交换 server_hint 需要一条新的追加协议消息（`PairRequest`/`PairAccept`/`DeviceInfo` 是既有结构体，不能直接加字段），可以顺手做，也可以单独一个小里程碑。
 - C1 遗留的两个小尾巴（不阻塞，随时可补）：keep-alive 目前用固定 8s 空闲超时+2s 心跳（已验证够用）；按需拉取（fetch）路径暂不支持续传（仅 Offer/send 路径支持）。
 - **可随时补的 V0.2 尾巴**（不阻塞 V0.3）：Inbox 按来源设备+时间分组、`IndexSummary` 摘要优化、冲突版本历史 / 自动合并。
 
@@ -184,4 +185,7 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - **`crates/aa4c-core/tests/core.rs` 在多核开发机上默认并行跑会偶发抖动**（本机 10 核）：多个测试各自起 2-3 个真实 Core（真 mDNS + 真 TCP/QUIC），默认测试线程数=核数时会出现 `No route to host`（真实回环连接被拒，非代码 bug）、mDNS 命中到不可直接拨号的 IPv6 link-local 地址（`fe80::...`，缺 zone id）等偶发失败——**已确认与本会话新增的 `resolve_peer`/`server_link` 代码无关**：诱因是老测试 `two_cores_pair_then_transfer`/`quic_roundtrip_transfer`（C1 及更早）在同样的高并发下也会失败，且用 `--test-threads=1`（或 2）时全部 8 个测试稳定全过。CI 跑在核数较少的 runner 上大概率不受影响；本机复现/复查用 `cargo test -p aa4c-core --test core -- --test-threads=1`。这是环境特性，不是本里程碑要修的 bug。
 - **一次性短连接与常驻连接抢同一个"推送登记槽位"是真实竞态，不是理论风险**（C3 教训）：最初给中继加"被叫方能收到服务器推送"这个能力时，让 `nudge_register`（设置变更/解除配对触发的一次性 `Register`）和新增的常驻连接**都**去登记 `pushable[device_id]`，想着"只在已登记通道已关闭时才覆盖"就够安全——实测发现一次性连接的 `Register` 发送时刻，常驻连接的通道往往还没来得及登记（或反过来），加上一次性连接发完就断开、断开时的清理会把刚登记好的活通道顶掉，导致接下来一段时间（最长 TTL/3）中继推送悄悄收不到。**排查方法**：给协议关键路径临时加 `eprintln!`（`tracing` 在 `#[tokio::test]` 里默认没有订阅者，看不到任何输出，必须手动打印或临时接一个 subscriber），跑单测试 vs 跑整个测试文件对比日志，能看到"注册了，但紧接着被顶掉"的确切时序。**根治方案**：不要试图用条件判断在两个竞争的注册源之间做仲裁，而是从设计上消除第二个注册源——用 `tokio::sync::Notify` 唤醒**唯一**的常驻连接立刻重新注册，不再让任何一次性连接碰这条状态。同理，测试里如果某个操作理论上应该"立即生效"，不要想当然认为它真的是同步/瞬时的——`enable_remote` 打开后到常驻连接真正完成握手注册之间有真实的网络往返耗时，测试/生产代码都不能假设为零。
 
-V0.2 已全部实现并发布；V0.3 里程碑 C1（QUIC + 断点续传）、C2（`aa4c-server` 信令面）、C3（Relay 中继）均已实现并测试通过。对 Agent 直接说"**开始 V0.3 里程碑 C4**"即可继续——按 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md) 的 C4 小节执行（把 `fetch_index`/`fetch_file` 接进 C2/C3 建好的连接阶梯，做在线判定 + 连接质量 UI；勿动 CONNECT_DESIGN §12 已定案项）。
+- **`sync_exchange`/`resolve_peer` 各自维护一份地址解析逻辑，容易跑偏**（C4 教训）：C2/C3 只给 `send_files`（`resolve_peer`）接了连接阶梯，`sync_exchange`（远程索引同步）当时图省事继续用 `discovery.devices()`（纯 mDNS），当时看起来是"先跑通直连再说"的合理取舍，但拖到 C4 才发现这其实是两套并行维护的解析逻辑——任何一处后续改动（比如再加一档）都得同步改两个地方，很容易漏改。**教训**：一旦发现"这段逻辑我在另一个模块写过一遍"，当场抽成共享函数（本例是 `orchestrate::resolve_addr`），不要等到"以后再补"——往后拖的每一个新调用点都是新的技术债，且下一次读代码的人（包括未来的自己）会默认"这两处都是权威实现"而各自改各的。
+- **mDNS 的 `DeviceFound` 不是"设备上线"的完整信号，只是"局域网设备上线"**（C4 教训）：`sync_exchange` 原来完全靠 `DeviceFound` 触发索引刷新，这个假设对局域网设备成立，但对纯远程（只能靠自建服务器+中继连到的）设备永远不成立——远程设备根本不会被 mDNS 发现，这类事件驱动逻辑需要一条独立的周期定时器兜底，不能假设"事件总会来"。
+
+V0.2 已全部实现并发布；V0.3 里程碑 C1（QUIC + 断点续传）、C2（`aa4c-server` 信令面）、C3（Relay 中继）、C4（远程同步/发送 + 连接质量）均已实现并测试通过。对 Agent 直接说"**开始 V0.3 里程碑 C5**"即可继续——按 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md) 的 C5 小节执行（STUN 打洞 + 双向发包升级 QUIC 直连，纯提速优化，失败落回已有的中继；勿动 CONNECT_DESIGN §12 已定案项）。

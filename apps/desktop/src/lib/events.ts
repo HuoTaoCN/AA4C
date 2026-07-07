@@ -20,6 +20,7 @@ import type {
   PairingPinPayload,
   PairingRequestPayload,
   PairingResultPayload,
+  TransferConnectedPayload,
   TransferDonePayload,
   TransferFailedPayload,
   TransferProgressPayload,
@@ -73,6 +74,9 @@ export async function startEventBridge(): Promise<UnlistenFn> {
 
     listen<TransferRequestPayload>("aa4c://transfer_request", (e) =>
       transfer.onRequest(e.payload.task),
+    ),
+    listen<TransferConnectedPayload>("aa4c://transfer_connected", (e) =>
+      transfer.onConnected(e.payload),
     ),
     listen<TransferProgressPayload>("aa4c://transfer_progress", (e) =>
       transfer.onProgress(e.payload),

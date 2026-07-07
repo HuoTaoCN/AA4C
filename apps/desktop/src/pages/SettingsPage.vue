@@ -17,6 +17,15 @@ const form = reactive<Settings>({
   saveDir: "",
   autoAcceptFromTrusted: false,
   listenPort: 42420,
+  serverUrl: null,
+  enableRemote: false,
+});
+// 服务器地址单独用字符串编辑（空字符串 ⇄ null，避免保存一个全是空格的"已配置"假象）
+const serverUrlInput = computed({
+  get: () => form.serverUrl ?? "",
+  set: (v: string) => {
+    form.serverUrl = v.trim() === "" ? null : v.trim();
+  },
 });
 watchEffect(() => {
   if (settings.settings) Object.assign(form, settings.settings);
@@ -101,6 +110,41 @@ async function unpair(id: string) {
         </button>
       </div>
       <p class="lock muted">🔒 所有传输均已加密</p>
+    </div>
+
+    <h3>远程连接</h3>
+    <div class="card form">
+      <div class="field">
+        <label>自建服务器地址</label>
+        <input
+          v-model="serverUrlInput"
+          type="text"
+          placeholder="aa4c://your-server:42420#指纹"
+        />
+        <p class="hint muted">
+          填自己搭的 <code>aa4c-server</code> 地址后，不在同一局域网的已配对设备也能互相找到、
+          经中继收发文件——没有服务器不影响局域网内的正常使用。
+        </p>
+      </div>
+
+      <div class="field row">
+        <label>开启远程连接</label>
+        <label class="switch">
+          <input
+            type="checkbox"
+            v-model="form.enableRemote"
+            :disabled="!form.serverUrl"
+          />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p v-if="!form.serverUrl" class="hint muted">先填服务器地址才能打开这个开关。</p>
+
+      <div class="actions">
+        <button class="btn btn-primary" :disabled="settings.saving" @click="save">
+          {{ settings.saving ? "保存中…" : "保存" }}
+        </button>
+      </div>
     </div>
 
     <h3>已配对设备</h3>

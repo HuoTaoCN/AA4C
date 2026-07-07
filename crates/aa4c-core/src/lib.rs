@@ -176,11 +176,15 @@ impl Core {
         }
         sync_index::spawn_background_scan(store.clone(), events.clone());
 
-        // 9. 跨设备索引交换：上线即与在线的完全信任设备交换索引摘要（里程碑 3）
+        // 9. 跨设备索引交换：与全部完全信任设备交换索引摘要（里程碑 3；里程碑 C4 起
+        //    不再局限于 mDNS 在线快照，远程设备靠周期定时器兜底，见 sync_exchange 模块文档）
         sync_exchange::spawn_exchange_loop(
             store.clone(),
-            transfer.clone(),
             discovery.clone(),
+            identity.clone(),
+            fallback_name.clone(),
+            save_dir_fallback.clone(),
+            transfer.clone(),
             events.clone(),
         );
 

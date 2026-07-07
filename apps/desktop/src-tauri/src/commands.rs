@@ -185,6 +185,9 @@ pub fn event_payload(event: &CoreEvent) -> Value {
             success,
         } => json!({ "sessionId": session_id, "peer": peer, "success": success }),
         CoreEvent::TransferRequest { task } => json!({ "task": task }),
+        CoreEvent::TransferConnected { task_id, via } => {
+            json!({ "taskId": task_id, "via": via })
+        }
         CoreEvent::TransferProgress {
             task_id,
             transferred_bytes,

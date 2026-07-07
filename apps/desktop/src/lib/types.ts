@@ -62,7 +62,14 @@ export interface Settings {
   saveDir: string;
   autoAcceptFromTrusted: boolean;
   listenPort: number;
+  /** 自建 aa4c-server 地址（`aa4c://host:port#指纹`），未配置为 null（里程碑 C2/C4）。 */
+  serverUrl: string | null;
+  /** 远程连接总开关，默认关闭（里程碑 C2/C4）。 */
+  enableRemote: boolean;
 }
+
+/** 一次连接实际走的档位（里程碑 C4 连接质量，见 CONNECT_DESIGN.md §2）。 */
+export type ConnectionVia = "direct" | "relay";
 
 /** 共享范围种类：用户选的同步文件夹，或固定的「收到的」(自动维护)。 */
 export type ScopeKind = "folder" | "inbox";
@@ -137,6 +144,10 @@ export interface PairingResultPayload {
 }
 export interface TransferRequestPayload {
   task: TransferTask;
+}
+export interface TransferConnectedPayload {
+  taskId: string;
+  via: ConnectionVia;
 }
 export interface TransferProgressPayload {
   taskId: string;

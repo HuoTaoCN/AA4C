@@ -19,8 +19,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use aa4c_identity::Identity;
 use aa4c_store::Store;
 use aa4c_types::{
-    Aa4cError, CoreEvent, DeviceId, DeviceInfo, Direction, FileStatus, Result, TaskId,
-    TransferFile, TransferStatus, TransferTask, CHUNK_SIZE, DEFAULT_PORT,
+    Aa4cError, ConnectionVia, CoreEvent, DeviceId, DeviceInfo, Direction, FileStatus, Result,
+    TaskId, TransferFile, TransferStatus, TransferTask, CHUNK_SIZE, DEFAULT_PORT,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot, Semaphore};
@@ -332,11 +332,16 @@ impl TransferService {
     /// `addr` 为 `None`（本档、直连都没解析出地址）时直接尝试中继；`Some` 但连接失败时
     /// 也会尝试中继（只要 Core 注入了 [`RelayDialer`]）——这正是连接阶梯第 4 档
     /// （CONNECT_DESIGN.md §2）：没配置服务器/没有中继拨号器时原样报错，行为与 V0.2 一致。
+    ///
+    /// 返回值额外带上实际走的档位（`ConnectionVia`，里程碑 C4 连接质量）：局域网直连、
+    /// 公网直连、`prefer_quic` 强制的 QUIC 直连都算 `Direct`（上层/UI 不关心底层承载
+    /// 是 TCP 还是 QUIC，只关心「直连」还是「中继」），只有落到 [`dial_via_relay`] 才是
+    /// `Relay`。
     pub(crate) async fn dial(
         &self,
         peer_id: &DeviceId,
         addr: Option<std::net::SocketAddr>,
-    ) -> Result<SharedStream> {
+    ) -> Result<(SharedStream, ConnectionVia)> {
         if self.config.prefer_quic {
             let addr = addr.ok_or_else(|| {
                 Aa4cError::Network("prefer_quic set but no address resolved".into())
@@ -345,12 +350,12 @@ impl TransferService {
                 Aa4cError::Network("prefer_quic set but quic endpoint not available".into())
             })?;
             let stream = quic::connect(endpoint, &self.identity, peer_id, addr).await?;
-            return Ok(Box::new(stream));
+            return Ok((Box::new(stream), ConnectionVia::Direct));
         }
 
         if let Some(addr) = addr {
             match self.dial_tcp(peer_id, addr).await {
-                Ok(stream) => return Ok(stream),
+                Ok(stream) => return Ok((stream, ConnectionVia::Direct)),
                 Err(e) => {
                     if self.relay_dialer.get().is_none() {
                         return Err(e);
@@ -363,7 +368,8 @@ impl TransferService {
         let dialer = self.relay_dialer.get().ok_or_else(|| {
             Aa4cError::Network("no reachable address and no relay configured".into())
         })?;
-        self.dial_via_relay(dialer.as_ref(), peer_id).await
+        let stream = self.dial_via_relay(dialer.as_ref(), peer_id).await?;
+        Ok((stream, ConnectionVia::Relay))
     }
 
     async fn dial_tcp(
@@ -409,20 +415,25 @@ impl TransferService {
         Ok(Box::new(stream))
     }
 
-    /// 向某完全信任设备拉取共享索引（SYNC_DESIGN.md §3.3，里程碑 3）。
+    /// 向某完全信任设备拉取共享索引（SYNC_DESIGN.md §3.3，里程碑 3；里程碑 C4 起接入
+    /// 完整连接阶梯）。
     ///
     /// 建连 → 握手（校验证书指纹）→ `IndexRequest` → 分批读 `IndexEntries` 直至 `last`。
     /// 只取元数据、不取内容；调用方（Core）负责落 `remote_index` 并判定黄/红。
+    ///
+    /// `addr` 为 `None`（mDNS/落库地址都没解析出来）时直接尝试中继兜底，与 [`Self::send`]
+    /// 同一套语义（见 [`Self::dial`]）——索引交换本身不是用户直接发起的「任务」，不需要
+    /// 上报连接质量事件，调用方按需丢弃 `dial` 返回的 `ConnectionVia`。
     pub async fn fetch_index(
         &self,
         peer_id: &DeviceId,
-        addr: std::net::SocketAddr,
+        addr: Option<std::net::SocketAddr>,
     ) -> Result<Vec<aa4c_proto::IndexItem>> {
         use aa4c_proto::{client_hello, read_message, write_message, Message};
         use tokio::time::timeout;
 
         let t = self.config.timeout;
-        let mut stream = self.dial(peer_id, Some(addr)).await?;
+        let (mut stream, _via) = self.dial(peer_id, addr).await?;
 
         let (hello_id, proto) = client_hello(&mut stream, self.identity.device_id()).await?;
         if &hello_id != peer_id {
@@ -476,8 +487,12 @@ impl TransferService {
             .ok_or_else(|| Aa4cError::NotPaired(peer.id.clone()))?;
         let addr = peer
             .addr
-            .or_else(|| record.last_addr.as_deref().and_then(|s| s.parse().ok()))
-            .ok_or_else(|| Aa4cError::DeviceNotFound(peer.id.clone()))?;
+            .or_else(|| record.last_addr.as_deref().and_then(|s| s.parse().ok()));
+        // 没有任何直连地址：还有中继兜底（里程碑 C4）才继续，否则和以前一样直接报错
+        // （同 `send()` 的判断，见那边注释）。
+        if addr.is_none() && self.relay_dialer.get().is_none() {
+            return Err(Aa4cError::DeviceNotFound(peer.id.clone()));
+        }
 
         let task_id = uuid::Uuid::new_v4().to_string();
         let job = fetch::FetchJob {

@@ -26,6 +26,11 @@ const eta = computed(() =>
     ? etaText(props.task.totalBytes - props.task.transferredBytes, props.task.speedBps)
     : "",
 );
+// 连接质量（里程碑 C4）：只有发起方收得到 via 事件，接收一方本地任务上永远是 undefined，
+// 这时不显示徽标——不确定就不瞎猜，比显示错误的档位更诚实。
+const viaText = computed(() =>
+  props.task.via === "relay" ? "中继（较慢）" : props.task.via === "direct" ? "直连" : "",
+);
 
 async function cancel() {
   try {
@@ -40,6 +45,9 @@ async function cancel() {
   <div class="tc">
     <div class="row">
       <span class="title">{{ title }}</span>
+      <span v-if="viaText" class="via" :class="{ relay: task.via === 'relay' }">{{
+        viaText
+      }}</span>
       <button class="cancel" title="取消" @click="cancel">✕</button>
     </div>
     <div class="file">
@@ -67,11 +75,34 @@ async function cancel() {
 .row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
 }
 .title {
+  flex: 1;
   font-weight: 600;
   font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.via {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--aa-text-dim);
+  background: var(--aa-surface-2);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.via.relay {
+  color: #9a6a00;
+  background: #ffedcc;
+}
+@media (prefers-color-scheme: dark) {
+  .via.relay {
+    color: #ffce80;
+    background: #4a3a16;
+  }
 }
 .cancel {
   color: var(--aa-text-dim);

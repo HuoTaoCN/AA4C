@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use aa4c_proto::{client_hello, read_message, unexpected, write_message, Message};
 use aa4c_types::{
-    Aa4cError, DeviceId, Direction, FileStatus, Result, TaskId, TransferFile, TransferStatus,
-    TransferTask,
+    Aa4cError, CoreEvent, DeviceId, Direction, FileStatus, Result, TaskId, TransferFile,
+    TransferStatus, TransferTask,
 };
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -22,7 +22,8 @@ use crate::{now_ms, TransferService};
 pub(crate) struct FetchJob {
     pub task_id: TaskId,
     pub peer_id: DeviceId,
-    pub addr: std::net::SocketAddr,
+    /// `None`：连接阶梯前三档都没解析出地址，直接尝试中继（里程碑 C4，见 `TransferService::dial`）。
+    pub addr: Option<std::net::SocketAddr>,
     /// 统一视图里的限定展示路径（顶层段为来源分组）。
     pub rel_path: String,
     pub save_dir: Option<PathBuf>,
@@ -42,7 +43,11 @@ async fn drive(
     cancel: &CancellationToken,
 ) -> Result<()> {
     let t = svc.config.timeout;
-    let mut stream = svc.dial(&job.peer_id, Some(job.addr)).await?;
+    let (mut stream, via) = svc.dial(&job.peer_id, job.addr).await?;
+    let _ = svc.events.send(CoreEvent::TransferConnected {
+        task_id: job.task_id.clone(),
+        via,
+    });
 
     let (hello_id, proto) = client_hello(&mut stream, svc.identity.device_id()).await?;
     if hello_id != job.peer_id {

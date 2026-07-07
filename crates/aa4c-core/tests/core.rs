@@ -189,7 +189,7 @@ async fn index_exchange_gated_by_full_trust() {
     let items = a
         .core
         .transfer
-        .fetch_index(&b.core.self_info().id, b_addr)
+        .fetch_index(&b.core.self_info().id, Some(b_addr))
         .await
         .unwrap();
     assert!(items.is_empty(), "friend must not receive any shared index");
@@ -202,7 +202,7 @@ async fn index_exchange_gated_by_full_trust() {
     let items = a
         .core
         .transfer
-        .fetch_index(&b.core.self_info().id, b_addr)
+        .fetch_index(&b.core.self_info().id, Some(b_addr))
         .await
         .unwrap();
     assert_eq!(items.len(), 1, "full device receives the shared file");
@@ -851,6 +851,70 @@ async fn forced_relay_path_completes_a_transfer() {
             .unwrap(),
         b"delivered purely through relay"
     );
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}
+
+/// 里程碑 C4 验收：跨设备索引交换接入完整连接阶梯——完全信任设备即使不在同一局域网
+/// （也够不到落库地址），也能通过自建服务器 + 中继同步到对方的共享索引
+/// （CONNECT_DESIGN.md §6「远程同步」；此前 `sync_exchange` 只认 mDNS 在线快照，是本
+/// 里程碑要补的缺口）。复用 `forced_relay_path_completes_a_transfer` 的同一套「逼连接
+/// 阶梯只剩中继」手法。
+#[tokio::test]
+async fn remote_index_exchange_reaches_peer_via_relay() {
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let b_id = b.core.self_info().id;
+    let (_server, _server_dir, server_url) = spawn_server().await;
+
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "both sides pair");
+
+    enable_remote(&a.core, &server_url).await;
+    enable_remote(&b.core, &server_url).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // 让 B 的常驻连接落地，见另一个测试的注释
+
+    // 逼连接阶梯只剩中继这一档（同 forced_relay_path_completes_a_transfer）
+    a.core.discovery.stop().await.unwrap();
+    let mut rec = a.core.store.get_device(&b_id).await.unwrap().unwrap();
+    rec.last_addr = Some("127.0.0.1:1".to_string());
+    a.core.store.upsert_device(&rec).await.unwrap();
+
+    // B 建一个共享文件夹
+    let shared = b._dir.path().join("shared");
+    tokio::fs::create_dir_all(&shared).await.unwrap();
+    tokio::fs::write(shared.join("doc.txt"), b"via relay index exchange")
+        .await
+        .unwrap();
+    b.core.add_sync_scope(shared.clone()).await.unwrap();
+    b.core.rescan_sync().await.unwrap();
+
+    // B 也把 A 标为「我的设备」，否则会拒绝交出索引（同 index_exchange_gated_by_full_trust）
+    let a_id = a.core.self_info().id;
+    b.core
+        .set_trust_level(&a_id, aa4c_types::TrustLevel::Full)
+        .await
+        .unwrap();
+
+    // A 把 B 标为「我的设备」：这一步内部会立即尝试拉一次索引（orchestrate::set_trust_level），
+    // 此前的实现只在 B 处于 A 的 mDNS 在线快照里才会真的发起——这里 A 自己的 mDNS 已关闭，
+    // 必须靠连接阶梯（落库地址已被钉成死地址 → 中继）才能够到 B。
+    a.core
+        .set_trust_level(&b_id, aa4c_types::TrustLevel::Full)
+        .await
+        .unwrap();
+
+    let remote = a.core.store.list_remote_index().await.unwrap();
+    assert_eq!(remote.len(), 1, "remote index synced purely through relay");
+    assert_eq!(remote[0].rel_path, "shared/doc.txt");
+    assert_eq!(remote[0].device_id, b_id);
 
     a.core.shutdown().await.unwrap();
     b.core.shutdown().await.unwrap();

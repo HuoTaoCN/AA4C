@@ -4,6 +4,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DeviceId, DeviceInfo, TaskId, TransferTask};
 
+/// 一次连接实际走的档位（CONNECT_DESIGN.md §2 连接阶梯，里程碑 C4 连接质量）。
+/// 局域网直连与公网直连对上层而言无区别，合并为 `Direct`；`Punch`（打洞后升级 QUIC 直连）
+/// 是里程碑 C5 才会真正产出的取值，这里预留枚举位置以后追加不破坏兼容。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionVia {
+    Direct,
+    Relay,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum CoreEvent {
@@ -38,6 +48,14 @@ pub enum CoreEvent {
     TransferRequest {
         task: TransferTask,
     },
+    /// 出站连接已建立、即将开始传输（里程碑 C4 连接质量，CONNECT_DESIGN.md §2/§12）：
+    /// 只在**发起方**（send/fetch）触发一次，告诉 UI 这次实际走的是哪一档，仅存于当次
+    /// 会话内存（不落库，历史记录不含这个字段——见 HANDOFF.md 的取舍）。
+    #[serde(rename_all = "camelCase")]
+    TransferConnected {
+        task_id: TaskId,
+        via: ConnectionVia,
+    },
     #[serde(rename_all = "camelCase")]
     TransferProgress {
         task_id: TaskId,
@@ -71,6 +89,7 @@ impl CoreEvent {
             Self::PairingPin { .. } => "pairing_pin",
             Self::PairingResult { .. } => "pairing_result",
             Self::TransferRequest { .. } => "transfer_request",
+            Self::TransferConnected { .. } => "transfer_connected",
             Self::TransferProgress { .. } => "transfer_progress",
             Self::TransferDone { .. } => "transfer_done",
             Self::TransferFailed { .. } => "transfer_failed",
@@ -108,5 +127,23 @@ mod tests {
         let event = CoreEvent::DeviceLost { id: "d1".into() };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], event.event_name());
+    }
+
+    /// 里程碑 C4：连接质量事件的 JSON 形状（camelCase `taskId` + snake_case 的 via 取值），
+    /// 前端 `ConnectionVia` 类型按这个约定做字符串字面量联合。
+    #[test]
+    fn transfer_connected_json_shape() {
+        let event = CoreEvent::TransferConnected {
+            task_id: "t1".into(),
+            via: ConnectionVia::Relay,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "transfer_connected");
+        assert_eq!(json["data"]["taskId"], "t1");
+        assert_eq!(json["data"]["via"], "relay");
+        assert_eq!(event.event_name(), "transfer_connected");
+
+        let back: CoreEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(back, event);
     }
 }

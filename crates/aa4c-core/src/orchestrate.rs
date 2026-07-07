@@ -4,12 +4,19 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
+use aa4c_discovery::DiscoveryService;
+use aa4c_identity::Identity;
+use aa4c_store::Store;
 use aa4c_types::{
     Aa4cError, CoreEvent, DeviceId, DeviceInfo, Result, ScopeKind, Settings, SyncFileEntry,
     SyncScope, TaskId, TransferTask, TrustLevel, UnifiedFile,
 };
 
 use crate::{server_link, settings, sync_exchange, sync_index, unified, Core};
+
+/// 远程索引「新鲜」窗口（毫秒）：略大于 `sync_exchange::REMOTE_REFRESH_INTERVAL`（30s）
+/// 的 3 倍，容忍一次没赶上的周期仍不判离线（里程碑 C4，见 `list_unified_files`）。
+const REMOTE_INDEX_FRESH_WINDOW_MS: i64 = 90_000;
 
 impl Core {
     /// 已发现（在线）+ 已配对（可能离线）设备合并，按 id 去重。
@@ -90,16 +97,17 @@ impl Core {
                 let _ = self.events.send(CoreEvent::SyncIndexUpdated);
             }
             TrustLevel::Full => {
-                if let Some(dev) = self
-                    .discovery
-                    .devices()
-                    .into_iter()
-                    .find(|d| &d.id == device_id)
-                {
-                    let _ =
-                        sync_exchange::fetch_one(&self.store, &self.transfer, &self.events, &dev)
-                            .await;
-                }
+                let _ = sync_exchange::fetch_one(
+                    &self.store,
+                    &self.discovery,
+                    &self.identity,
+                    &self.self_info.name,
+                    &self.save_dir_fallback,
+                    &self.transfer,
+                    &self.events,
+                    device_id,
+                )
+                .await;
             }
         }
         Ok(())
@@ -237,10 +245,19 @@ impl Core {
             .collect();
 
         // 远端：device_id → (在线?, 设备名)
-        let remote: Vec<unified::RemoteEntry> = self
-            .store
-            .list_remote_index()
-            .await?
+        let remote_index = self.store.list_remote_index().await?;
+        let now = now_ms();
+        // 在线判定（CONNECT_DESIGN.md §6，里程碑 C4）：mDNS 在线 **或** 最近一次远程索引
+        // 同步仍在新鲜窗口内——远程设备靠周期定时器同步（见 sync_exchange 模块文档），
+        // 「最近同步成功过」是它「当时确实可达」的直接证据，比另起一次实时探测更省成本。
+        // 注意这不是"绝对保真"：窗口内设备完全可能已经掉线（NAT 变动等），拉取失败时
+        // 前端应给温和提示 + 可重试，不让黄色变成谎言（同一节引用的既有设计原则）。
+        let remote_fresh: HashSet<DeviceId> = remote_index
+            .iter()
+            .filter(|r| now - r.seen_at <= REMOTE_INDEX_FRESH_WINDOW_MS)
+            .map(|r| r.device_id.clone())
+            .collect();
+        let remote: Vec<unified::RemoteEntry> = remote_index
             .into_iter()
             .map(|r| unified::RemoteEntry {
                 device_id: r.device_id,
@@ -254,7 +271,7 @@ impl Core {
         for rec in self.store.list_paired_devices().await? {
             names.insert(rec.id, rec.name);
         }
-        let mut online: HashSet<DeviceId> = HashSet::new();
+        let mut online: HashSet<DeviceId> = remote_fresh;
         for dev in self.discovery.devices() {
             online.insert(dev.id.clone());
             names.insert(dev.id, dev.name);
@@ -285,10 +302,18 @@ impl Core {
         Ok(())
     }
 
-    /// 手动与当前在线的完全信任设备刷新一次跨设备索引（里程碑 3）。
+    /// 手动与全部完全信任设备刷新一次跨设备索引（里程碑 3；里程碑 C4 起覆盖远程设备）。
     pub async fn refresh_remote_index(&self) -> Result<()> {
-        sync_exchange::refresh_online(&self.store, &self.transfer, &self.discovery, &self.events)
-            .await;
+        sync_exchange::refresh_all_full_trust(
+            &self.store,
+            &self.discovery,
+            &self.identity,
+            &self.self_info.name,
+            &self.save_dir_fallback,
+            &self.transfer,
+            &self.events,
+        )
+        .await;
         Ok(())
     }
 
@@ -326,22 +351,27 @@ impl Core {
             None => None,
         };
 
-        // 在线快照里挑一台「我的设备」（完全信任）持有者
-        for dev in self.discovery.devices() {
-            if !holders.contains(&dev.id) {
-                continue;
-            }
+        // 挑一台「我的设备」（完全信任）持有者：mDNS 在线的排前面（大概率直连更快），
+        // 但不再要求必须在线快照里——远程持有者一样试（`resolve_peer` 走完整连接阶梯，
+        // 解析不出地址也交给 `transfer.fetch_file` 落中继兜底，里程碑 C4）。
+        let online_ids: HashSet<DeviceId> =
+            self.discovery.devices().into_iter().map(|d| d.id).collect();
+        let mut candidates: Vec<DeviceId> = holders.into_iter().collect();
+        candidates.sort_by_key(|id| !online_ids.contains(id));
+
+        for holder_id in candidates {
             let is_full = self
                 .store
-                .get_device(&dev.id)
+                .get_device(&holder_id)
                 .await?
                 .map(|d| d.trusted && d.trust_level == TrustLevel::Full)
                 .unwrap_or(false);
             if is_full {
-                return self.transfer.fetch_file(&dev, rel_path, save_dir).await;
+                let peer = self.resolve_peer(&holder_id).await?;
+                return self.transfer.fetch_file(&peer, rel_path, save_dir).await;
             }
         }
-        Err(Aa4cError::Protocol("持有这个文件的设备当前不在线".into()))
+        Err(Aa4cError::Protocol("没有完全信任的设备持有这个文件".into()))
     }
 
     /// 把 device_id 解析为可发送的 DeviceInfo：mDNS 在线快照（含实时地址）→ 落库最后
@@ -365,10 +395,15 @@ impl Core {
             .get_device(device_id)
             .await?
             .ok_or_else(|| Aa4cError::DeviceNotFound(device_id.clone()))?;
-        let mut addr = rec.last_addr.as_deref().and_then(|s| s.parse().ok());
-        if addr.is_none() {
-            addr = self.remote_lookup(device_id).await;
-        }
+        let addr = resolve_addr(
+            &self.store,
+            &self.discovery,
+            &self.identity,
+            &self.self_info.name,
+            &self.save_dir_fallback,
+            device_id,
+        )
+        .await;
         Ok(DeviceInfo {
             id: rec.id,
             name: rec.name,
@@ -380,21 +415,66 @@ impl Core {
             trust_level: Some(rec.trust_level),
         })
     }
+}
 
-    /// 向自己配置的服务器查一次对端端点；未开启远程 / 未配置 / 查询失败 / 无结果都
-    /// 静默返回 `None`（不阻断 `resolve_peer` 的其余判定，见上）。
-    async fn remote_lookup(&self, device_id: &DeviceId) -> Option<std::net::SocketAddr> {
-        let settings = self.get_settings().await.ok()?;
-        if !settings.enable_remote {
-            return None;
-        }
-        let server_url = settings.server_url?;
-        match server_link::lookup_once(&self.identity, &server_url, device_id).await {
-            Ok(endpoints) => endpoints.into_iter().next(),
-            Err(e) => {
-                tracing::debug!(error = %e, "remote lookup failed");
-                None
-            }
+/// 综合 mDNS 在线快照 → 落库最后地址 → 向自己配置的服务器 Lookup 解析出一个可尝试连接
+/// 的地址（CONNECT_DESIGN.md §3.4/§6）。里程碑 C4：抽成自由函数，`resolve_peer`（发送/
+/// 按需拉取文件）与 `sync_exchange`（远程索引同步）共用同一套阶梯，不再各自维护一份、
+/// 容易跑偏（此前 `fetch_file`/`sync_exchange` 都只查 mDNS，是本里程碑要补的缺口）。
+/// 三档都没解析出来时返回 `None`——调用方仍可能靠中继兜底（见
+/// `aa4c_transfer::TransferService::dial`），不是「设备不可达」的终审。
+pub(crate) async fn resolve_addr(
+    store: &Store,
+    discovery: &DiscoveryService,
+    identity: &Identity,
+    fallback_name: &str,
+    fallback_save_dir: &str,
+    device_id: &DeviceId,
+) -> Option<std::net::SocketAddr> {
+    if let Some(addr) = discovery
+        .devices()
+        .into_iter()
+        .find(|d| &d.id == device_id)
+        .and_then(|d| d.addr)
+    {
+        return Some(addr);
+    }
+    if let Some(rec) = store.get_device(device_id).await.ok().flatten() {
+        if let Some(addr) = rec.last_addr.as_deref().and_then(|s| s.parse().ok()) {
+            return Some(addr);
         }
     }
+    remote_lookup(store, identity, fallback_name, fallback_save_dir, device_id).await
+}
+
+/// 向自己配置的服务器查一次对端端点；未开启远程 / 未配置 / 查询失败 / 无结果都静默
+/// 返回 `None`（不阻断 [`resolve_addr`] 的其余判定，见上）。
+async fn remote_lookup(
+    store: &Store,
+    identity: &Identity,
+    fallback_name: &str,
+    fallback_save_dir: &str,
+    device_id: &DeviceId,
+) -> Option<std::net::SocketAddr> {
+    let settings = settings::load(store, fallback_name, fallback_save_dir)
+        .await
+        .ok()?;
+    if !settings.enable_remote {
+        return None;
+    }
+    let server_url = settings.server_url?;
+    match server_link::lookup_once(identity, &server_url, device_id).await {
+        Ok(endpoints) => endpoints.into_iter().next(),
+        Err(e) => {
+            tracing::debug!(error = %e, "remote lookup failed");
+            None
+        }
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }

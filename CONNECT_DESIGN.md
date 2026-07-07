@@ -109,14 +109,16 @@ RelayClose
 - **断点续传**：广域网链路不稳，续传是刚需。方案：接收方 accept 后回 `ResumeReport`（**新增追加变体**，不修改既有 `Offer`——bincode 追加兼容约束），报告 `.aa4c-part` 已落盘部分按块重算哈希得到的可信偏移，发送方从偏移续传。详见 [PROTOCOL.md](PROTOCOL.md) §13。
 - QUIC 监听端口 = 现有 TCP 监听端口同号（UDP），不新增配置项。
 
-## 6. 远程能力（复用，不新增数据语义）
+## 6. 远程能力（复用，不新增数据语义）（✅ 已实现，里程碑 C4）
 
 连接阶梯（§2）建立的是一条**已认证、端到端加密的双向通道**——上层能力直接复用 V0.1/V0.2 的协议：
 
-- **远程同步**：V0.2 的索引摘要交换（`IndexRequest`/`IndexEntries`）+ 按需拉取（`FetchRequest` → 反转角色回推）原样跑在 QUIC 通道上。完全信任设备即使不在同一局域网，也能交换索引、点黄拉取。
-- **远程发送**：V0.1 的 `Offer`/分块/`FileAck` 跑在 QUIC 上。
-- **对端解析**：`resolve_peer` 从「mDNS 快照」扩展为「mDNS → 落库最后地址 → 对端 home server Lookup + 连接阶梯」。
-- **在线判定**：`remote_index` 黄/红判定从「mDNS 30s」扩展为「mDNS 在线 **或** 对端在其 home server 注册在期」。注意远程「注册在期」≠ 一定可达（NAT 变动等）——黄色条目拉取失败时给温和提示 + 可重试，不让黄色变成谎言。
+- **远程发送**：V0.1 的 `Offer`/分块/`FileAck` 跑在连接阶梯解出的通道上（QUIC/TCP 直连或中继裸管道+叠加 mTLS，见 §2/§5），`send_files` 里程碑 C3 就已经接进阶梯。
+- **远程同步**：V0.2 的索引摘要交换（`IndexRequest`/`IndexEntries`）+ 按需拉取（`FetchRequest` → 反转角色回推）里程碑 C4 起同样接入连接阶梯——完全信任设备即使不在同一局域网，也能交换索引、点黄拉取。此前 `sync_exchange`（跨设备索引交换的后台循环）只认 mDNS 在线快照，远程（跨网络）完全信任设备永远同步不到，是本里程碑补的缺口。
+- **对端解析**：`resolve_peer`（发送/拉取用）与 `sync_exchange`（索引同步用）现在共用同一套「mDNS → 落库最后地址 → 对端 home server Lookup」阶梯（`aa4c-core::orchestrate::resolve_addr`），不再各自维护一份。
+- **触发策略**：mDNS 的 `DeviceFound` 仍然即时触发一次索引同步（局域网设备上线反应快）；额外加一条**周期定时器**（30s，`sync_exchange::REMOTE_REFRESH_INTERVAL`）作为远程设备的兜底——`DeviceFound` 只对 mDNS 能发现的设备触发，远程设备永远不会产生这个事件。
+- **在线判定**：`remote_index` 黄/红判定从「mDNS 在线」扩展为「mDNS 在线 **或** 最近一次远程索引同步仍在新鲜窗口内（90s，`orchestrate::REMOTE_INDEX_FRESH_WINDOW_MS`，约 3 倍周期定时器间隔）」——用"最近同步成功过"作为"当时确实可达"的证据，不必另起一次实时探测。注意这不是绝对保真（远程「新鲜」≠ 一定可达，NAT 变动等）——黄色条目拉取失败时给温和提示 + 可重试，不让黄色变成谎言。
+- **连接质量**：`CoreEvent::TransferConnected{task_id, via}`（`via: direct|relay`）在出站连接（`dial()`）建立成功后立即广播一次，只有发起方（发送/拉取）收得到；只存于当次会话内存，不落库。设置页新增「远程连接」区块（服务器地址 + 开关），传输卡片按 `via` 显示「直连」/「中继（较慢）」徽标。
 
 ## 7. 分享链接（AA Share）
 
@@ -180,7 +182,7 @@ RelayClose
 1. ✅ **QUIC 会话层**：quinn + 证书固定复用 + 单流等价迁移 + `ResumeReport` 断点续传；两端手填地址即可验证，不依赖服务器。PROTOCOL 已定稿 proto=3 协商与流用法（§10/§13）。
 2. ✅ **`aa4c-server` 信令**（`crates/aa4c-server`，只做信令面，中继面留给 C3）：注册（允许名单 + TTL 续约，覆盖式替换即吊销机制）/ 查询 / 客户端接入（`aa4c-core::server_link`，上线注册、`resolve_peer` 回落 Lookup）。鉴权复用 mTLS，未实现设计初稿的 `Challenge`/`ChallengeReply`（理由见 PROTOCOL.md §11）。`devices.server_hint` 列已建表，但配对协议尚未交换它——寻址目前只覆盖「自己的多台设备共用同一服务器」，跨服务器好友寻址留待后续（见 §12 表格与仍待实现列表）。PROTOCOL 已定稿 Part C（§11）。交付含 Dockerfile + `scripts/dev-server.sh` + release Linux 二进制。
 3. ✅ **Relay 中继**（`crates/aa4c-server`，同进程加中继面）：`RelayRequest/Grant` 换一次性短 TTL token（8s）+ `RelayOpen/OpenAck` 撮合后**裸字节透明转发**（对设计稿 `RelayData`/`RelayClose` 的一处收敛，理由见 PROTOCOL.md §11/§12）；被叫方靠一条**常驻连接**收 `IncomingRelay` 推送（`aa4c-core::server_link::spawn_register_loop`，用 `Notify` 让设置变更立即生效，取代早期「一次性连接也发 Register」踩过的竞态坑——见下方表格）；`aa4c-transfer` 新增 `RelayDialer` 注入点（出站兜底）与 `accept_external`（入站接入统一分流）。连接阶梯「LAN → 公网直连 → 中继」贯通——**远程可用自此成立**（可发 preview）。e2e 覆盖：强制走中继完成一次真实文件传输、过期/复用 token 被拒绝。
-4. **远程同步 / 发送**：V0.2 索引交换 + 按需拉取、V0.1 AA 发送跑到远程通道；在线判定并入注册在期；连接质量 UI。
+4. ✅ **远程同步 / 发送**：`sync_exchange`（跨设备索引交换）与 `resolve_peer`（发送/拉取对端解析）改用同一套共享的解析阶梯（`orchestrate::resolve_addr`）；`fetch_index`/`fetch_file` 的 `addr` 参数改成 `Option<SocketAddr>`，解析不出地址（或直连失败）时同 `send()` 落中继兜底。`sync_exchange` 不再局限于 mDNS 在线快照——改为遍历全部完全信任配对设备，`DeviceFound` 即时触发之外新增 30s 周期定时器兜底远程设备。在线判定并入"最近一次远程索引同步是否新鲜"（90s 窗口）。连接质量：新增 `CoreEvent::TransferConnected{task_id, via: direct|relay}`，出站连接建立后广播一次（只存内存不落库）；前端设置页新增「远程连接」区块（服务器地址 + 开关），传输卡片按 `via` 显示「直连」/「中继（较慢）」徽标。e2e 覆盖：完全信任设备被逼到只剩中继一档时，索引同步与文件发送均能真实跑通。
 5. **NAT 打洞**：STUN 反射地址探测 + 信令交换候选 + 双向打洞 → QUIC 直连（提速优化，失败无损可用性）；视情况在此后做单任务多流优化。
 6. **分享链接**：`shares`/`share_access` 表 + 生成 / 管理 / 吊销 / 访问记录 + token 鉴权 + deep-link（`aa4c://`）注册；先局域网落地。**可与 3–5 并行**。
 
@@ -207,5 +209,9 @@ RelayClose
 | 中继 token TTL | 8s（`aa4c_server::RELAY_TOKEN_TTL`）：合法撮合只需几个 RTT，这个窗口只在对端确实不可达时才会被等满——越短失败越快，不拖累连接阶梯整体失败延迟 | §4 |
 | 常驻连接与「立即生效」（里程碑 3） | `enable_remote=true` 时维持一条常驻连接周期续约 `Register` 并监听 `IncomingRelay` 推送；设置变更/解除配对用 `Notify` 唤醒**同一条**连接立刻重新注册，不再另开一次性连接——早期实现让一次性连接也发 `Register`，会与常驻连接抢服务器侧的推送登记槽位，一次性连接断开时的清理会把常驻连接刚登记好的活通道顶掉，直到下一轮周期续约（最长 TTL/3）才恢复，这段窗口内的中继推送悄悄丢失（实测踩到的真实竞态） | §3.2/§3.4，`aa4c-core::server_link` |
 | 中继会话授权边界 | `RelayRequest`/`RelayOpen` 本身不查允许名单（服务器不理解「配对」语义）；真正的安全边界在被叫方自己——中继裸管道撮合后跑的仍是设备间 mTLS + `trusted` 检查，未配对请求方在协议层被拒绝，和直连路径完全同构 | §4，PROTOCOL.md §15 |
+| 对端解析收口（里程碑 C4） | `resolve_peer`（发送/拉取）与 `sync_exchange`（索引同步）共用同一套地址解析阶梯（`orchestrate::resolve_addr`），不再各自维护一份、容易跑偏 | §6，`aa4c-core::orchestrate` |
+| 远程同步触发策略（里程碑 C4） | `DeviceFound` 即时触发（局域网）+ 30s 周期定时器兜底（远程设备不会产生 `DeviceFound`）；不做指数退避，个人自托管场景轮询开销可忽略 | §6，`aa4c-core::sync_exchange` |
+| 在线判定新鲜窗口（里程碑 C4） | 90s（约 3 倍周期定时器间隔，容忍一次没赶上的周期）：最近一次远程索引同步成功即视为"当时确实可达"，不必另起一次实时探测；不是绝对保真，拉取失败给温和提示 + 可重试 | §6，`aa4c-core::orchestrate` |
+| 连接质量上报范围（里程碑 C4） | 只报「直连/中继」（`ConnectionVia::Direct`/`Relay`），不做数据库持久化，事件只存当次会话内存——历史记录不含这个字段；`Punch` 取值预留给里程碑 C5 追加 | §6，`aa4c_types::event` |
 
 仍待实现阶段细化：配对协议交换 `server_hint` 的具体消息设计（跨服务器好友寻址的前提）、STUN 服务器来源（打洞里程碑再定：复用公共 STUN 或 aa4c-server 兼做）、打洞成功率兜底参数、匿名（未配对）分享的鉴权模型（后置）、读写分享（后置）、多服务器联邦（后置）、iOS 后台长连接受限的退化方案。

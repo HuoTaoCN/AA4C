@@ -15,7 +15,7 @@ mod transfer;
 
 pub use device::{DeviceId, DeviceInfo, Platform, TrustLevel};
 pub use error::{Aa4cError, Result};
-pub use event::CoreEvent;
+pub use event::{ConnectionVia, CoreEvent};
 pub use server_addr::ServerAddr;
 pub use settings::Settings;
 pub use sync::{

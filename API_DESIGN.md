@@ -149,6 +149,9 @@ pub enum CoreEvent {
 
     /// 对方请求向本机发送文件
     TransferRequest { task: TransferTask },
+    /// 出站连接已建立（里程碑 C4 连接质量）：只有发起方（发送/拉取）收得到，
+    /// 只存当次会话内存，不落库。
+    TransferConnected { task_id: TaskId, via: ConnectionVia },
     TransferProgress {
         task_id: TaskId,
         transferred_bytes: u64,
@@ -158,6 +161,17 @@ pub enum CoreEvent {
     },
     TransferDone { task_id: TaskId },
     TransferFailed { task_id: TaskId, error: String },
+
+    /// 本机同步索引发生变化，UI 应重新拉取统一文件视图（里程碑 2）。
+    SyncIndexUpdated,
+}
+
+/// 一次连接实际走的档位（CONNECT_DESIGN.md §2 连接阶梯，里程碑 C4）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionVia {
+    Direct,
+    Relay,
 }
 ```
 
@@ -420,9 +434,11 @@ aa4c://pairing_request     payload: { sessionId, peer }
 aa4c://pairing_pin         payload: { sessionId, pin }
 aa4c://pairing_result      payload: { sessionId, peer, success }
 aa4c://transfer_request    payload: { task }
+aa4c://transfer_connected  payload: { taskId, via }         // via: "direct" | "relay"（里程碑 C4）
 aa4c://transfer_progress   payload: { taskId, transferredBytes, totalBytes, speedBps, currentFile }
 aa4c://transfer_done       payload: { taskId }
 aa4c://transfer_failed     payload: { taskId, error }
+aa4c://sync_index_updated  payload: null
 ```
 
 JSON 一律使用 **camelCase**（serde `rename_all = "camelCase"` 在 Tauri 层统一处理）。
