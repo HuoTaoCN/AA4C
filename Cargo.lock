@@ -9,6 +9,7 @@ dependencies = [
  "aa4c-discovery",
  "aa4c-identity",
  "aa4c-proto",
+ "aa4c-server",
  "aa4c-store",
  "aa4c-transfer",
  "aa4c-types",
@@ -16,10 +17,12 @@ dependencies = [
  "dirs 5.0.1",
  "hostname",
  "notify-debouncer-mini",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 
@@ -78,6 +81,21 @@ dependencies = [
  "bincode",
  "serde",
  "tokio",
+]
+
+[[package]]
+name = "aa4c-server"
+version = "0.2.0"
+dependencies = [
+ "aa4c-identity",
+ "aa4c-proto",
+ "aa4c-types",
+ "rustls",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

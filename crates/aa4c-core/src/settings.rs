@@ -10,6 +10,8 @@ pub(crate) const KEY_DEVICE_NAME: &str = "device_name";
 pub(crate) const KEY_SAVE_DIR: &str = "save_dir";
 pub(crate) const KEY_AUTO_ACCEPT: &str = "auto_accept_from_trusted";
 pub(crate) const KEY_LISTEN_PORT: &str = "listen_port";
+pub(crate) const KEY_SERVER_URL: &str = "server_url";
+pub(crate) const KEY_ENABLE_REMOTE: &str = "enable_remote";
 
 /// 平台默认接收目录：`~/Downloads/AA4C`（取不到下载目录时退回临时目录）。
 pub(crate) fn default_save_dir() -> PathBuf {
@@ -67,6 +69,8 @@ pub(crate) async fn load(
         listen_port: get_json(store, KEY_LISTEN_PORT)
             .await?
             .unwrap_or(DEFAULT_PORT),
+        server_url: get_json(store, KEY_SERVER_URL).await?,
+        enable_remote: get_json(store, KEY_ENABLE_REMOTE).await?.unwrap_or(false),
     })
 }
 
@@ -76,6 +80,8 @@ pub(crate) async fn save(store: &Store, s: &Settings) -> Result<()> {
     set_json(store, KEY_SAVE_DIR, &s.save_dir).await?;
     set_json(store, KEY_AUTO_ACCEPT, &s.auto_accept_from_trusted).await?;
     set_json(store, KEY_LISTEN_PORT, &s.listen_port).await?;
+    set_json(store, KEY_SERVER_URL, &s.server_url).await?;
+    set_json(store, KEY_ENABLE_REMOTE, &s.enable_remote).await?;
     Ok(())
 }
 

@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod server;
+
 use aa4c_types::{Aa4cError, DeviceId, DeviceInfo, Result, TaskId, MAX_FRAME_LEN, PROTO_VERSION};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -124,8 +126,9 @@ pub struct FileProgress {
     pub verified_bytes: u64,
 }
 
-/// 编码为完整帧（长度前缀 + 消息体）。
-pub fn encode_frame(msg: &Message) -> Result<Vec<u8>> {
+/// 编码为完整帧（长度前缀 + 消息体）。泛型化以复用给 `ServerMessage`（`server` 子模块，
+/// 里程碑 C2）——帧格式对两套协议完全相同，只是消息类型不同。
+pub fn encode_frame<T: Serialize>(msg: &T) -> Result<Vec<u8>> {
     let body = bincode::serialize(msg).map_err(|e| Aa4cError::Protocol(format!("encode: {e}")))?;
     if body.len() > MAX_FRAME_LEN {
         return Err(Aa4cError::Protocol(format!(
@@ -144,12 +147,15 @@ pub fn encode_frame(msg: &Message) -> Result<Vec<u8>> {
 }
 
 /// 解码消息体（不含长度前缀）。
-pub fn decode_body(body: &[u8]) -> Result<Message> {
+pub fn decode_body<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T> {
     bincode::deserialize(body).map_err(|e| Aa4cError::Protocol(format!("decode: {e}")))
 }
 
 /// 写出一条消息并 flush。
-pub async fn write_message<W: AsyncWrite + Unpin>(writer: &mut W, msg: &Message) -> Result<()> {
+pub async fn write_message<W: AsyncWrite + Unpin, T: Serialize>(
+    writer: &mut W,
+    msg: &T,
+) -> Result<()> {
     let frame = encode_frame(msg)?;
     writer.write_all(&frame).await?;
     writer.flush().await?;
@@ -157,7 +163,9 @@ pub async fn write_message<W: AsyncWrite + Unpin>(writer: &mut W, msg: &Message)
 }
 
 /// 读取一条消息。超长帧立即报错（上层应断开连接）。
-pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Message> {
+pub async fn read_message<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
+    reader: &mut R,
+) -> Result<T> {
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
@@ -284,7 +292,7 @@ mod tests {
         let (mut a, mut b) = tokio::io::duplex(64 * 1024);
         for msg in &samples {
             write_message(&mut a, msg).await.unwrap();
-            let got = read_message(&mut b).await.unwrap();
+            let got = read_message::<_, Message>(&mut b).await.unwrap();
             assert_eq!(&got, msg);
         }
     }
@@ -297,7 +305,7 @@ mod tests {
         tokio::io::AsyncWriteExt::write_all(&mut a, &len.to_be_bytes())
             .await
             .unwrap();
-        let err = read_message(&mut b).await.unwrap_err();
+        let err = read_message::<_, Message>(&mut b).await.unwrap_err();
         assert!(err.to_string().contains("frame too large"), "{err}");
     }
 
@@ -312,12 +320,12 @@ mod tests {
             .await
             .unwrap();
         drop(a);
-        assert!(read_message(&mut b).await.is_err());
+        assert!(read_message::<_, Message>(&mut b).await.is_err());
     }
 
     #[test]
     fn decode_rejects_garbage() {
-        assert!(decode_body(&[0xff; 16]).is_err());
+        assert!(decode_body::<Message>(&[0xff; 16]).is_err());
     }
 
     #[tokio::test]
@@ -368,7 +376,7 @@ mod tests {
         let (mut a, mut b) = tokio::io::duplex(64 * 1024);
         for msg in &samples {
             write_message(&mut a, msg).await.unwrap();
-            let got = read_message(&mut b).await.unwrap();
+            let got = read_message::<_, Message>(&mut b).await.unwrap();
             assert_eq!(&got, msg);
         }
     }
@@ -381,7 +389,7 @@ mod tests {
         let id_a = "aa".repeat(32);
         let v1_peer = async {
             // 读 Hello，回一个 proto=1 的 HelloAck（不管本机实际版本）
-            let _ = read_message(&mut b).await.unwrap();
+            let _ = read_message::<_, Message>(&mut b).await.unwrap();
             write_message(
                 &mut b,
                 &Message::HelloAck {

@@ -8,6 +8,7 @@
 mod device;
 mod error;
 mod event;
+mod server_addr;
 mod settings;
 mod sync;
 mod transfer;
@@ -15,6 +16,7 @@ mod transfer;
 pub use device::{DeviceId, DeviceInfo, Platform, TrustLevel};
 pub use error::{Aa4cError, Result};
 pub use event::CoreEvent;
+pub use server_addr::ServerAddr;
 pub use settings::Settings;
 pub use sync::{
     RemoteIndexEntry, ScopeKind, SyncConflict, SyncFileEntry, SyncScope, SyncStatus, UnifiedFile,

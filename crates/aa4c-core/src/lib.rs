@@ -8,6 +8,7 @@
 
 mod dispatch;
 mod orchestrate;
+mod server_link;
 mod settings;
 mod sync_exchange;
 mod sync_index;
@@ -171,6 +172,16 @@ impl Core {
             transfer.clone(),
             discovery.clone(),
             events.clone(),
+        );
+
+        // 10. 自建服务器注册续约（CONNECT_DESIGN.md §3.2，里程碑 C2）：未开启远程 /
+        //     未配置服务器时循环内部直接跳过，不影响任何现有行为
+        server_link::spawn_register_loop(
+            store.clone(),
+            identity.clone(),
+            actual_port,
+            fallback_name.clone(),
+            save_dir_fallback.clone(),
         );
 
         tracing::info!(

@@ -519,6 +519,7 @@ async fn restart_marks_stale_tasks_failed() {
                 paired_at: Some(1),
                 last_seen_at: Some(1),
                 last_addr: None,
+                server_hint: None,
                 created_at: 0,
                 updated_at: 0,
             })
@@ -549,4 +550,232 @@ async fn restart_marks_stale_tasks_failed() {
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].status, TransferStatus::Failed);
     core.shutdown().await.unwrap();
+}
+
+// —— V0.3 里程碑 C2：aa4c-server 信令面 + 客户端接入 ——
+//
+// 内嵌启动一个真实 aa4c-server（同进程后台任务，ephemeral 端口），驱动真实 Core 通过它
+// 完成注册/查询。`register_once`/`lookup_once` 是 aa4c-core 的 crate 内部函数，这里只能
+// （也应该只）通过公开的 Core 方法间接验证——协议层本身的挑战/名单校验已由
+// aa4c-server 自己的单元测试覆盖（见 crates/aa4c-server/src/lib.rs）。
+
+/// 启动一个内嵌 aa4c-server，返回其句柄（身份数据目录需存活至测试结束，一并返回）
+/// 与 `aa4c://127.0.0.1:port#fp` 地址。
+async fn spawn_server() -> (Arc<aa4c_server::Server>, tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let server = aa4c_server::run(aa4c_server::ServerConfig {
+        data_dir: dir.path().to_path_buf(),
+        listen_addr: "127.0.0.1:0".parse().unwrap(),
+    })
+    .await
+    .expect("server starts");
+    let url = server.address_with_host("127.0.0.1");
+    (server, dir, url)
+}
+
+async fn enable_remote(core: &Core, server_url: &str) {
+    let mut settings = core.get_settings().await.unwrap();
+    settings.enable_remote = true;
+    settings.server_url = Some(server_url.to_string());
+    core.update_settings(settings).await.unwrap();
+}
+
+/// 轮询直到操作成功或耗尽重试次数：服务器注册/续约是后台异步任务，没有可等待的事件
+/// （C4 才会补连接质量事件），测试里用短轮询代替固定 sleep，减少不必要的等待。
+async fn retry_send_files(
+    core: &Core,
+    peer: &aa4c_types::DeviceId,
+    paths: Vec<PathBuf>,
+) -> aa4c_types::Result<String> {
+    let mut last_err = None;
+    for _ in 0..50 {
+        match core.send_files(peer, paths.clone()).await {
+            Ok(id) => return Ok(id),
+            Err(e) => {
+                last_err = Some(e);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+    Err(last_err.expect("at least one attempt"))
+}
+
+/// 等文件送达对端并落盘（复用 two_cores_pair_then_transfer 的等待模式）。
+async fn wait_transfer_done(mut events: broadcast::Receiver<CoreEvent>, task_id: &str) {
+    let ok = timeout(WAIT, async {
+        loop {
+            match events.recv().await.unwrap() {
+                CoreEvent::TransferDone { task_id: t } if t == task_id => return true,
+                CoreEvent::TransferFailed { task_id: t, error } if t == task_id => {
+                    panic!("transfer failed: {error}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("transfer reaches terminal state");
+    assert!(ok);
+}
+
+/// 全链路集成测试：resolve_peer 在没有 mDNS/落库地址时能靠服务器 Lookup 兜底找到对端
+/// 并完成真实传输；解除配对后，即便还能解析出一个地址，B 本地也已经不认这份证书，
+/// 传输必须以失败收场。
+///
+/// ⚠️ 这台机器上真实 mDNS 组播确实会在几百毫秒内找到本机的另一个 Core 实例（不像
+/// GitHub Actions CI 那样天然无组播，见其余 e2e 测试"不依赖 mDNS"的假设）——所以第一段
+/// 的"成功"不能严格证明连接**只**靠 Lookup 走通（可能 mDNS 也顺带命中了）。Lookup 协议
+/// 本身（含允许名单校验、吊销语义）的确定性证明在 `server_link.rs` 的单测里（不经过
+/// mDNS/Core，直接调用 `register_once`/`lookup_once`）；这里验证的是更根本的性质：
+/// 无论地址怎么解析到的，B 端的信任判定才是真正的安全边界，解除配对后必然拒绝。
+#[tokio::test]
+async fn resolve_peer_reaches_peer_remotely_and_unpair_still_blocks_transfer() {
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let a_id = a.core.self_info().id;
+    let b_id = b.core.self_info().id;
+    let (_server, _server_dir, server_url) = spawn_server().await;
+
+    // —— 配对（一如既往走本地地址，V0.3 不改配对本身）——
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "both sides pair");
+
+    // 两端都开启远程、指向同一个内嵌服务器（CONNECT_DESIGN §1.1：自己的多台设备
+    // 共用同一服务器，是本里程碑 resolve_peer 兜底覆盖的主场景）
+    enable_remote(&a.core, &server_url).await;
+    enable_remote(&b.core, &server_url).await;
+
+    // 抹掉 A 本地记的 B 地址：逼 resolve_peer 走到落库地址之后的兜底路径
+    // （mDNS 快照仍可能命中，见函数级注释）。
+    let mut rec = a.core.store.get_device(&b_id).await.unwrap().unwrap();
+    rec.last_addr = None;
+    a.core.store.upsert_device(&rec).await.unwrap();
+
+    // —— 建连传输：等 A/B 的后台注册续约生效后重试 ——
+    let recv_dir = b._dir.path().join("inbox");
+    let src = a._dir.path().join("hello.txt");
+    tokio::fs::write(&src, b"via server lookup").await.unwrap();
+    let ev_b2 = b.core.subscribe();
+    let b_core = b.core.clone();
+    let recv_dir2 = recv_dir.clone();
+    tokio::spawn(async move {
+        let mut rx = ev_b2;
+        while let Ok(event) = rx.recv().await {
+            if let CoreEvent::TransferRequest { task } = event {
+                b_core
+                    .accept_transfer(&task.id, true, Some(recv_dir2.clone()))
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+    let ev_a2 = a.core.subscribe();
+    let task_id = retry_send_files(&a.core, &b_id, vec![src.clone()])
+        .await
+        .expect("send succeeds once address resolution catches up");
+    wait_transfer_done(ev_a2, &task_id).await;
+    assert_eq!(
+        tokio::fs::read(recv_dir.join("hello.txt")).await.unwrap(),
+        b"via server lookup"
+    );
+
+    // —— 解除配对：B 本地不再认 A 的证书，之后任何一次传输尝试都必须失败 ——
+    // send_files 的 Ok(task_id) 只代表"解析到了一个地址、任务已排队"（可能是 mDNS 快照，
+    // 也可能是服务器上尚未过期的旧登记），不代表对端接受；真正的判定要等异步事件。
+    b.core.unpair_device(&a_id).await.unwrap();
+    let src2 = a._dir.path().join("after-unpair.txt");
+    tokio::fs::write(&src2, b"should not reach").await.unwrap();
+    let mut ev_a3 = a.core.subscribe();
+    let task_id2 = retry_send_files(&a.core, &b_id, vec![src2.clone()])
+        .await
+        .expect("an address can still be resolved (mDNS and/or stale server registration)");
+    let succeeded = timeout(WAIT, async {
+        loop {
+            match ev_a3.recv().await.unwrap() {
+                CoreEvent::TransferFailed { task_id: t, .. } if t == task_id2 => return false,
+                CoreEvent::TransferDone { task_id: t } if t == task_id2 => return true,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("reaches terminal state");
+    assert!(
+        !succeeded,
+        "B revoked A; transfer must fail even though an address was resolved"
+    );
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn server_lookup_denies_device_not_in_allow_list() {
+    let b = spawn_node().await;
+    let c = spawn_node().await; // 从未与 B 配对，冒充"以为自己配对了"
+    let b_id = b.core.self_info().id;
+    let (_server, _server_dir, server_url) = spawn_server().await;
+
+    enable_remote(&b.core, &server_url).await;
+    enable_remote(&c.core, &server_url).await;
+
+    // C 在本地伪造一条"已配对"的 B 记录（真实攻击者能做到的事：篡改自己的本地状态）；
+    // 服务器端的允许名单校验只认 B 自己上报的名单，不受 C 本地怎么想影响——这才是
+    // 安全边界真正生效的地方。
+    c.core
+        .store
+        .upsert_device(&aa4c_store::DeviceRecord {
+            id: b_id.clone(),
+            name: "冒充的B".into(),
+            platform: aa4c_types::Platform::Macos,
+            public_key: vec![9u8; 32],
+            trusted: true,
+            trust_level: aa4c_types::TrustLevel::Friend,
+            paired_at: Some(1),
+            last_seen_at: Some(1),
+            last_addr: None,
+            server_hint: None,
+            created_at: 0,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+
+    // B 已在 enable_remote() 里触发过一次立即注册（允许名单只含它真正配对过的设备，
+    // 不含 C）；下面的重试循环本身就会给这次异步注册留够落地时间，不需要额外等待。
+    //
+    // send_files 的 Ok(task_id) 只代表"解析到了一个地址"（C 本地伪造的记录、mDNS 快照都
+    // 可能提供地址），不代表 B 会接受——B 服务端看到的是 C 的真实证书指纹，从未配对过，
+    // 真正的判定要等异步事件：不管地址怎么来的，B 本地的信任表才是安全边界。
+    let src = c._dir.path().join("nope.txt");
+    tokio::fs::write(&src, b"should not reach").await.unwrap();
+    let ev_c = c.core.subscribe();
+    let task_id = retry_send_files(&c.core, &b_id, vec![src.clone()])
+        .await
+        .expect("an address can still be resolved (mDNS and/or C's fabricated local record)");
+    let succeeded = timeout(WAIT, async {
+        let mut rx = ev_c;
+        loop {
+            match rx.recv().await.unwrap() {
+                CoreEvent::TransferFailed { task_id: t, .. } if t == task_id => return false,
+                CoreEvent::TransferDone { task_id: t } if t == task_id => return true,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("reaches terminal state");
+    assert!(
+        !succeeded,
+        "C is not in B's allow list / was never paired; transfer must fail"
+    );
+
+    b.core.shutdown().await.unwrap();
+    c.core.shutdown().await.unwrap();
 }

@@ -17,6 +17,7 @@ fn sample_device(id: &str, trusted: bool) -> DeviceRecord {
         paired_at: trusted.then_some(1_750_000_000_000),
         last_seen_at: Some(1_750_000_000_000),
         last_addr: Some("192.168.1.10:42420".into()),
+        server_hint: None,
         created_at: 0, // 由 Store 维护
         updated_at: 0,
     }
@@ -63,7 +64,7 @@ async fn migration_is_idempotent_across_reopens() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 5); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts
+    assert_eq!(version, 6); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint
 }
 
 #[tokio::test]
@@ -92,6 +93,25 @@ async fn device_crud_roundtrip() {
     assert_eq!(upgraded.trust_level, TrustLevel::Full);
     assert!(store
         .set_trust_level(&"missing".repeat(8), TrustLevel::Full)
+        .await
+        .is_err());
+
+    // 对端 home server 地址（CONNECT_DESIGN §3.4，里程碑 C2）
+    assert!(upgraded.server_hint.is_none());
+    store
+        .set_server_hint(
+            &device.id,
+            Some("aa4c://example.com:42420#abcd1234abcd1234".into()),
+        )
+        .await
+        .unwrap();
+    let hinted = store.get_device(&device.id).await.unwrap().unwrap();
+    assert_eq!(
+        hinted.server_hint.as_deref(),
+        Some("aa4c://example.com:42420#abcd1234abcd1234")
+    );
+    assert!(store
+        .set_server_hint(&"missing".repeat(8), None)
         .await
         .is_err());
 

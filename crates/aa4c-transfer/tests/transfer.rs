@@ -80,6 +80,7 @@ async fn trust(node: &Node, peer: &Node) {
             paired_at: Some(1),
             last_seen_at: Some(1),
             last_addr: peer.device.addr.map(|a| a.to_string()),
+            server_hint: None,
             created_at: 0,
             updated_at: 0,
         })

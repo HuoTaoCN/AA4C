@@ -22,6 +22,9 @@ pub struct DeviceRecord {
     pub last_seen_at: Option<i64>,
     /// 最近一次发现的地址 "ip:port"。
     pub last_addr: Option<String>,
+    /// 对端 home server 地址（`aa4c://host:port#fp`），可空（CONNECT_DESIGN.md §3.4，
+    /// 里程碑 C2）。本里程碑只落库/查询，线路层交换留待后续里程碑。
+    pub server_hint: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

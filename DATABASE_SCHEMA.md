@@ -228,20 +228,28 @@ CREATE INDEX idx_sync_conflicts_path ON sync_conflicts(rel_path);
   插入新出现的）。冲突解决（用户拉取某版本、`.aa4c-part` 落盘自动加序号成为独立路径，或删掉多余
   副本）后，下次刷新该路径不再多版本，对应行随之清空。
 
-## 4c. V0.3 表结构（远程连接 + 分享，设计定稿、尚未建表）
+## 4c. V0.3 表结构（远程连接 + 分享）
 
-> 对应 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（AA Connect）。仅设计，随 V0.3 里程碑落地。
+> 对应 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（AA Connect）。§4c.0（`devices.server_hint`
+> 列 + `settings` KV）**已实现**（迁移 `006_server_hint.sql`，user_version=6，里程碑 C2）；
+> §4c.1/4c.2（`shares`/`share_access`）仍是设计定稿、尚未建表，随分享链接里程碑落地。
 > 连接配置复用现有 `settings` KV 表（不新增表）：**`server_url`**（自建 `aa4c-server` 地址，
 > 格式 `aa4c://host:port#<证书指纹前16位hex>`，中继端点由服务器下发、不单独配置）、
 > **`enable_remote`**（远程总开关，**默认 `false`**）。
 
-### 4c.0 devices 增列 —— 对端 home server（CONNECT_DESIGN §3.4）
+### 4c.0 devices 增列 —— 对端 home server（CONNECT_DESIGN §3.4，已实现列，里程碑 C2）
 
 ```sql
 ALTER TABLE devices ADD COLUMN server_hint TEXT;  -- 对端自建服务器地址（含指纹），可空
 ```
 
-- 配对时交换写入，此后随对端注册续约刷新；远程 `resolve_peer` 据此向**对端的** home server 发起 Lookup。
+- **列已建、查询逻辑已接（`resolve_peer` 的 Lookup 兜底）；但配对协议尚未交换这个字段**——
+  `PairRequest`/`PairAccept`/`DeviceInfo` 是既有 bincode 结构体变体，追加字段会破坏 v1/v2
+  解码，需要一条新的追加消息才能安全传递，目前恒为 `NULL`（里程碑 C2 有意缩小的范围，见
+  PROTOCOL.md §11、HANDOFF.md）。
+- 现状：`resolve_peer` 的远程兜底只向**自己配置的服务器**查询（`aa4c-core::server_link`），
+  覆盖「自己的多台设备共用同一服务器」这一主场景；跨服务器的好友寻址（真正用到
+  `server_hint` 挑选对端服务器）留待 `server_hint` 的线路层交换实现后才生效。
 - 纯局域网设备（对端未配置服务器）为 NULL，行为退化为 V0.2。
 
 ### 4c.1 shares —— 分享记录（CONNECT_DESIGN §7）
@@ -302,6 +310,7 @@ const MIGRATIONS: &[&str] = &[
     /* v3: */ include_str!("migrations/003_sync.sql"),         // sync_scopes + sync_file_index
     /* v4: */ include_str!("migrations/004_remote_index.sql"), // remote_index
     /* v5: */ include_str!("migrations/005_conflicts.sql"),    // sync_conflicts
+    /* v6: */ include_str!("migrations/006_server_hint.sql"),  // devices.server_hint
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {

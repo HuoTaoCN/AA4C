@@ -9,7 +9,7 @@ use aa4c_types::{
     SyncScope, TaskId, TransferTask, TrustLevel, UnifiedFile,
 };
 
-use crate::{settings, sync_exchange, sync_index, unified, Core};
+use crate::{server_link, settings, sync_exchange, sync_index, unified, Core};
 
 impl Core {
     /// 已发现（在线）+ 已配对（可能离线）设备合并，按 id 去重。
@@ -70,9 +70,12 @@ impl Core {
         self.pairing.confirm(session_id, accept).await
     }
 
-    /// 解除配对（删除设备及其级联记录）。
+    /// 解除配对（删除设备及其级联记录）。立即触发一次注册续约，让对方的服务器允许名单
+    /// 尽快不再包含本机（CONNECT_DESIGN.md §3.3 吊销，里程碑 C2）。
     pub async fn unpair_device(&self, device_id: &DeviceId) -> Result<()> {
-        self.store.remove_device(device_id).await
+        self.store.remove_device(device_id).await?;
+        self.nudge_register();
+        Ok(())
     }
 
     /// 变更设备信任分级（「我的设备」full ⇄「朋友」friend）。
@@ -153,7 +156,25 @@ impl Core {
             sync_index::scan_scope(&self.store, &inbox).await?;
             let _ = self.events.send(CoreEvent::SyncIndexUpdated);
         }
+        // 刚打开远程 / 服务器地址变了：立即注册一次，不必等下一轮周期轮询才生效
+        // （CONNECT_DESIGN.md §3.2，里程碑 C2）。
+        if new.enable_remote
+            && (new.enable_remote != old.enable_remote || new.server_url != old.server_url)
+        {
+            self.nudge_register();
+        }
         Ok(())
+    }
+
+    /// 立即触发一次注册续约（不阻塞调用方；未开启/未配置/失败都只记日志，见 `server_link`）。
+    fn nudge_register(&self) {
+        server_link::nudge_register(
+            self.store.clone(),
+            self.identity.clone(),
+            self.listen_port,
+            self.self_info.name.clone(),
+            self.save_dir_fallback.clone(),
+        );
     }
 
     // —— 同步：共享范围 + 本地索引（SYNC_DESIGN.md §3/§6，里程碑 2）——
@@ -325,8 +346,13 @@ impl Core {
         Err(Aa4cError::Protocol("持有这个文件的设备当前不在线".into()))
     }
 
-    /// 把 device_id 解析为可发送的 DeviceInfo：优先在线快照（含实时地址），
-    /// 否则回落到配对记录里的最后地址。
+    /// 把 device_id 解析为可发送的 DeviceInfo：mDNS 在线快照（含实时地址）→ 落库最后
+    /// 地址 → 向自己配置的服务器查一次（CONNECT_DESIGN.md §3.4，里程碑 C2）。
+    ///
+    /// 远程兜底目前只查**自己配置的服务器**，覆盖「自己的多台设备」这一主场景（它们
+    /// 天然共用同一服务器）；跨服务器的好友寻址需要在配对时交换 `devices.server_hint`
+    /// 并据此选择服务器去查——这部分线路层交换尚未实现，是已知的、有意缩小的范围
+    /// （见 HANDOFF.md），留待后续里程碑随连接阶梯一起补齐。
     async fn resolve_peer(&self, device_id: &DeviceId) -> Result<DeviceInfo> {
         if let Some(dev) = self
             .discovery
@@ -341,15 +367,36 @@ impl Core {
             .get_device(device_id)
             .await?
             .ok_or_else(|| Aa4cError::DeviceNotFound(device_id.clone()))?;
+        let mut addr = rec.last_addr.as_deref().and_then(|s| s.parse().ok());
+        if addr.is_none() {
+            addr = self.remote_lookup(device_id).await;
+        }
         Ok(DeviceInfo {
             id: rec.id,
             name: rec.name,
             platform: rec.platform,
             version: String::new(),
-            addr: rec.last_addr.as_deref().and_then(|s| s.parse().ok()),
+            addr,
             online: false,
             trusted: rec.trusted,
             trust_level: Some(rec.trust_level),
         })
+    }
+
+    /// 向自己配置的服务器查一次对端端点；未开启远程 / 未配置 / 查询失败 / 无结果都
+    /// 静默返回 `None`（不阻断 `resolve_peer` 的其余判定，见上）。
+    async fn remote_lookup(&self, device_id: &DeviceId) -> Option<std::net::SocketAddr> {
+        let settings = self.get_settings().await.ok()?;
+        if !settings.enable_remote {
+            return None;
+        }
+        let server_url = settings.server_url?;
+        match server_link::lookup_once(&self.identity, &server_url, device_id).await {
+            Ok(endpoints) => endpoints.into_iter().next(),
+            Err(e) => {
+                tracing::debug!(error = %e, "remote lookup failed");
+                None
+            }
+        }
     }
 }

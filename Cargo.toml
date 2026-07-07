@@ -8,6 +8,7 @@ members = [
     "crates/aa4c-transfer",
     "crates/aa4c-store",
     "crates/aa4c-core",
+    "crates/aa4c-server",
     "apps/desktop/src-tauri",
 ]
 
@@ -27,6 +28,7 @@ aa4c-discovery = { path = "crates/aa4c-discovery" }
 aa4c-transfer = { path = "crates/aa4c-transfer" }
 aa4c-store = { path = "crates/aa4c-store" }
 aa4c-core = { path = "crates/aa4c-core" }
+aa4c-server = { path = "crates/aa4c-server" }
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }

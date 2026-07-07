@@ -233,12 +233,14 @@ impl SessionCtx {
     ) -> Result<()> {
         let now = now_ms();
         // 配对默认「朋友」；若该设备此前已被标记为「完全信任」，重新配对时保留，不降级。
-        let trust_level = self
-            .store
-            .get_device(&device.id)
-            .await?
+        // server_hint（对端 home server）同理保留旧值——配对协议本身暂不交换这个字段
+        // （里程碑 C2 只落地了 schema/查询，线路层交换留待后续里程碑，见 HANDOFF.md）。
+        let existing = self.store.get_device(&device.id).await?;
+        let trust_level = existing
+            .as_ref()
             .map(|r| r.trust_level)
             .unwrap_or(TrustLevel::Friend);
+        let server_hint = existing.and_then(|r| r.server_hint);
         self.store
             .upsert_device(&DeviceRecord {
                 id: device.id.clone(),
@@ -250,6 +252,7 @@ impl SessionCtx {
                 paired_at: Some(now),
                 last_seen_at: Some(now),
                 last_addr: addr.map(|a| a.to_string()),
+                server_hint,
                 created_at: 0, // 由 Store 维护
                 updated_at: 0,
             })

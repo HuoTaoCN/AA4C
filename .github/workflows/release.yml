@@ -107,3 +107,27 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: dist-apk/*.apk
+
+  server:
+    name: aa4c-server (Linux binary)
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        run: cargo build --release -p aa4c-server
+      - name: Stage binary
+        run: |
+          mkdir -p dist-server
+          cp target/release/aa4c-server "dist-server/aa4c-server_${{ github.ref_name }}_linux-x86_64"
+      - name: Attach binary to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: dist-server/*

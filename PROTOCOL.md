@@ -243,30 +243,52 @@ struct IndexItem { rel_path: String, size: u64, hash: Option<String> }
 - v1/v2 TCP 通道保留作为局域网路径；QUIC 通道上握手协商 `proto = 3`；出站是否走 QUIC 由 `TransferConfig.prefer_quic` 控制（里程碑 C1 仅作测试/联调开关，默认 `false` 不影响任何现有行为；「按可达性自动选择」的正式逻辑收口在里程碑 C4）
 - **keep-alive + 空闲超时**（`aa4c-transfer::quic::transport_config`）：2s 心跳 + 8s 空闲超时——应用层等待用户确认可长达 60s，心跳持续续命，只有心跳本身也送不出去的真断连才会在约 8s 内被两端各自发现
 
-## 11. 发现层升级：`aa4c-server` 信令（Part C 定稿字段）
+## 11. 发现层升级：`aa4c-server` 信令（Part C，已实现信令面，里程碑 C2）
 
-自建 **`aa4c-server`**（单进程，信令 + 中继合一，见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md) §1.1）。
-服务器身份与设备同构：**Ed25519 密钥对 + 自签证书，证书指纹写进服务器地址**
-（`aa4c://host:port#<指纹前16位hex>`），客户端连接时校验 pin，不依赖 CA / 域名。
+自建 **`aa4c-server`**（单进程，见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md) §1.1；本里程碑只做
+信令面，中继面 `RelayRequest`/`RelayGrant`/`RelayOpen`/`Signal` 留给 C3/C5 按同样的「只追加」
+纪律加入）。服务器身份与设备同构：**Ed25519 密钥对 + 自签证书，证书指纹写进服务器地址**
+（`aa4c://host:port#<指纹前16位hex>`，`aa4c_types::ServerAddr::parse` 解析），客户端连接时
+校验对端证书指纹是否以此前缀开头，不依赖 CA / 域名。
 
-客户端 ↔ 服务器为**一条 TLS 长连接**，复用本协议帧层（4 字节大端长度 + bincode），
-消息族为独立的 `ServerMessage` enum（独立 `server_proto` 版本，遵守「只追加变体」）。
-消息职责（字段随里程碑 2 在 Part C 定稿）：
+客户端 ↔ 服务器为**一条 TLS 长连接**，复用本协议帧层（4 字节大端长度 + bincode；`encode_frame`
+/`decode_body`/`read_message`/`write_message` 已泛型化，两套协议共用同一套帧实现）。消息族为
+独立的 `ServerMessage` enum（`aa4c_proto::server`），独立 `server_proto` 版本，遵守「只追加
+变体」。C2 已实现字段：
 
+```rust
+enum ServerMessage {
+    SrvHello { server_proto: u16 },
+    SrvHelloAck { server_proto: u16 },
+    Register { endpoints: Vec<SocketAddr>, proto: u16, allow_list: Vec<DeviceId> },
+    RegisterAck { ttl_secs: u64 },
+    Lookup { device_id: DeviceId },
+    LookupReply { endpoints: Vec<SocketAddr> },   // 未注册/已过期/不在名单内一律空列表
+}
 ```
-SrvHello / SrvHelloAck        协商 server_proto；服务器下发能力与中继端点
-Challenge / ChallengeReply    服务器发 nonce，设备私钥签名——身份验证不依赖时钟
-Register                      候选端点 + proto/版本 + 已配对设备允许名单；TTL 续约
-Lookup / LookupReply          查询目标端点；需已过挑战 且 查询方在目标允许名单内
-Signal                        打洞信令盲转发（ICE 候选交换）
-RelayRequest / RelayGrant     申请中继会话，发放一次性 session_token（进程内登记）
-```
 
-- 服务器只存「端点映射 + 允许名单」，**无文件元数据、无内容**
-- 查询授权 = **允许名单 + 挑战应答**（初稿的「双方互签配对证明」因吊销漏洞弃用：
-  名单随每次注册刷新，解除配对即自然吊销）
-- 寻址规则：**查谁，去谁的 home server 查**；打洞信令与中继会话使用**被叫方**的服务器；
-  对端服务器地址（`devices.server_hint`）在配对时交换落库
+- **身份验证复用 mTLS，不实现 `Challenge`/`ChallengeReply`**：这是对设计初稿的一处收敛。
+  服务器接受任意合法 Ed25519 客户端证书（`tls_server_config(None)`，与设备间传输层同一套
+  证书固定基础设施），TLS 握手本身已经密码学证明客户端持有其证书对应的私钥，身份绑定在
+  **整条连接**上（比单条消息签一次 nonce 更强），且不依赖设备时钟——语义等价于设计稿要的
+  安全属性，少一次往返、不必新增独立于 TLS 的签名依赖。查询方身份 = 其 mTLS 客户端证书
+  指纹，不在消息里重复携带。
+- **注册**：`Register` 覆盖式整体替换该设备在服务器的登记（含端点与允许名单）；服务器
+  额外把连接的观测源地址并入 `endpoints`（免 STUN 的反射地址，同机/同网时天然可用）。
+  TTL = 60s（`aa4c_server::REGISTER_TTL`），客户端约每 TTL/3 续约（`aa4c-core::server_link`
+  的后台循环）；设置变更 / 解除配对会立即触发一次续约，不必等下一轮周期。全内存态，
+  无持久化——进程重启即清空，客户端靠周期续约自愈。
+- **查询授权 = mTLS 身份 + 允许名单**（初稿的「双方互签配对证明」因吊销漏洞弃用）：
+  `Lookup` 只在目标设备**当前**登记的允许名单包含查询方时返回非空端点列表；**吊销自然
+  发生**——覆盖式 `Register` 本身就是吊销机制，不需要任何显式吊销协议，下一次注册的名单
+  里没有对方，查询立刻查不到。未注册 / 已过期 / 不在名单内**一律回空列表、不区分原因**，
+  防止藉此探测 DeviceId 是否存在。
+- **寻址规则**（C2 缩小范围）：`resolve_peer` 目前只向**自己配置的服务器**查询，覆盖
+  「自己的多台设备天然共用同一服务器」这一主场景；`devices.server_hint`
+  （对端 home server 地址）列已建表，但**配对协议尚未交换这个字段**——`PairRequest`/
+  `PairAccept`/`DeviceInfo` 是既有 bincode 结构体变体，追加字段会破坏 v1/v2 解码，需要
+  一条新的追加消息才能安全传递，留给后续里程碑（随连接阶梯/打洞一起补齐）。跨服务器的
+  好友寻址在此之前不可用，是已知、有意缩小的范围（见 HANDOFF.md）。
 
 ## 12. 连接建立顺序（ICE-like）
 

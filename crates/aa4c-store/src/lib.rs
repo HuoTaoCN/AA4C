@@ -89,8 +89,8 @@ impl Store {
             conn.execute(
                 "INSERT INTO devices
                    (id, name, platform, public_key, trusted, trust_level,
-                    paired_at, last_seen_at, last_addr, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+                    paired_at, last_seen_at, last_addr, server_hint, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
                  ON CONFLICT(id) DO UPDATE SET
                    name = excluded.name,
                    platform = excluded.platform,
@@ -100,6 +100,7 @@ impl Store {
                    paired_at = excluded.paired_at,
                    last_seen_at = excluded.last_seen_at,
                    last_addr = excluded.last_addr,
+                   server_hint = excluded.server_hint,
                    updated_at = excluded.updated_at",
                 params![
                     d.id,
@@ -111,6 +112,7 @@ impl Store {
                     d.paired_at,
                     d.last_seen_at,
                     d.last_addr,
+                    d.server_hint,
                     now,
                 ],
             )
@@ -126,7 +128,7 @@ impl Store {
             conn.query_row(
                 "SELECT id, name, platform, public_key, trusted,
                         paired_at, last_seen_at, last_addr, created_at, updated_at,
-                        trust_level
+                        trust_level, server_hint
                  FROM devices WHERE id = ?1",
                 params![id],
                 row_to_device,
@@ -143,7 +145,7 @@ impl Store {
                 .prepare(
                     "SELECT id, name, platform, public_key, trusted,
                             paired_at, last_seen_at, last_addr, created_at, updated_at,
-                            trust_level
+                            trust_level, server_hint
                      FROM devices WHERE trusted = 1 ORDER BY name",
                 )
                 .map_err(db_err)?;
@@ -165,6 +167,24 @@ impl Store {
                 .execute(
                     "UPDATE devices SET trust_level = ?2, updated_at = ?3 WHERE id = ?1",
                     params![id, level.as_str(), now_ms()],
+                )
+                .map_err(db_err)?;
+            if n == 0 {
+                return Err(Aa4cError::DeviceNotFound(id));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// 更新对端 home server 地址（CONNECT_DESIGN.md §3.4，里程碑 C2）。设备不存在时报错。
+    pub async fn set_server_hint(&self, id: &DeviceId, server_hint: Option<String>) -> Result<()> {
+        let id = id.clone();
+        self.call(move |conn| {
+            let n = conn
+                .execute(
+                    "UPDATE devices SET server_hint = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![id, server_hint, now_ms()],
                 )
                 .map_err(db_err)?;
             if n == 0 {
@@ -758,6 +778,7 @@ fn row_to_device(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRecord> {
         created_at: row.get(8)?,
         updated_at: row.get(9)?,
         trust_level: parse_col(row, 10)?,
+        server_hint: row.get(11)?,
     })
 }
 

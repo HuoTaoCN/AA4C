@@ -177,8 +177,8 @@ RelayClose
 
 详细实现拆解见 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)。
 
-1. **QUIC 会话层**：quinn + 证书固定复用 + 单流等价迁移 + `ResumeReport` 断点续传；两端手填地址即可验证，不依赖服务器。附带在 PROTOCOL 定稿 proto=3 协商与流用法。
-2. **`aa4c-server` 信令**：`crates/aa4c-server` 单进程（先只做信令面）：挑战应答 / 注册（允许名单+TTL 续约）/ 查询 / 信令转发；客户端接入（上线注册、`resolve_peer` 回落 Lookup）；配对时交换 `server_hint`。PROTOCOL 新增 Part C（ServerMessage 定稿）。交付含 Dockerfile + release 产物。
+1. ✅ **QUIC 会话层**：quinn + 证书固定复用 + 单流等价迁移 + `ResumeReport` 断点续传；两端手填地址即可验证，不依赖服务器。PROTOCOL 已定稿 proto=3 协商与流用法（§10/§13）。
+2. ✅ **`aa4c-server` 信令**（`crates/aa4c-server`，只做信令面，中继面留给 C3）：注册（允许名单 + TTL 续约，覆盖式替换即吊销机制）/ 查询 / 客户端接入（`aa4c-core::server_link`，上线注册、`resolve_peer` 回落 Lookup）。鉴权复用 mTLS，未实现设计初稿的 `Challenge`/`ChallengeReply`（理由见 PROTOCOL.md §11）。`devices.server_hint` 列已建表，但配对协议尚未交换它——寻址目前只覆盖「自己的多台设备共用同一服务器」，跨服务器好友寻址留待后续（见 §12 表格与仍待实现列表）。PROTOCOL 已定稿 Part C（§11）。交付含 Dockerfile + `scripts/dev-server.sh` + release Linux 二进制。
 3. **Relay 中继**：同进程加中继面（`RelayRequest/Grant` + `RelayOpen/Data/Close` 盲转发）；连接阶梯「LAN → 公网直连 → 中继」贯通——**远程可用自此成立**（可发 preview）。
 4. **远程同步 / 发送**：V0.2 索引交换 + 按需拉取、V0.1 AA 发送跑到远程通道；在线判定并入注册在期；连接质量 UI。
 5. **NAT 打洞**：STUN 反射地址探测 + 信令交换候选 + 双向打洞 → QUIC 直连（提速优化，失败无损可用性）；视情况在此后做单任务多流优化。
@@ -191,9 +191,11 @@ RelayClose
 | 基础设施 | 仅自建，**单进程 `aa4c-server`**（信令+中继合一，token 进程内校验） | §1.1 / §4 |
 | 服务器身份 | 密钥对 + 自签证书，**指纹写进地址** `aa4c://host:port#fp`，与设备同构、零 CA | §3.1 |
 | 信令协议 | 复用帧层 bincode 的 TLS 长连接（`ServerMessage` 族，独立 `server_proto`），不用 HTTP/WS | §3.2 |
-| 查询授权 | **允许名单（注册时上传）+ 挑战应答**；初稿的互签 proof 因吊销漏洞弃用 | §3.3 |
-| 寻址 | 查谁去谁的 home server；信令/中继用**被叫方**服务器；对端 server_hint 为 `devices` 正式字段 | §3.4 |
-| 防重放 | challenge-response（nonce），不依赖设备时钟 | §3.2 / §9 |
+| 查询授权 | **允许名单（注册时覆盖式上传）**；初稿的互签 proof 因吊销漏洞弃用 | §3.3 |
+| 寻址 | 查谁去谁的 home server；信令/中继用**被叫方**服务器；对端 server_hint 为 `devices` 正式字段（**已建表，尚未在配对时交换**，见下） | §3.4 |
+| 身份验证（里程碑 2 实现收敛） | **复用 mTLS**，不实现设计初稿的 Challenge/ChallengeReply——TLS 握手本身已密码学证明身份，绑定在整条连接上，少一次往返、不引入独立签名依赖 | §3.2，PROTOCOL.md §11 |
+| 注册 TTL | 60s（`aa4c_server::REGISTER_TTL`），客户端约每 TTL/3 续约；设置变更/解除配对立即触发一次续约，不等周期 | §3.2，`aa4c-core::server_link` |
+| server_hint 交换范围（里程碑 2 缩小） | `resolve_peer` 目前只查**自己配置的服务器**，覆盖"自己的多台设备"主场景；跨服务器好友寻址需要配对协议交换 server_hint，而 `PairRequest`/`PairAccept`/`DeviceInfo` 是既有 bincode 结构体、追加字段会破坏 v1/v2 解码，需专门设计一条新消息，留待后续里程碑 | §3.4 |
 | 会话层 | QUIC（quinn）证书固定复用；**首版单流等价迁移**，多流并行留作打洞后的优化 | §5 |
 | 断点续传 | 接收方 accept 后回 `ResumeReport`（追加变体），**不修改既有 `Offer`** | §5 |
 | 设置项 | 单 `server_url`（中继端点由服务器下发）+ `enable_remote` **默认关** | §8 |
@@ -202,4 +204,4 @@ RelayClose
 | 账号体系 | 不引入，设备与服务器身份都是密钥对 | §1 / §3.1 |
 | 能力复用 | 远程同步 / 发送直接复用 V0.2 索引交换 + V0.1 ATP，不新增数据语义 | §6 |
 
-仍待实现阶段细化：STUN 服务器来源（打洞里程碑再定：复用公共 STUN 或 aa4c-server 兼做）、注册 TTL / 续约间隔数值、打洞成功率兜底参数、匿名（未配对）分享的鉴权模型（后置）、读写分享（后置）、多服务器联邦（后置）、iOS 后台长连接受限的退化方案。
+仍待实现阶段细化：配对协议交换 `server_hint` 的具体消息设计（跨服务器好友寻址的前提）、STUN 服务器来源（打洞里程碑再定：复用公共 STUN 或 aa4c-server 兼做）、打洞成功率兜底参数、匿名（未配对）分享的鉴权模型（后置）、读写分享（后置）、多服务器联邦（后置）、iOS 后台长连接受限的退化方案。
