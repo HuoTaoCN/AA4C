@@ -1,6 +1,6 @@
 # AA4C 开发交接（换机指南）
 
-> 最后更新：2026-07-08（V0.3「AA Connect」全部完成；V0.4「Download」设计 v1 已产出，待评审）。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
+> 最后更新：2026-07-08（`v0.3.0-preview` 已发布：V0.3「AA Connect」全部完成，随三平台安装包/APK/服务器二进制发出；V0.4「Download」设计 v1 已产出，待评审）。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
 > 给 AI Agent：开工前先读本文档"当前进度"与"下一步"，再按 [AGENTS.md](AGENTS.md) 的必读清单工作。
 
 ## 一、当前进度
@@ -41,6 +41,7 @@
 | **V0.3 里程碑 C4（远程同步/发送接入连接阶梯 + 连接质量 UI）** | ✅ | — | `sync_exchange` 此前只认 mDNS 在线快照，改为遍历全部完全信任配对设备，与 `resolve_peer` 共用同一套地址解析阶梯（新增 `orchestrate::resolve_addr`）；`DeviceFound` 即时触发之外新增 30s 周期定时器兜底远程设备。`fetch_index`/`fetch_file` 的 `addr` 改 `Option<SocketAddr>`，同 `send()` 落中继兜底；`Core::fetch_file` 不再局限于 mDNS 在线持有者。在线判定并入"最近一次远程索引同步是否新鲜"（90s 窗口）。连接质量：新增 `ConnectionVia`/`CoreEvent::TransferConnected`，`dial()` 返回值带上实际档位，只有发起方收得到、只存内存不落库。前端：设置页新增「远程连接」区块（服务器地址 + 开关），传输卡片按 `via` 显示「直连/中继（较慢）」徽标。新增 Core e2e `remote_index_exchange_reaches_peer_via_relay` + `aa4c_types` 的事件 JSON 形状测试 |
 | **V0.3 里程碑 C5（NAT 打洞）** | ✅ | — | `aa4c-server` 新增轻量 QUIC 反射端点（`reflect.rs`，与 TCP 信令同端口号，独立 ALPN）：设备用自己真正用于 P2P 的 QUIC 端点连一次，服务器把观测到的源地址经 uni 流回给它，自建版 STUN，不依赖公共 STUN 服务。`ServerMessage` 追加 `Signal`/`IncomingSignal`：发起方在自己的常驻连接上发候选，回信作为推送收回同一条连接（复用 C3 的 `pushable` 表）。`aa4c-core::server_link::SignalChannel` 处理候选交换；收到 `IncomingSignal` 时必须区分"是不是自己在等的回信"，不是才需要反向回信+打洞，否则死循环（真实踩到）。`aa4c-transfer` 新增 `PunchDialer`（`dial()` 第 3 档，直连失败后先试打洞再落中继）+ `ConnectionVia::Punch`（UI 上并入"直连"显示）。**顺带修了两个真实 bug**：(1) `QuicDuplex` 此前不持有 `Connection` 句柄，fire-and-forget 分流（`IndexRequest`）会在数据发出前就拆连接——从 C1 起潜伏，C5 才第一次踩中；(2) 回环环境打洞会稳定截胡"强制走中继"的测试，加了 `TransferConfig::disable_punch` 测试开关。新增 Core e2e `forced_punch_path_completes_a_transfer` + `aa4c-server` 反射端点/Signal 状态机单测 |
 | **V0.3 里程碑 C6（分享链接 AA Share——V0.3「AA Connect」六个里程碑全部完成）** | ✅ | — | 新表 `shares`/`share_access`（`007_shares.sql`）；`Message` 追加 `ShareRequest{token}`（`PROTO_VERSION` 3→4）；`dispatch_shared` 的 `ShareRequest` 分支**不检查 `trusted`**——token 本身就是访问能力，未配对设备也能凭链接取回内容（对设计初稿的收敛，见 CONNECT_DESIGN.md §7.3）。`aa4c-transfer` 新增 `ShareResolver`/`TransferService::open_share`，`fetch.rs` 泛化出 `FetchTarget::{Path,Share}` 共用建连/握手/落盘。`aa4c-core::dispatch::ShareServe`（token 校验 + `resolve_shared` 路径边界 + `share_access` 记账）+ `orchestrate.rs` 的 `create_share`/`list_shares`/`revoke_share`/`open_share`。前端新增 `SharePage.vue`（生成/管理/打开）。**顺带修了一个真实 bug**：`transfer_tasks.peer_device_id` 的外键假设"peer 必然是已配对设备"被 `ShareRequest` 打破，插入任务记录会违反外键、把连接在协议中途悄悄挂断（现象是对端"connection lost"，真正原因在远端看不到）——`serve_fetch`/`fetch::drive` 现在先查一次对端是否已知，未知则跳过任务落库。新增 Core e2e `create_and_open_share_without_pairing`（从未配对的设备凭链接取回内容）+ `share_rejects_expired_revoked_and_forged_tokens` |
+| v0.3.0-preview 发布 | ✅ | — | 打包预览版：V0.3「AA Connect」六个里程碑（QUIC+续传/自建信令/中继/远程同步发送+连接质量/NAT 打洞/分享链接）随三平台安装包 + Android arm64 APK + `aa4c-server` Linux 二进制发布（GitHub Release，prerelease）；工作区版本号 0.2.0→0.3.0 |
 
 整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。**V0.3「AA Connect」六个里程碑（C1–C6）全部完成**：广域网 QUIC 会话层、自建信令+中继服务器、远程同步/发送接入完整连接阶梯、NAT 打洞、分享链接，一整条「局域网直连 → 公网直连 → 打洞 → 中继」的连接阶梯贯通，外加脱离设备配对关系的能力型分享。**V0.2 同步五个里程碑（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取 / 冲突标记）全部落地**（SYNC_DESIGN.md §10）；线路协议已升到 `proto=2` 并对同步路径按版本 gate（与 v0.2.0-preview 的同步不再互通，趁预发布窗口对齐）。**真机 GUI 走查已人工跑通**（`scripts/dev-two-nodes.sh` 起两实例：配对 → 互标我的设备 → 黄「可下载」→ 点黄拉取转绿 → 同名不同内容「多版本」并列，均正常）。
 
@@ -136,16 +137,15 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：V0.4「Download」设计初稿已产出，待评审
+## 四、下一步：`v0.3.0-preview` 已发布，V0.4「Download」设计初稿待评审
 
-**V0.3「AA Connect」六个里程碑（C1–C6）全部实现完毕并测试通过**：连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档贯通，外加脱离配对关系的能力型分享。设计见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（§12 已确认决策清单）、实现拆解见 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)。
+**V0.3「AA Connect」六个里程碑（C1–C6）全部实现完毕并测试通过，且已打包发布 `v0.3.0-preview`**：连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档贯通，外加脱离配对关系的能力型分享，随三平台安装包 + Android arm64 APK + `aa4c-server` Linux 二进制一起发出（GitHub Release，prerelease）。设计见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（§12 已确认决策清单）、实现拆解见 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)。
 
 **V0.4「Download」（统一下载中心）设计 v1 已产出**：[DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)（§9 是已确认决策表）。三个范围决定已经用户确认：AA4C **自动打包并管理**外部下载引擎子进程（不要求用户自己装）；先做 **Aria2（HTTP/HTTPS/FTP）**，qBittorrent（BT/Magnet）后置为独立里程碑 D2；V0.4 **只覆盖桌面三平台**，不含 Android。核心架构决定：新 crate `aa4c-download`，用 `SidecarSpawner` trait 把"拉起子进程"这个 Tauri 专属能力（`tauri-plugin-shell`）与纯 Rust 的 Core 解耦（同 C1–C6 一路建立的依赖倒置先例）；新表 `download_tasks`**不复用** `transfer_tasks`（下载没有对端设备，规避 C6 踩过的外键假设冲突）。
 
 **这是一个自然的决策点，不要自己假设下一步，直接问用户想做什么**：
 - **评审 DOWNLOAD_DESIGN.md**（v1 是初稿，尚未经过像 V0.3 那样的"评审修订"回合，同 CONNECT_DESIGN 的先例——评审通过后再产出 `V0.4_IMPLEMENTATION_PLAN.md` 把 D1 细化到可直接执行）？
-- 还是先打一个 V0.3 的正式 preview 发布（`v0.3.0-preview`），把六个里程碑的能力随三平台包/APK 发出去，V0.4 设计评审往后放？
-- 还是先补一些 V0.3 范围内的已知缺口（见下）？
+- 还是先补一些 V0.3 范围内的已知缺口（见下），巩固刚发出去的 preview？
 
 **V0.3 范围内已知的、有意缩小的缺口**（不阻塞任何已完成里程碑，可随时单独补）：
 - `devices.server_hint` 已建表但配对协议未交换它，`resolve_peer`/`sync_exchange`/中继的 `RelayDialer`/打洞的 `PunchDialer`/分享的地址解析目前都只查/连**自己配置的服务器**——跨服务器好友寻址（含跨服务器分享）还不可用，只覆盖「自己的多台设备」+「双方恰好用同一服务器」两种场景；交换 server_hint 需要一条新的追加协议消息（`PairRequest`/`PairAccept`/`DeviceInfo` 是既有结构体，不能直接加字段）。
@@ -202,4 +202,4 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - **QUIC 的 `Connection` 句柄和从它派生出的 `RecvStream`/`SendStream` 生命周期不是自动绑定的**（C5 教训，但影响面回溯到 C1）：`quic::connect()`/入站 accept 拿到 `(send, recv)` 后，如果只把这两个流传下去、让本地 `connection: quinn::Connection` 变量自己随函数返回而丢弃，流仍然能用（因为 quinn 内部有自己的引用计数），但如果调用方紧接着又立刻返回（比如"转交给钩子后不等它跑完"这种 fire-and-forget 分流），`Connection` 句柄计数可能提前归零，连接被拆得比数据真正发送完还早。**排查方法**：先怀疑协议层握手逻辑（对照 `client_hello`/`server_hello` 双方日志确认握手本身没问题），确认握手成功但后续读写报 "connection lost" 后，才想到去查"谁在什么时候丢了 Connection 对象"——加 `eprintln!` 打点到每个可能提前返回的路径，能看到「写完 → 函数返回 → 紧接着才报错」的时序。**根治方案**：让承载流的类型自己拿着 `Connection` 一起走（本例是给 `QuicDuplex` 加一个 `_connection` 字段），不要指望每个调用点都记得"顺手多存一个变量"。**配套教训**：写完最后一条消息就直接返回也不安全——"写成功"只代表数据进了本地发送缓冲区，不代表已经送达对端，紧接着丢连接可能把还没发出的字节冲掉；需要显式半关闭写侧、读到对端也关闭为止，才能确认数据交接完毕。
 - **打破一个"从未被打破过的隐性假设"时，要主动去找所有依赖它的地方，而不是等它报错**（C6 教训）：`transfer_tasks.peer_device_id REFERENCES devices(id)` 这个外键从 V0.1 建表起就在，此前"peer 必然是已配对设备"从未被打破过（`Offer`/`FetchRequest`/`IndexRequest` 都要求 `trusted`），所以从没人验证过"peer 未知时会怎样"。`ShareRequest` 允许未配对设备访问后，第一次踩进这个假设——但 bug 不是一次性暴露的：`serve_fetch`/`fetch::drive` 各自有**两处**依赖同一个前提的数据库写入（`insert_task` 和后续的 `update_task_status`），改第一处后测试换了个新错误（同类根因，不同代码位置），改完第一处以为修好了，跑测试才发现还有第二处——这是"打了地鼠才发现还有一只"的典型模式。**排查方法**：给整条链路（`relay_dial` → `spawn_relay_accept` → `accept_external` → `dispatch_shared` → `serve_fetch`/`fetch::drive`）临时加 `eprintln!` 逐段打点，而不是只看最外层的错误信息（"connection lost" 完全没提示真正原因是数据库外键，因为错误发生在远端，本地只看到连接异常关闭）。**教训**：遇到"这个假设是不是第一次被打破"的场景，与其头痛医头改一处报错再等下一处报错，不如先搜一遍这个字段/表在所有写入路径里的用法（`grep -n "insert_task\|update_task_status" crates/aa4c-transfer/src/*.rs`），一次性确认哪些调用点共享同一个前提。**根治方案的取舍**：没有改外键约束本身（会连带改变"解除配对级联删除历史记录"这个既有 V0.1 行为，风险面更大），而是在调用点判断"对端是否已知"来决定是否落库——牺牲的是"未配对访问不出现在传输记录页"，换来零行为改动。
 
-V0.3「AA Connect」六个里程碑（C1 QUIC + 断点续传、C2 `aa4c-server` 信令面、C3 Relay 中继、C4 远程同步/发送 + 连接质量、C5 NAT 打洞、C6 分享链接）**全部实现并测试通过**——连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档全部贯通，外加脱离配对关系的能力型分享。**V0.4「Download」设计 v1 已产出**（[DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)），尚未实现，也还没经过评审修订。**下一步是一个决策点，不是一个既定任务**：对 Agent 说"继续"之前，先看第四节列出的三个方向（评审 V0.4 设计 / 发 V0.3 正式 preview / 补 V0.3 已知缺口）——不要凭 HANDOFF 文档自己假设该做哪一个，直接问用户。
+V0.3「AA Connect」六个里程碑（C1 QUIC + 断点续传、C2 `aa4c-server` 信令面、C3 Relay 中继、C4 远程同步/发送 + 连接质量、C5 NAT 打洞、C6 分享链接）**全部实现并测试通过，且已打包发布 `v0.3.0-preview`**——连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档全部贯通，外加脱离配对关系的能力型分享，随三平台安装包/APK/服务器二进制发出。**V0.4「Download」设计 v1 已产出**（[DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)），尚未实现，也还没经过评审修订。**下一步是一个决策点，不是一个既定任务**：对 Agent 说"继续"之前，先看第四节列出的两个方向（评审 V0.4 设计 / 补 V0.3 已知缺口）——不要凭 HANDOFF 文档自己假设该做哪一个，直接问用户。

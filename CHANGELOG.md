@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.3.0-preview] - 2026-07-08
+
+> **预览版**：V0.3「AA Connect」**六个里程碑（C1–C6）全部完成**——广域网 QUIC 会话层 + 确定性断点续传、自建信令/中继服务器（仅自建，不依赖第三方 STUN/TURN/公益节点）、NAT 打洞、远程同步与发送接入完整连接阶梯（局域网直连 → 公网直连 → 打洞 → 中继）、连接质量提示（直连/中继徽标）、分享链接（脱离配对关系的能力型分享，`aa4c://share/...`）。已过真机双实例 GUI 走查；打洞真实穿透成功率仍需更多人工双网络场景验证（回环/CI 只能验证候选交换与连接接线本身是对的，详见 HANDOFF.md 已知缺口）。
+>
+> ✅ **协议向后兼容，无需强制同步升级**：线路协议 `proto` 升到 4（本版本新增的 `ResumeReport`/`ShareRequest` 均为只追加变体），握手按双方最小版本协商，遇到跑旧版本的对端会优雅跳过新消息、行为不变；配对阶段交换的数据结构本次未改动，与 `v0.2.0-preview.2` 起的构建配对/同步/传输/分享均可互通（与 v0.1.x 仍因 `DeviceInfo.trust_level` 无法配对，这是 V0.2 起就有的既有限制，非本次引入）。
+
 ### Added
 
 - V0.3 同步里程碑 C6：分享链接（AA Share）——**V0.3「AA Connect」六个里程碑至此全部完成**。新表 `shares`/`share_access`（迁移 `007_shares.sql`，user_version=7）；`aa4c_types` 新增 `Share`/`ShareAccess`/`ShareLink`（分享链接编解码：`aa4c://share/<base58(JSON payload)>`，payload 含分享方 device_id/token/当时配置的服务器地址；token 是两个 UUID v4 拼出的 32 字节随机数据 base58 编码，≥128bit 熵要求之上留足余量）；`PROTO_VERSION` 3→4，`aa4c-proto::Message` 追加 `ShareRequest{token}`（只追加变体）。`aa4c-transfer` 新增 `ShareResolver` trait（`set_share_resolver` 注入）与 `TransferService::open_share`（不要求本机与对方已配对）；`dispatch_shared` 新增 `ShareRequest` 分支，**不检查 `trusted`**——token 本身就是访问能力（CONNECT_DESIGN.md §7.1），这是对设计初稿"仍需配对信任"的收敛。`fetch.rs` 的 `FetchJob`/`drive()` 泛化出 `FetchTarget::{Path,Share}`，`FetchRequest`/`ShareRequest` 共用同一套建连、握手、`Offer` 接收、自动接受、落盘流程。`aa4c-core::dispatch` 新增 `ShareServe`（token 查表 + 过期/吊销校验 + 复用 `unified::resolve_shared` 路径边界 + 记 `share_access`）；`orchestrate.rs` 新增 `create_share`/`list_shares`/`revoke_share`/`list_share_access`/`open_share`，以及分享专用的地址解析阶梯 `resolve_share_host_addr`（mDNS → 落库地址 → payload 里的对方服务器直接 Lookup → 本机自己配置的服务器 Lookup）。Tauri 新增 5 个 Command；前端新增 `SharePage.vue`（生成：选本机文件 + 有效期 → 自动复制链接；打开：粘贴链接；管理：列表 + 吊销）与 `stores/share.ts`。
