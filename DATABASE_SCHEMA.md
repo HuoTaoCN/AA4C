@@ -300,10 +300,13 @@ CREATE TABLE share_access (
 CREATE INDEX idx_share_access_share ON share_access(share_id);
 ```
 
-## 4e. V0.4 表结构（下载中心，设计定稿 v1，尚未建表）
+## 4e. V0.4 表结构（下载中心，设计 v2 经评审修订，尚未建表）
 
-> 对应 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md) §4。首个里程碑 D1 只用到 `kind='http'`（Aria2）；
-> `kind='bt'`（qBittorrent）留给 D2。
+> 对应 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md) §4。首个里程碑 D1 只用到 `kind='http'`（Aria2，
+> 泛指 HTTP/HTTPS/FTP 直链）；`kind='bt'`（qBittorrent）留给 D2。
+> `id` 直接复用引擎原生任务号（aria2 GID）——跨重启稳定性由 aria2 `save-session` 保证
+> （普通 URI 下载 GID 原样保存，见 DOWNLOAD_DESIGN.md §3.4），否则这个决定不成立。
+> `downloaded_bytes`/`updated_at` 写库按数秒级节流（状态迁移必写），不随进度 tick 写。
 
 ### 4e.1 download_tasks —— 下载任务
 

@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- V0.4「Download」设计评审修订（v1 → v2，[DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)，仅设计，未实现）。修正 4 个实质问题：① aria2 官方 release 实际上不提供 macOS / Linux x86_64 预编译二进制（已逐项核实官方 release 资产），"直接下载官方产物"不成立——改为自建引擎构建流水线（固定源码 tag 静态编译，一次性 engines release，SHA-256 校验和写死进仓库，应用发版只下载+校验）；② 补齐 v1 完全缺失的任务跨重启恢复：续传数据归 aria2（`save-session`/`input-file`，普通 URI 下载 GID 跨重启原样保存——这是"GID 直接当 `download_tasks.id`"能成立的前提）、任务记录归 AA4C（启动/WS 重连后 `tellActive/Waiting/Stopped` 全量对账，孤儿未完记录标失败，同 `restart_marks_stale_tasks_failed` 先例）；③ `rpc-secret` 从命令行参数（`ps`/WMI 对本机任意用户可见，直接推翻 v1 自己的隔离声明）改进 data_dir 下 0600 权限的 conf 文件，命令行收敛为单个 `--conf-path`（顺带让 Tauri capability 参数放行可精确匹配）；④ 默认下载目录从自相矛盾的"save_dir 同级的 Downloads 子目录"改为系统下载目录（`dirs::download_dir()`）——Inbox 索引根是整个 save_dir（递归扫描），下载落进其子树等于自动分享给所有完全信任设备；用户手动改到同步范围内时警示不硬禁。另补：`stop-with-process=<AA4C PID>` 孤儿进程防护（AA4C 崩溃/强杀时 aria2c 自行退出，不需要 PID 文件簿记）、端口探测竞态的换端口重试、进度写库数秒级节流（状态迁移必写）、上游维护风险条目（aria2 最新 release 2023-11，版本钉死+引擎可整体替换对冲）、`SidecarSpawner` 职责表述修正（只管进程生死，通信走回环 RPC 不走 stdio）。DATABASE_SCHEMA.md §4e、ROADMAP.md、HANDOFF.md 同步。
+
 ## [0.3.0-preview] - 2026-07-08
 
 > **预览版**：V0.3「AA Connect」**六个里程碑（C1–C6）全部完成**——广域网 QUIC 会话层 + 确定性断点续传、自建信令/中继服务器（仅自建，不依赖第三方 STUN/TURN/公益节点）、NAT 打洞、远程同步与发送接入完整连接阶梯（局域网直连 → 公网直连 → 打洞 → 中继）、连接质量提示（直连/中继徽标）、分享链接（脱离配对关系的能力型分享，`aa4c://share/...`）。已过真机双实例 GUI 走查；打洞真实穿透成功率仍需更多人工双网络场景验证（回环/CI 只能验证候选交换与连接接线本身是对的，详见 HANDOFF.md 已知缺口）。
