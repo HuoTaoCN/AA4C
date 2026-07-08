@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- V0.4「Download」实现计划：新增 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md)（D1 Aria2 集成细化到 10 步 + 验收清单，D2 qBittorrent / D3 任务中心打磨为概要级；仅计划，未实现）。关键排序决定：引擎二进制自建流水线（D1 最大不确定项）刻意放在代码**之后**——开发/测试/CI 全程用 PATH 安装的系统 aria2c，`SidecarSpawner` 依赖倒置让这一点零成本（`ProcessSpawner` 本来就是 Docker/headless 场景要的实现，不是测试桩），流水线与代码零耦合、可单独攻坚。配套把 DOWNLOAD_DESIGN §3.2 的 RPC 载体从"HTTP 发指令 + WS 收事件"收敛为 **JSON-RPC over WebSocket 单连接**（§9 新增 v2.1 行）：少一个 HTTP 客户端依赖（reqwest 依赖树过重、手写 HTTP/1.1 是无谓代码），请求-响应按 JSON-RPC id 关联，键控 pending 表照 C5 `SignalChannel` 的现成先例；断线重连只管一条连接，重连后跑 §3.4 对账。
+
 ### Changed
 
 - V0.4「Download」设计评审修订（v1 → v2，[DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)，仅设计，未实现）。修正 4 个实质问题：① aria2 官方 release 实际上不提供 macOS / Linux x86_64 预编译二进制（已逐项核实官方 release 资产），"直接下载官方产物"不成立——改为自建引擎构建流水线（固定源码 tag 静态编译，一次性 engines release，SHA-256 校验和写死进仓库，应用发版只下载+校验）；② 补齐 v1 完全缺失的任务跨重启恢复：续传数据归 aria2（`save-session`/`input-file`，普通 URI 下载 GID 跨重启原样保存——这是"GID 直接当 `download_tasks.id`"能成立的前提）、任务记录归 AA4C（启动/WS 重连后 `tellActive/Waiting/Stopped` 全量对账，孤儿未完记录标失败，同 `restart_marks_stale_tasks_failed` 先例）；③ `rpc-secret` 从命令行参数（`ps`/WMI 对本机任意用户可见，直接推翻 v1 自己的隔离声明）改进 data_dir 下 0600 权限的 conf 文件，命令行收敛为单个 `--conf-path`（顺带让 Tauri capability 参数放行可精确匹配）；④ 默认下载目录从自相矛盾的"save_dir 同级的 Downloads 子目录"改为系统下载目录（`dirs::download_dir()`）——Inbox 索引根是整个 save_dir（递归扫描），下载落进其子树等于自动分享给所有完全信任设备；用户手动改到同步范围内时警示不硬禁。另补：`stop-with-process=<AA4C PID>` 孤儿进程防护（AA4C 崩溃/强杀时 aria2c 自行退出，不需要 PID 文件簿记）、端口探测竞态的换端口重试、进度写库数秒级节流（状态迁移必写）、上游维护风险条目（aria2 最新 release 2023-11，版本钉死+引擎可整体替换对冲）、`SidecarSpawner` 职责表述修正（只管进程生死，通信走回环 RPC 不走 stdio）。DATABASE_SCHEMA.md §4e、ROADMAP.md、HANDOFF.md 同步。

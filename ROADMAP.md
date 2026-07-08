@@ -82,7 +82,7 @@
 - BT / Magnet 下载（qBittorrent API，D2 里程碑）
 - 统一任务中心
 
-> 设计详见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)（v2，经评审修订）。内部按 D1（Aria2）→ D2（qBittorrent）→ D3（任务中心打磨）分步；V0.4 仅桌面三平台，不含 Android。
+> 设计详见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)（v2，经评审修订）；实现计划见 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md)（D1–D3，D1 细化到步骤级）。V0.4 仅桌面三平台，不含 Android。
 
 ---
 

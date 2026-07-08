@@ -1,6 +1,6 @@
 # AA4C 下载中心设计（V0.4）
 
-> 状态：**v2（评审修订稿）**，对应 [ROADMAP.md](ROADMAP.md) V0.4（AA Download）。本文档是落地依据，不含实现代码；实现拆解见后续 `V0.4_IMPLEMENTATION_PLAN.md`（评审确认后产出，同 V0.3 CONNECT_DESIGN 先例）。
+> 状态：**v2（评审修订，已定稿）**，对应 [ROADMAP.md](ROADMAP.md) V0.4（AA Download）。本文档是落地依据，不含实现代码；实现拆解见 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md)（D1 细化到步骤级）。
 > **v1 → v2 评审修订的四个实质问题**：① aria2 官方 release 实际上**不提供 macOS / Linux x86_64 预编译二进制**（只有 Windows + Android aarch64 + 源码，已对官方 release 资产逐项核实），v1"直接下载官方产物"对三分之二的目标平台不成立，改为自建引擎构建流水线（§3.1）；② v1 完全没有回答"应用退出再启动，下载任务怎么办"，补任务持久化与启动对账（§3.4）；③ `--rpc-secret` 走命令行参数会被本机任意进程经 `ps`/WMI 看到，直接推翻 v1 §7 自己写的"拿不到密钥就调不了"，改走 data_dir 下 0600 权限的配置文件（§3.1/§7）；④ v1 默认下载目录"save_dir 同级的 Downloads 子目录"表述自相矛盾，且若按"子目录"理解会落进 Inbox 索引根（=整个 save_dir，递归扫描），等于"下载即自动分享给所有完全信任设备"，改为系统下载目录 + 范围警示（§5/§7）。另补孤儿进程防护（`stop-with-process`）、端口竞态重试、进度写库节流等小项。
 > 关联：产品定位见 [PROJECT_VISION.md](PROJECT_VISION.md) §四.4 / §七 / §十三；架构分层见 [ARCHITECTURE.md](ARCHITECTURE.md)；表结构见 [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md) §4e；界面见 [UI_DESIGN_SPEC.md](UI_DESIGN_SPEC.md)。
 > 本次会话确认的三个范围决定：**AA4C 自动打包并管理外部下载引擎的子进程**（而非要求用户自己装好）；**先做 Aria2（HTTP/HTTPS/FTP），qBittorrent（BT/Magnet）后置为独立里程碑**；**V0.4 只覆盖桌面三平台，不含 Android**。三点理由见 §1.1 与 §9。
@@ -72,7 +72,7 @@ aria2c 子进程（bundled sidecar，只监听 127.0.0.1，随机端口 + 随机
 
 ### 3.2 RPC 通信
 
-- **传输**：JSON-RPC 2.0 over HTTP（发指令）+ WebSocket（收事件），走同一个 `--rpc-listen-port`。
+- **传输**：JSON-RPC 2.0 **over WebSocket，单连接**——指令的请求/响应与事件通知走同一条连接（aria2 官方支持在 WS 上跑与 HTTP 相同的方法签名）。v2 评审稿写的是"HTTP 发指令 + WS 收事件"，产出实现计划时收敛成 WS 单连接：只引一个依赖（`tokio-tungstenite`），不必为发指令再拉一个 HTTP 客户端（reqwest 依赖树过重，手写 HTTP/1.1 又是无谓代码）；请求按 JSON-RPC id 关联响应，按键控 pending 表做请求-响应配对在代码库里有现成先例（C5 `SignalChannel`）；断线重连只需要管一条连接，重连后跑 §3.4 的对账。
 - **鉴权**：每次调用带 `token:<rpc-secret>` 参数（aria2 官方约定的认证方式；`--rpc-user`/`--rpc-passwd` 官方标注即将弃用，不采用）。
 - **事件驱动，不轮询**：订阅 `aria2.onDownloadStart` / `onDownloadPause` / `onDownloadStop` / `onDownloadComplete` / `onDownloadError` 五个 WebSocket 通知，收到后立即拉一次 `aria2.tellStatus(gid)` 补全详情、转成 `CoreEvent` 广播——同 AA4C 全局"事件总线驱动 UI，不轮询"的既有风格（mDNS 发现、传输进度都是这个模式）。
 - **兜底**：WebSocket 断线重连期间可能漏事件，用一条低频（数秒级）的 `aria2.tellActive` 轮询兜底同步——同 `sync_index`"文件监听 + 定时扫描兜底"的先例，轮询不是主力机制，只防漏、防断线期间状态漂移。
@@ -166,6 +166,7 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 | 任务跨重启恢复（v2） | 续传数据归 aria2（`save-session`/`input-file`，普通 URI 下载 GID 跨重启不变——"GID=id"决定成立的前提）；任务记录归 AA4C，启动/WS 重连后 `tellActive/Waiting/Stopped` 全量对账，孤儿未完记录标失败（同 `restart_marks_stale_tasks_failed` 先例） | §3.4 |
 | 孤儿进程防护（v2） | conf 里写 `stop-with-process=<AA4C PID>`：宿主进程消失（含崩溃/强杀）时 aria2c 自行退出；不做 PID 文件 + 启动清扫 | §3.1，§7 |
 | 默认下载目录（v2） | 系统下载目录（`dirs::download_dir()`），必须在 `save_dir` 子树之外——Inbox 索引根=整个 `save_dir`，落进去=自动分享给完全信任设备；用户改到同步范围内时警示不硬禁 | §5，§7 |
+| RPC 传输载体（v2.1） | JSON-RPC over WebSocket **单连接**（指令与事件同一条），不为发指令引入 HTTP 客户端依赖；id 关联 pending 表同 `SignalChannel` 先例 | §3.2 |
 
 ## 仍待实现 / 后续
 
