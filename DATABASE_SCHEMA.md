@@ -300,11 +300,42 @@ CREATE TABLE share_access (
 CREATE INDEX idx_share_access_share ON share_access(share_id);
 ```
 
-## 4d. 更远期预留（设计预告）
+## 4e. V0.4 表结构（下载中心，设计定稿 v1，尚未建表）
+
+> 对应 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md) §4。首个里程碑 D1 只用到 `kind='http'`（Aria2）；
+> `kind='bt'`（qBittorrent）留给 D2。
+
+### 4e.1 download_tasks —— 下载任务
+
+```sql
+CREATE TABLE download_tasks (
+    id                TEXT PRIMARY KEY,          -- aria2 GID，直接复用，不二次映射
+    kind              TEXT NOT NULL DEFAULT 'http'
+                      CHECK (kind IN ('http','bt')),   -- 'bt' 留给 D2（qBittorrent）
+    url               TEXT NOT NULL,              -- 原始 URL / magnet URI
+    save_path         TEXT,                       -- 落盘路径（完成后由引擎汇报回填）
+    status            TEXT NOT NULL DEFAULT 'waiting'
+                      CHECK (status IN ('active','waiting','paused','error','complete','removed')),
+    total_bytes       INTEGER NOT NULL DEFAULT 0,
+    downloaded_bytes  INTEGER NOT NULL DEFAULT 0,
+    error             TEXT,                       -- 失败原因（人类可读）
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL
+);
+
+CREATE INDEX idx_download_tasks_status ON download_tasks(status);
+```
+
+- 没有 `peer_device_id` 之类的设备关联字段——下载任务天然没有"对端设备"，这也是不复用
+  `transfer_tasks` 的直接原因（该表的 `peer_device_id` 有 `REFERENCES devices(id)` 外键，是
+  "peer 必然是已配对设备"这个假设的产物，V0.4 的任务完全不适用这个假设，见 §4c.1 记录的
+  C6 教训——不共用这张表就不会重蹈覆辙）。
+- 速度/ETA 不落库，只在事件里带、前端本地维护（同 `transfer_tasks` 的既有先例）。
+
+## 4f. 更远期预留（设计预告）
 
 | 版本 | 表 | 用途 |
 |------|----|------|
-| V0.4 | `download_tasks` | 下载任务（url、协议、引擎、状态） |
 | V0.5 | `tags` / `file_tags` | AI 标签 |
 | V0.5 | `archive_rules` | 归档规则（匹配条件 → 目标目录） |
 

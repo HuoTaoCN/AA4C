@@ -1,6 +1,6 @@
 # AA4C 开发交接（换机指南）
 
-> 最后更新：2026-07-08（V0.3 C6 完成，V0.3「AA Connect」全部完成）。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
+> 最后更新：2026-07-08（V0.3「AA Connect」全部完成；V0.4「Download」设计 v1 已产出，待评审）。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
 > 给 AI Agent：开工前先读本文档"当前进度"与"下一步"，再按 [AGENTS.md](AGENTS.md) 的必读清单工作。
 
 ## 一、当前进度
@@ -136,13 +136,15 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：V0.3「AA Connect」已全部完成，等待方向
+## 四、下一步：V0.4「Download」设计初稿已产出，待评审
 
-**V0.3 六个里程碑（C1–C6）全部实现完毕**：QUIC 会话层 + 断点续传、`aa4c-server` 信令面、Relay 中继、远程同步/发送接入连接阶梯 + 连接质量 UI、NAT 打洞、分享链接——连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档贯通，外加脱离配对关系的能力型分享。`cargo test --workspace` 全绿，fmt/clippy 干净，无回归。设计见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（§12 是已确认决策清单）、实现拆解见 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)。
+**V0.3「AA Connect」六个里程碑（C1–C6）全部实现完毕并测试通过**：连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档贯通，外加脱离配对关系的能力型分享。设计见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（§12 已确认决策清单）、实现拆解见 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)。
+
+**V0.4「Download」（统一下载中心）设计 v1 已产出**：[DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)（§9 是已确认决策表）。三个范围决定已经用户确认：AA4C **自动打包并管理**外部下载引擎子进程（不要求用户自己装）；先做 **Aria2（HTTP/HTTPS/FTP）**，qBittorrent（BT/Magnet）后置为独立里程碑 D2；V0.4 **只覆盖桌面三平台**，不含 Android。核心架构决定：新 crate `aa4c-download`，用 `SidecarSpawner` trait 把"拉起子进程"这个 Tauri 专属能力（`tauri-plugin-shell`）与纯 Rust 的 Core 解耦（同 C1–C6 一路建立的依赖倒置先例）；新表 `download_tasks`**不复用** `transfer_tasks`（下载没有对端设备，规避 C6 踩过的外键假设冲突）。
 
 **这是一个自然的决策点，不要自己假设下一步，直接问用户想做什么**：
-- 打一个正式 preview 发布（`v0.3.0-preview`），把 V0.3 全部能力随三平台包/APK 发出去？
-- 开始 **V0.4「Download」**（统一下载中心：HTTP/FTP/BT/磁力，见 ROADMAP.md）的设计工作？目前**还没有** `V0.4_IMPLEMENTATION_PLAN.md`/`DOWNLOAD_DESIGN.md`，要从头设计。
+- **评审 DOWNLOAD_DESIGN.md**（v1 是初稿，尚未经过像 V0.3 那样的"评审修订"回合，同 CONNECT_DESIGN 的先例——评审通过后再产出 `V0.4_IMPLEMENTATION_PLAN.md` 把 D1 细化到可直接执行）？
+- 还是先打一个 V0.3 的正式 preview 发布（`v0.3.0-preview`），把六个里程碑的能力随三平台包/APK 发出去，V0.4 设计评审往后放？
 - 还是先补一些 V0.3 范围内的已知缺口（见下）？
 
 **V0.3 范围内已知的、有意缩小的缺口**（不阻塞任何已完成里程碑，可随时单独补）：
@@ -200,4 +202,4 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - **QUIC 的 `Connection` 句柄和从它派生出的 `RecvStream`/`SendStream` 生命周期不是自动绑定的**（C5 教训，但影响面回溯到 C1）：`quic::connect()`/入站 accept 拿到 `(send, recv)` 后，如果只把这两个流传下去、让本地 `connection: quinn::Connection` 变量自己随函数返回而丢弃，流仍然能用（因为 quinn 内部有自己的引用计数），但如果调用方紧接着又立刻返回（比如"转交给钩子后不等它跑完"这种 fire-and-forget 分流），`Connection` 句柄计数可能提前归零，连接被拆得比数据真正发送完还早。**排查方法**：先怀疑协议层握手逻辑（对照 `client_hello`/`server_hello` 双方日志确认握手本身没问题），确认握手成功但后续读写报 "connection lost" 后，才想到去查"谁在什么时候丢了 Connection 对象"——加 `eprintln!` 打点到每个可能提前返回的路径，能看到「写完 → 函数返回 → 紧接着才报错」的时序。**根治方案**：让承载流的类型自己拿着 `Connection` 一起走（本例是给 `QuicDuplex` 加一个 `_connection` 字段），不要指望每个调用点都记得"顺手多存一个变量"。**配套教训**：写完最后一条消息就直接返回也不安全——"写成功"只代表数据进了本地发送缓冲区，不代表已经送达对端，紧接着丢连接可能把还没发出的字节冲掉；需要显式半关闭写侧、读到对端也关闭为止，才能确认数据交接完毕。
 - **打破一个"从未被打破过的隐性假设"时，要主动去找所有依赖它的地方，而不是等它报错**（C6 教训）：`transfer_tasks.peer_device_id REFERENCES devices(id)` 这个外键从 V0.1 建表起就在，此前"peer 必然是已配对设备"从未被打破过（`Offer`/`FetchRequest`/`IndexRequest` 都要求 `trusted`），所以从没人验证过"peer 未知时会怎样"。`ShareRequest` 允许未配对设备访问后，第一次踩进这个假设——但 bug 不是一次性暴露的：`serve_fetch`/`fetch::drive` 各自有**两处**依赖同一个前提的数据库写入（`insert_task` 和后续的 `update_task_status`），改第一处后测试换了个新错误（同类根因，不同代码位置），改完第一处以为修好了，跑测试才发现还有第二处——这是"打了地鼠才发现还有一只"的典型模式。**排查方法**：给整条链路（`relay_dial` → `spawn_relay_accept` → `accept_external` → `dispatch_shared` → `serve_fetch`/`fetch::drive`）临时加 `eprintln!` 逐段打点，而不是只看最外层的错误信息（"connection lost" 完全没提示真正原因是数据库外键，因为错误发生在远端，本地只看到连接异常关闭）。**教训**：遇到"这个假设是不是第一次被打破"的场景，与其头痛医头改一处报错再等下一处报错，不如先搜一遍这个字段/表在所有写入路径里的用法（`grep -n "insert_task\|update_task_status" crates/aa4c-transfer/src/*.rs`），一次性确认哪些调用点共享同一个前提。**根治方案的取舍**：没有改外键约束本身（会连带改变"解除配对级联删除历史记录"这个既有 V0.1 行为，风险面更大），而是在调用点判断"对端是否已知"来决定是否落库——牺牲的是"未配对访问不出现在传输记录页"，换来零行为改动。
 
-V0.3「AA Connect」六个里程碑（C1 QUIC + 断点续传、C2 `aa4c-server` 信令面、C3 Relay 中继、C4 远程同步/发送 + 连接质量、C5 NAT 打洞、C6 分享链接）**全部实现并测试通过**——连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档全部贯通，外加脱离配对关系的能力型分享。**下一步是一个决策点，不是一个既定任务**：对 Agent 说"继续"之前，先看第四节列出的三个方向（发正式 preview / 开始 V0.4「Download」设计 / 补已知缺口）——不要凭 HANDOFF 文档自己假设该做哪一个，直接问用户。
+V0.3「AA Connect」六个里程碑（C1 QUIC + 断点续传、C2 `aa4c-server` 信令面、C3 Relay 中继、C4 远程同步/发送 + 连接质量、C5 NAT 打洞、C6 分享链接）**全部实现并测试通过**——连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档全部贯通，外加脱离配对关系的能力型分享。**V0.4「Download」设计 v1 已产出**（[DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)），尚未实现，也还没经过评审修订。**下一步是一个决策点，不是一个既定任务**：对 Agent 说"继续"之前，先看第四节列出的三个方向（评审 V0.4 设计 / 发 V0.3 正式 preview / 补 V0.3 已知缺口）——不要凭 HANDOFF 文档自己假设该做哪一个，直接问用户。

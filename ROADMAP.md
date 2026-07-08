@@ -78,9 +78,11 @@
 
 功能：
 
-- HTTP / HTTPS / FTP 下载（Aria2 RPC）
-- BT / Magnet 下载（qBittorrent API）
+- HTTP / HTTPS / FTP 下载（Aria2 RPC，桌面自动打包管理子进程）
+- BT / Magnet 下载（qBittorrent API，D2 里程碑）
 - 统一任务中心
+
+> 设计详见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)（v1 设计初稿，待评审）。内部按 D1（Aria2）→ D2（qBittorrent）→ D3（任务中心打磨）分步；V0.4 仅桌面三平台，不含 Android。
 
 ---
 

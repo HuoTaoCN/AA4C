@@ -81,9 +81,9 @@ AA连接（AA4C）是一个**跨平台设备连接平台**——架构遵循"设
 
 负责持续同步、增量同步、版本管理、冲突处理。设计参考 Syncthing 的块交换模型。
 
-### Download Service（V0.4+）
+### Download Service（V0.4，设计中，见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)）
 
-负责 HTTP / HTTPS / FTP / S3 / Magnet / Torrent 下载，第一阶段通过 Aria2 RPC 与 qBittorrent API 实现。
+负责 HTTP / HTTPS / FTP（D1，Aria2 RPC）与 BT / Magnet（D2，qBittorrent API）下载；S3 后续评估。两个引擎都作为 AA4C 自动打包/管理的独立子进程运行（GPL 许可证隔离，只通过 RPC/API 调用，不链接源码），与 Core 之间用 `SidecarSpawner` trait 解耦，Core 本身不直接依赖 Tauri 专属的进程拉起 API。
 
 ### AI Service（V0.5+）
 
