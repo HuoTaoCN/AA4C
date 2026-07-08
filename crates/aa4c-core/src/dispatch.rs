@@ -10,7 +10,7 @@ use aa4c_proto::{write_message, IndexItem, Message};
 use aa4c_store::Store;
 use aa4c_transfer::{
     IncomingIndexDispatch, IncomingPairDispatch, IncomingTlsStream, ResolveFuture, ResolvedFetch,
-    SharedFileResolver, SharedStream,
+    ShareResolver, SharedFileResolver, SharedStream,
 };
 use aa4c_types::{DeviceId, DeviceInfo, TrustLevel};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -175,4 +175,57 @@ impl SharedFileResolver for FetchServe {
             }
         })
     }
+}
+
+/// 分享 token 解析器：把打开分享链接的一方带来的 token 接到 `shares` 表校验 +
+/// `resolve_shared` 路径解析（CONNECT_DESIGN.md §7，里程碑 C6）。
+///
+/// **不检查 `trusted`**——鉴权依据是 token 本身（有效、未过期、未吊销），不是配对关系
+/// （见 [`aa4c_transfer::ShareResolver`] 文档）。解析成功即记一条 `share_access`（供
+/// 「查看访问记录」，里程碑 C6 可选功能）；path 边界仍然复用 `resolve_shared`——分享的
+/// 目标必须落在某个共享范围内，不会按任意路径读盘。
+pub(crate) struct ShareServe {
+    store: Store,
+}
+
+impl ShareServe {
+    pub(crate) fn new(store: Store) -> Self {
+        Self { store }
+    }
+}
+
+impl ShareResolver for ShareServe {
+    fn resolve(&self, token: String, peer_id: DeviceId) -> ResolveFuture {
+        let store = self.store.clone();
+        Box::pin(async move {
+            let share = store.get_share_by_token(&token).await.ok().flatten()?;
+            if share.status != "open" {
+                return None;
+            }
+            if let Some(expires_at) = share.expires_at {
+                if now_ms() >= expires_at {
+                    return None;
+                }
+            }
+            let (abs, size) = match unified::resolve_shared(&store, &share.rel_path).await {
+                Ok(Some(v)) => v,
+                _ => return None,
+            };
+            let _ = store
+                .record_share_access(&share.id, Some(&peer_id), "download")
+                .await;
+            Some(ResolvedFetch {
+                abs,
+                rel_path: share.rel_path,
+                size,
+            })
+        })
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }

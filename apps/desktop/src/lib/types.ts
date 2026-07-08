@@ -119,6 +119,31 @@ export interface SyncConflict {
   createdAt: number;
 }
 
+/** 一条分享记录（里程碑 C6，CONNECT_DESIGN.md §7/§8）。 */
+export interface Share {
+  id: string;
+  token: string;
+  relPath: string;
+  /** 目前恒为 "read"。 */
+  permission: string;
+  /** unix 毫秒；null = 长期有效。 */
+  expiresAt: number | null;
+  /** "open" | "revoked"。 */
+  status: string;
+  createdAt: number;
+  /** 完整可分享链接（`aa4c://share/...`）。 */
+  link: string;
+}
+
+/** 一条分享访问记录（可选功能）。 */
+export interface ShareAccess {
+  id: number;
+  shareId: string;
+  peerId: string | null;
+  action: string;
+  at: number;
+}
+
 /** Command 失败时后端返回的形状（API_DESIGN §9.1）。 */
 export interface CommandError {
   code: string;

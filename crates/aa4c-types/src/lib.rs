@@ -10,6 +10,7 @@ mod error;
 mod event;
 mod server_addr;
 mod settings;
+mod share;
 mod sync;
 mod transfer;
 
@@ -18,15 +19,17 @@ pub use error::{Aa4cError, Result};
 pub use event::{ConnectionVia, CoreEvent};
 pub use server_addr::ServerAddr;
 pub use settings::Settings;
+pub use share::{Share, ShareAccess, ShareLink};
 pub use sync::{
     RemoteIndexEntry, ScopeKind, SyncConflict, SyncFileEntry, SyncScope, SyncStatus, UnifiedFile,
 };
 pub use transfer::{Direction, FileStatus, TaskId, TransferFile, TransferStatus, TransferTask};
 
-/// 协议版本（PROTOCOL.md §0）。V0.3 起为 3：新增广域网 QUIC 会话层 + 断点续传
-/// （`ResumeReport`，PROTOCOL.md §13）。握手 `min(双方)` 协商；与更旧对端相遇时
+/// 协议版本（PROTOCOL.md §0）。V0.3 起为 4：新增广域网 QUIC 会话层 + 断点续传
+/// （`ResumeReport`，PROTOCOL.md §13，proto=3）+ 分享链接的 `ShareRequest`
+/// （PROTOCOL.md §16，proto=4，里程碑 C6）。握手 `min(双方)` 协商；与更旧对端相遇时
 /// 自动降级为对方版本的行为（见 §14）。
-pub const PROTO_VERSION: u16 = 3;
+pub const PROTO_VERSION: u16 = 4;
 
 /// 支持跨设备索引交换 / 按需拉取所需的最低协商版本（PROTOCOL.md §8b / §14）。
 /// 握手谈成的 proto < 此值即对端为 v1，跳过一切同步消息（优雅降级，不发 v2 帧）。
@@ -36,6 +39,11 @@ pub const SYNC_PROTO_VERSION: u16 = 2;
 /// 握手谈成的 proto ≥ 此值时，双方都确定性地交换 `ResumeReport`（不是尝试性的）：
 /// proto < 此值的一方根本不认识该消息，两端都不发送，行为与旧版完全一致。
 pub const RESUME_PROTO_VERSION: u16 = 3;
+
+/// 支持分享链接（`ShareRequest`）所需的最低协商版本（PROTOCOL.md §16，CONNECT_DESIGN.md
+/// §7，里程碑 C6）。打开分享链接时若对端协商 proto 低于此值，直接报错不发送——分享方
+/// 版本太旧，根本不认识这个消息（优雅降级，同 `SYNC_PROTO_VERSION` 的处理方式）。
+pub const SHARE_PROTO_VERSION: u16 = 4;
 
 /// 默认监听端口（PROTOCOL.md §0）。
 pub const DEFAULT_PORT: u16 = 42420;

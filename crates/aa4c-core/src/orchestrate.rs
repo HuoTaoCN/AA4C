@@ -374,6 +374,86 @@ impl Core {
         Err(Aa4cError::Protocol("没有完全信任的设备持有这个文件".into()))
     }
 
+    // —— 分享链接（CONNECT_DESIGN.md §7/§8，里程碑 C6）——
+
+    /// 生成一条新分享：`rel_path` 必须落在某个共享范围内——复用 `resolve_shared` 校验，
+    /// 不接受任意路径（CONNECT_DESIGN.md §7.1「分享目标必须落在共享范围内」）。
+    /// `expires_at` 为空 = 长期有效。
+    pub async fn create_share(
+        &self,
+        rel_path: &str,
+        expires_at: Option<i64>,
+    ) -> Result<aa4c_types::Share> {
+        if unified::resolve_shared(&self.store, rel_path)
+            .await?
+            .is_none()
+        {
+            return Err(Aa4cError::Protocol("这个路径不在任何共享范围内".into()));
+        }
+        let token = generate_token();
+        let mut share = self
+            .store
+            .insert_share(&token, rel_path, expires_at)
+            .await?;
+        share.link = self.share_link(&token).await;
+        Ok(share)
+    }
+
+    /// 列出全部分享（含完整链接，管理页用）。
+    pub async fn list_shares(&self) -> Result<Vec<aa4c_types::Share>> {
+        let mut shares = self.store.list_shares().await?;
+        for share in &mut shares {
+            share.link = self.share_link(&share.token).await;
+        }
+        Ok(shares)
+    }
+
+    /// 吊销一条分享（置 revoked，保留记录供审计）。
+    pub async fn revoke_share(&self, id: &str) -> Result<()> {
+        self.store.revoke_share(id).await
+    }
+
+    /// 某条分享的访问记录（可选功能，CONNECT_DESIGN.md §8）。
+    pub async fn list_share_access(&self, share_id: &str) -> Result<Vec<aa4c_types::ShareAccess>> {
+        self.store.list_share_access(share_id).await
+    }
+
+    /// 打开一个分享链接：解析 payload → 走连接阶梯解析地址 → 拉取内容
+    /// （CONNECT_DESIGN.md §7.2，里程碑 C6）。**不要求本机已与分享方配对**——token
+    /// 本身就是访问能力，见 `aa4c_transfer::TransferService::open_share` 文档。
+    pub async fn open_share(&self, link: &str, save_dir: Option<PathBuf>) -> Result<TaskId> {
+        let parsed = aa4c_types::ShareLink::parse(link)?;
+        let addr = resolve_share_host_addr(
+            &self.store,
+            &self.discovery,
+            &self.identity,
+            &self.self_info.name,
+            &self.save_dir_fallback,
+            &parsed.host_id,
+            parsed.host_server.as_deref(),
+        )
+        .await;
+        self.transfer
+            .open_share(&parsed.host_id, addr, parsed.token, save_dir)
+            .await
+    }
+
+    /// 拼一条完整可分享链接：本机 device_id + 当前配置的服务器地址（未开启远程时不带，
+    /// 避免暗示一个没在实际生效的服务器——见 `aa4c_types::Share::link` 文档）。
+    async fn share_link(&self, token: &str) -> String {
+        let host_server = self
+            .get_settings()
+            .await
+            .ok()
+            .and_then(|s| s.enable_remote.then_some(s.server_url).flatten());
+        aa4c_types::ShareLink {
+            host_id: self.identity.device_id().clone(),
+            token: token.to_string(),
+            host_server,
+        }
+        .encode()
+    }
+
     /// 把 device_id 解析为可发送的 DeviceInfo：mDNS 在线快照（含实时地址）→ 落库最后
     /// 地址 → 向自己配置的服务器查一次（CONNECT_DESIGN.md §3.4，里程碑 C2）。
     ///
@@ -445,6 +525,57 @@ pub(crate) async fn resolve_addr(
         }
     }
     remote_lookup(store, identity, fallback_name, fallback_save_dir, device_id).await
+}
+
+/// 分享链接的地址解析：mDNS → 落库最后地址（若碰巧已配对过）→ 直接查 payload 里携带的
+/// **对方服务器**（`host_server`，不依赖本机是否配置了同一台服务器）→ 查本机自己配置的
+/// 服务器（同一服务器场景，如"我自己的另一台设备"分享给自己）。全部落空仍不是终审——
+/// `dial()` 的中继/打洞兜底会再用本机自己配置的服务器试一次（里程碑 C6）。
+///
+/// **已知缩小范围**：跨服务器的中继/打洞信令目前只会打向本机自己配置的服务器，不会
+/// 打向 `host_server`——同 `resolve_addr`/`server_hint` 的既有缺口（见 HANDOFF.md），
+/// 分享方与打开方使用不同服务器时，只有二者恰好互为已配对设备且 `host_server` 上能
+/// Lookup 到直连地址时才可达；真正意义上的跨服务器中继/打洞留待后续里程碑。
+async fn resolve_share_host_addr(
+    store: &Store,
+    discovery: &DiscoveryService,
+    identity: &Identity,
+    fallback_name: &str,
+    fallback_save_dir: &str,
+    host_id: &DeviceId,
+    host_server: Option<&str>,
+) -> Option<std::net::SocketAddr> {
+    if let Some(addr) = discovery
+        .devices()
+        .into_iter()
+        .find(|d| &d.id == host_id)
+        .and_then(|d| d.addr)
+    {
+        return Some(addr);
+    }
+    if let Some(rec) = store.get_device(host_id).await.ok().flatten() {
+        if let Some(addr) = rec.last_addr.as_deref().and_then(|s| s.parse().ok()) {
+            return Some(addr);
+        }
+    }
+    if let Some(server) = host_server {
+        if let Ok(endpoints) = server_link::lookup_once(identity, server, host_id).await {
+            if let Some(addr) = endpoints.into_iter().next() {
+                return Some(addr);
+            }
+        }
+    }
+    remote_lookup(store, identity, fallback_name, fallback_save_dir, host_id).await
+}
+
+/// 生成一个新分享 token：32 字节（256 bit，远超 CONNECT_DESIGN.md §7.1 要求的
+/// 128 bit）随机数据 base58 编码。用两个 UUID v4 拼出随机字节，避免为此单独引入一个
+/// RNG 依赖——`uuid` 已经是既有依赖，其 v4 生成走 `getrandom`，密码学安全。
+fn generate_token() -> String {
+    let mut bytes = [0u8; 32];
+    bytes[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    bs58::encode(bytes).into_string()
 }
 
 /// 向自己配置的服务器查一次对端端点；未开启远程 / 未配置 / 查询失败 / 无结果都静默

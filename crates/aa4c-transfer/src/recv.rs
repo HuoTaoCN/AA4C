@@ -235,6 +235,36 @@ async fn dispatch_shared(
                 }
             }
         }
+        // 分享链接（里程碑 C6）：**不检查 `trusted`**——token 本身就是访问能力
+        // （CONNECT_DESIGN.md §7.1），Core 注入的解析器内部校验 token 有效性 + 路径边界。
+        Message::ShareRequest { token } => {
+            let Some(resolver) = svc.share_resolver.get() else {
+                return Err(Aa4cError::Protocol("share resolver not wired".into()));
+            };
+            match resolver.resolve(token, cert_id.clone()).await {
+                Some(resolved) => {
+                    let task_id = uuid::Uuid::new_v4().to_string();
+                    let result =
+                        crate::send::serve_fetch(&svc, &mut stream, &cert_id, &task_id, resolved)
+                            .await;
+                    svc.finish_task(&task_id, result).await;
+                    Ok(())
+                }
+                None => {
+                    // token 不存在 / 已过期 / 已吊销 / 路径解析失败：统一回 Cancel，不区分
+                    // 原因（同 FetchRequest 的「不泄露存在性细节」惯例）。
+                    let _ = write_message(
+                        &mut stream,
+                        &Message::Cancel {
+                            task_id: String::new(),
+                            reason: "invalid_or_expired_token".into(),
+                        },
+                    )
+                    .await;
+                    Err(Aa4cError::Protocol("share denied".into()))
+                }
+            }
+        }
         Message::PairRequest { .. } => Err(Aa4cError::Protocol(
             "pairing is not supported on this transport".into(),
         )),

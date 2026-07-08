@@ -232,7 +232,8 @@ CREATE INDEX idx_sync_conflicts_path ON sync_conflicts(rel_path);
 
 > 对应 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（AA Connect）。§4c.0（`devices.server_hint`
 > 列 + `settings` KV）**已实现**（迁移 `006_server_hint.sql`，user_version=6，里程碑 C2）；
-> §4c.1/4c.2（`shares`/`share_access`）仍是设计定稿、尚未建表，随分享链接里程碑落地。
+> §4c.1/4c.2（`shares`/`share_access`）**已实现**（迁移 `007_shares.sql`，user_version=7，
+> 里程碑 C6）。
 > 连接配置复用现有 `settings` KV 表（不新增表）：**`server_url`**（自建 `aa4c-server` 地址，
 > 格式 `aa4c://host:port#<证书指纹前16位hex>`，中继端点由服务器下发、不单独配置）、
 > **`enable_remote`**（远程总开关，**默认 `false`**）。
@@ -252,7 +253,7 @@ ALTER TABLE devices ADD COLUMN server_hint TEXT;  -- 对端自建服务器地址
   `server_hint` 挑选对端服务器）留待 `server_hint` 的线路层交换实现后才生效。
 - 纯局域网设备（对端未配置服务器）为 NULL，行为退化为 V0.2。
 
-### 4c.1 shares —— 分享记录（CONNECT_DESIGN §7）
+### 4c.1 shares —— 分享记录（CONNECT_DESIGN §7，已实现，里程碑 C6）
 
 ```sql
 CREATE TABLE shares (
@@ -271,11 +272,21 @@ CREATE TABLE shares (
 CREATE UNIQUE INDEX idx_shares_token ON shares(token);
 ```
 
-- `token` 是能力：持有有效且未过期未吊销的 token 即可按 `permission` 访问，无需账号。
-- 吊销 = 置 `status='revoked'`（保留审计），或直接 `DELETE`。
-- 服务端每次访问校验：`status='open'` 且（`expires_at IS NULL` 或 `expires_at > now`）。
+- `token` 是能力：持有有效且未过期未吊销的 token 即可按 `permission` 访问，无需账号——包括
+  **从未配对过的设备**（`Message::ShareRequest` 分发不检查 `trusted`，见 PROTOCOL.md §16）。
+- 吊销 = 置 `status='revoked'`（保留审计），`Store::revoke_share` 目前不支持硬删除。
+- 服务端每次访问校验：`status='open'` 且（`expires_at IS NULL` 或 `expires_at > now`）；不区分
+  「不存在」/「过期」/「已吊销」，统一回 `Cancel{reason:"invalid_or_expired_token"}`
+  （不泄露 token 存在性，同 Lookup 的既有防探测惯例）。
+- **`transfer_tasks.peer_device_id` 的外键含义变化**（实现时发现的真实约束冲突）：该外键
+  假设「peer 必然是已配对设备」，这个假设在 C6 之前对所有消息类型都成立（`trusted` 是
+  Offer/FetchRequest/IndexRequest 的前提）；`ShareRequest` 打破了这个假设——服务/客户端两侧
+  的 `serve_fetch`/`fetch::drive` 现在都先查一次对端是否已知（`store.get_device`），未知时
+  跳过 `insert_task`/`update_task_status`（协议本身不受影响，只是这次传输不出现在「记录」页）。
+  这不是 shares 表本身的字段，而是分享链接这个新能力对既有 `transfer_tasks` 表隐含假设的
+  一处影响，记在这里便于以后排查。
 
-### 4c.2 share_access —— 访问记录（可选，供「查看访问记录」）
+### 4c.2 share_access —— 访问记录（可选，供「查看访问记录」，已实现，里程碑 C6）
 
 ```sql
 CREATE TABLE share_access (
@@ -311,6 +322,7 @@ const MIGRATIONS: &[&str] = &[
     /* v4: */ include_str!("migrations/004_remote_index.sql"), // remote_index
     /* v5: */ include_str!("migrations/005_conflicts.sql"),    // sync_conflicts
     /* v6: */ include_str!("migrations/006_server_hint.sql"),  // devices.server_hint
+    /* v7: */ include_str!("migrations/007_shares.sql"),       // shares + share_access
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {

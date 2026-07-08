@@ -95,6 +95,18 @@ pub trait SharedFileResolver: Send + Sync + 'static {
 pub type ResolveFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Option<ResolvedFetch>> + Send>>;
 
+/// 分享 token 解析器（CONNECT_DESIGN.md §7，里程碑 C6）：把打开分享链接的一方带来的
+/// token 解析为本机共享文件。
+///
+/// 与 [`SharedFileResolver`] 同构，但鉴权依据不同——**不检查 `trusted`**（token 本身就是
+/// 访问能力，见 CONNECT_DESIGN.md §7.1），完全信任校验换成了「token 有效（未过期/未吊销）
+/// 且解析到的路径落在共享范围内」。由 Core 注入：token 表查询、`share_access` 记账都在
+/// 实现内部完成，传输层只在解析成功后反转角色回推。返回 `None` = 拒绝（传输层回 `Cancel`）。
+pub trait ShareResolver: Send + Sync + 'static {
+    /// `peer_id` 为请求方证书指纹（记访问日志用；token 校验本身不依赖它）。
+    fn resolve(&self, token: String, peer_id: DeviceId) -> ResolveFuture;
+}
+
 /// 连接阶梯第 4 档：中继兜底拨号（里程碑 C3，CONNECT_DESIGN.md §2/§4）。
 ///
 /// 由 Core 注入（实现内部会去连自建服务器申请 `RelayRequest`/`RelayOpen`，这些协议细节
@@ -183,6 +195,8 @@ pub struct TransferService {
     pub(crate) index_dispatch: OnceLock<Arc<dyn IncomingIndexDispatch>>,
     /// 共享文件解析器（Core 注入；未注入时入站 `FetchRequest` 直接断开）。
     pub(crate) fetch_resolver: OnceLock<Arc<dyn SharedFileResolver>>,
+    /// 分享 token 解析器（Core 注入；未注入时入站 `ShareRequest` 直接断开，里程碑 C6）。
+    pub(crate) share_resolver: OnceLock<Arc<dyn ShareResolver>>,
     /// QUIC 端点（`start_listener` best-effort 绑定成功后写入；绑定失败则永远是空，
     /// 出站连接自动回落 TCP，见 [`dial`]）。同一端点兼做出站连接，quinn 官方推荐用法。
     pub(crate) quic_endpoint: OnceLock<quinn::Endpoint>,
@@ -212,6 +226,7 @@ impl TransferService {
             pair_dispatch: OnceLock::new(),
             index_dispatch: OnceLock::new(),
             fetch_resolver: OnceLock::new(),
+            share_resolver: OnceLock::new(),
             quic_endpoint: OnceLock::new(),
             relay_dialer: OnceLock::new(),
             punch_dialer: OnceLock::new(),
@@ -231,6 +246,11 @@ impl TransferService {
     /// 注入共享文件解析器（Core 在装配阶段调用一次）。重复设置无效。
     pub fn set_fetch_resolver(&self, resolver: Arc<dyn SharedFileResolver>) {
         let _ = self.fetch_resolver.set(resolver);
+    }
+
+    /// 注入分享 token 解析器（Core 在装配阶段调用一次）。重复设置无效。
+    pub fn set_share_resolver(&self, resolver: Arc<dyn ShareResolver>) {
+        let _ = self.share_resolver.set(resolver);
     }
 
     /// 注入中继拨号器（Core 在装配阶段调用一次）。重复设置无效。
@@ -607,7 +627,41 @@ impl TransferService {
             task_id: task_id.clone(),
             peer_id: peer.id.clone(),
             addr,
-            rel_path: rel_path.to_string(),
+            target: fetch::FetchTarget::Path(rel_path.to_string()),
+            save_dir,
+        };
+        let svc = self.clone();
+        let permits = self.send_permits.clone();
+        tokio::spawn(async move {
+            let _permit = permits.acquire_owned().await;
+            fetch::run(svc, job).await;
+        });
+        Ok(task_id)
+    }
+
+    /// 打开一个分享链接：向 `host_id` 请求 `token` 对应的内容（CONNECT_DESIGN.md §7，
+    /// 里程碑 C6）。**不要求本机与 `host_id` 已配对**——token 本身就是访问能力，
+    /// 与 [`Self::fetch_file`] 唯一的本质区别就是不做 `store.get_device(...).trusted`
+    /// 校验；地址解析、连接阶梯、落盘/自动接受流程完全复用同一套 [`fetch`] 模块逻辑。
+    pub async fn open_share(
+        self: &Arc<Self>,
+        host_id: &DeviceId,
+        addr: Option<std::net::SocketAddr>,
+        token: String,
+        save_dir: Option<PathBuf>,
+    ) -> Result<TaskId> {
+        // 没有任何直连地址：还有中继兜底才继续，否则直接报错（同 `send()`/`fetch_file()`
+        // 的判断，见那边注释——两个拨号器目前总是一起注入，只查 relay_dialer 足够）。
+        if addr.is_none() && self.relay_dialer.get().is_none() {
+            return Err(Aa4cError::DeviceNotFound(host_id.clone()));
+        }
+
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let job = fetch::FetchJob {
+            task_id: task_id.clone(),
+            peer_id: host_id.clone(),
+            addr,
+            target: fetch::FetchTarget::Share(token),
             save_dir,
         };
         let svc = self.clone();

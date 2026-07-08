@@ -105,6 +105,11 @@ pub fn run() {
             commands::refresh_remote_index,
             commands::fetch_file,
             commands::list_conflicts,
+            commands::create_share,
+            commands::list_shares,
+            commands::revoke_share,
+            commands::list_share_access,
+            commands::open_share,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -311,25 +311,33 @@ pub(crate) async fn serve_fetch<S: AsyncRead + AsyncWrite + Unpin>(
     };
     let total = resolved.size;
 
-    // B 侧记一条 Send 任务：拉取在 B 的「记录」里呈现为「发送」，progress/收尾沿用既有机制
-    svc.store
-        .insert_task(&TransferTask {
-            id: task_id.clone(),
-            direction: Direction::Send,
-            peer: peer_id.clone(),
-            files: vec![TransferFile {
-                rel_path: file.meta.rel_path.clone(),
-                size: file.meta.size,
-                hash: None,
-                status: FileStatus::Pending,
-            }],
-            status: TransferStatus::WaitingAccept,
-            total_bytes: total,
-            transferred_bytes: 0,
-            created_at: crate::now_ms(),
-            error: None,
-        })
-        .await?;
+    // B 侧记一条 Send 任务：拉取在 B 的「记录」里呈现为「发送」，progress/收尾沿用既有机制。
+    // `transfer_tasks.peer_device_id` 有外键约束（REFERENCES devices），只对**已知设备**
+    // （已配对，无论是否完全信任）成立；分享链接（里程碑 C6）允许从未配对过的设备访问，
+    // 这种情况下插入会违反外键——跳过任务落库（转而只留 `share_access` 审计记录，见
+    // `aa4c-core::dispatch::ShareServe`），协议本身（Offer/Chunk/FileDone）不受影响，
+    // 只是这次传输不会出现在 B 的「记录」页。
+    let peer_known = svc.store.get_device(peer_id).await?.is_some();
+    if peer_known {
+        svc.store
+            .insert_task(&TransferTask {
+                id: task_id.clone(),
+                direction: Direction::Send,
+                peer: peer_id.clone(),
+                files: vec![TransferFile {
+                    rel_path: file.meta.rel_path.clone(),
+                    size: file.meta.size,
+                    hash: None,
+                    status: FileStatus::Pending,
+                }],
+                status: TransferStatus::WaitingAccept,
+                total_bytes: total,
+                transferred_bytes: 0,
+                created_at: crate::now_ms(),
+                error: None,
+            })
+            .await?;
+    }
     let cancel = svc.register_cancel(task_id);
 
     write_message(
@@ -352,9 +360,11 @@ pub(crate) async fn serve_fetch<S: AsyncRead + AsyncWrite + Unpin>(
         other => return Err(unexpected(&other)),
     }
 
-    svc.store
-        .update_task_status(task_id, TransferStatus::Transferring, None)
-        .await?;
+    if peer_known {
+        svc.store
+            .update_task_status(task_id, TransferStatus::Transferring, None)
+            .await?;
+    }
     let mut progress = Progress::new(
         task_id.clone(),
         svc.events.clone(),

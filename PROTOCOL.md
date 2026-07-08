@@ -1,7 +1,7 @@
 # AA4C Protocol Specification
 
 > AA 协议（AA Transfer Protocol，ATP）的权威规范。
-> **Part A（proto v1，局域网）为 V0.1 实现标准**；**Part B（proto v2，广域网）为 V0.3 设计草案**，实现前可能调整。
+> **Part A（proto v1，局域网）为 V0.1 实现标准**；**Part B（proto v2+，广域网）V0.3 里程碑 C1–C6 已全部实现**，当前 `PROTO_VERSION=4`（见 §16）。
 > [API_DESIGN.md](API_DESIGN.md) 中的协议片段是本文档的摘要，冲突时以本文档为准。
 
 ## 0. 总览
@@ -418,3 +418,28 @@ ResumeReport {
 | Relay 流量分析 | 不承诺抗流量分析（非目标）；记录在 SECURITY.md 威胁模型 |
 
 详细威胁模型见 [SECURITY.md](SECURITY.md)。
+
+## 16. 分享链接（`ShareRequest`，proto ≥ 4，已实现，里程碑 C6）
+
+```
+ShareRequest { token: String }   // C→S，打开分享链接的一方发
+```
+
+- 追加在 `Message` 末尾（`PROTO_VERSION` 3→4），不影响既有变体判别号。
+- **鉴权不看 `trusted`**：分发时直接把 `token` 交给 Core 注入的 `ShareResolver`（校验
+  `shares` 表：`status='open'` 且未过期），不检查请求方是否已配对——token 本身就是完整的
+  访问凭证（CONNECT_DESIGN.md §7.1/§7.3）。这是对设计初稿"仍需配对信任"的收敛：token
+  已经是 capability，再叠加配对要求是语义冲突。
+- 校验通过后**反转角色**，复用 `send::serve_fetch`（与 `FetchRequest` 完全同一套：
+  `Offer` → 分块 → `FileDone`/`FileAck` → `TaskDone`），不新增数据通路；解析失败/token
+  无效统一回 `Cancel{reason:"invalid_or_expired_token"}`，不区分「不存在」/「过期」/
+  「已吊销」（同 Lookup 的防探测惯例）。
+- **实现时发现并修复的真实 bug**：`transfer_tasks.peer_device_id` 有外键约束
+  `REFERENCES devices(id)`，此前所有消息类型都要求 `trusted`（peer 必然是已配对设备），
+  这个假设从未被打破过。`ShareRequest` 允许未配对设备发起请求后，`serve_fetch`（服务端）
+  与 `fetch::drive`（客户端）里原本无条件的 `insert_task`/`update_task_status` 会直接
+  违反外键，把连接在协议中途悄悄挂断（表现为对端「connection lost」/「peer closed
+  connection without sending TLS close_notify」，排查耗时较长——错误发生在对端，本地只看到
+  连接异常关闭，看不到真正原因）。修法：两处都先查一次 `store.get_device(peer_id)`，
+  已知设备才落库；未知设备跳过任务记录，只走 `share_access` 审计（协议本身不受影响）。
+  详见 DATABASE_SCHEMA.md §4c.1、CONNECT_DESIGN.md §7.3/§12。

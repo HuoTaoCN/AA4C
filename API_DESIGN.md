@@ -422,8 +422,17 @@ pub struct CoreConfig {
 | `list_transfers` | `limit, offset` | `TransferTask[]` | 传输记录 |
 | `get_settings` | — | `Settings` | 读取设置 |
 | `update_settings` | `Settings` | `void` | 保存设置（设备名变更需重新广播 mDNS） |
+| `create_share` | `relPath, expiresAt?: number` | `Share` | 生成分享链接（里程碑 C6，`relPath` 须落在共享范围内） |
+| `list_shares` | — | `Share[]` | 列出本机全部分享（含完整链接） |
+| `revoke_share` | `id` | `void` | 吊销一条分享 |
+| `list_share_access` | `shareId` | `ShareAccess[]` | 某条分享的访问记录 |
+| `open_share` | `link: string` | `taskId: string` | 打开一个分享链接，立即返回接收任务 id |
 
 所有 Command 失败时返回 `{ code: string, message: string }`，`code` 取 `Aa4cError` 的变体名（如 `not_paired`）。
+
+> 本表未逐一列出 V0.2/V0.3 陆续新增的全部 Command（如 `set_trust_level`、同步/统一视图相关的
+> 几个 Command）——它们与上面列出的同构（Core 方法 1:1 映射），签名以 `apps/desktop/src/lib/api.ts`
+> 为准；本表只保证覆盖 V0.1 基线 + 里程碑 C6（分享链接）新增部分。
 
 ### 9.2 Events（前端 `listen`）
 

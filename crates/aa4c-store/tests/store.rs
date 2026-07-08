@@ -64,7 +64,7 @@ async fn migration_is_idempotent_across_reopens() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 6); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint
+    assert_eq!(version, 7); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares
 }
 
 #[tokio::test]
@@ -415,4 +415,57 @@ async fn rejects_invalid_enum_on_insert() {
         [],
     );
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn share_crud_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    let share = store
+        .insert_share("tok123", "shared/doc.txt", Some(9_999_999_999_999))
+        .await
+        .unwrap();
+    assert_eq!(share.status, "open");
+    assert_eq!(share.permission, "read");
+    assert_eq!(share.link, ""); // Store 不知道怎么拼链接，留给 Core
+
+    let listed = store.list_shares().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, share.id);
+
+    let fetched = store.get_share_by_token("tok123").await.unwrap().unwrap();
+    assert_eq!(fetched.id, share.id);
+    assert_eq!(fetched.rel_path, "shared/doc.txt");
+
+    assert!(store
+        .get_share_by_token("does-not-exist")
+        .await
+        .unwrap()
+        .is_none());
+
+    // 访问记录
+    store
+        .record_share_access(&share.id, Some("peer-a"), "download")
+        .await
+        .unwrap();
+    store
+        .record_share_access(&share.id, None, "list")
+        .await
+        .unwrap();
+    let access = store.list_share_access(&share.id).await.unwrap();
+    assert_eq!(access.len(), 2);
+    assert!(access
+        .iter()
+        .any(|a| a.peer_id.as_deref() == Some("peer-a")));
+    assert!(access.iter().any(|a| a.peer_id.is_none()));
+
+    // 吊销：状态变了，记录还在
+    store.revoke_share(&share.id).await.unwrap();
+    let revoked = store.get_share_by_token("tok123").await.unwrap().unwrap();
+    assert_eq!(revoked.status, "revoked");
+    assert_eq!(store.list_share_access(&share.id).await.unwrap().len(), 2);
+
+    // 吊销不存在的 id 报错
+    assert!(store.revoke_share("nope").await.is_err());
 }

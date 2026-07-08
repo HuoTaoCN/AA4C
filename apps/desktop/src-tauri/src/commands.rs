@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use aa4c_core::Core;
 use aa4c_types::{
-    Aa4cError, CoreEvent, DeviceInfo, Settings, SyncConflict, SyncFileEntry, SyncScope,
-    TransferTask, TrustLevel, UnifiedFile,
+    Aa4cError, CoreEvent, DeviceInfo, Settings, Share, ShareAccess, SyncConflict, SyncFileEntry,
+    SyncScope, TransferTask, TrustLevel, UnifiedFile,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -164,6 +164,38 @@ pub async fn fetch_file(
 #[tauri::command]
 pub async fn list_conflicts(core: State<'_, Arc<Core>>) -> CmdResult<Vec<SyncConflict>> {
     Ok(core.list_conflicts().await?)
+}
+
+#[tauri::command]
+pub async fn create_share(
+    core: State<'_, Arc<Core>>,
+    rel_path: String,
+    expires_at: Option<i64>,
+) -> CmdResult<Share> {
+    Ok(core.create_share(&rel_path, expires_at).await?)
+}
+
+#[tauri::command]
+pub async fn list_shares(core: State<'_, Arc<Core>>) -> CmdResult<Vec<Share>> {
+    Ok(core.list_shares().await?)
+}
+
+#[tauri::command]
+pub async fn revoke_share(core: State<'_, Arc<Core>>, id: String) -> CmdResult<()> {
+    Ok(core.revoke_share(&id).await?)
+}
+
+#[tauri::command]
+pub async fn list_share_access(
+    core: State<'_, Arc<Core>>,
+    share_id: String,
+) -> CmdResult<Vec<ShareAccess>> {
+    Ok(core.list_share_access(&share_id).await?)
+}
+
+#[tauri::command]
+pub async fn open_share(core: State<'_, Arc<Core>>, link: String) -> CmdResult<String> {
+    Ok(core.open_share(&link, None).await?)
 }
 
 /// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。

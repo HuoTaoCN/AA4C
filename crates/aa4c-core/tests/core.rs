@@ -1045,3 +1045,170 @@ async fn forced_punch_path_completes_a_transfer() {
     a.core.shutdown().await.unwrap();
     b.core.shutdown().await.unwrap();
 }
+
+/// 里程碑 C6 验收：分享链接是「能力」而不是配对关系——A、B 从未配对，B 生成一条分享
+/// 链接，A 单凭这个链接（不查任何允许名单）就能拿到内容。逼连接阶梯走中继这一档
+/// （`RelayRequest` 不查允许名单，见 CONNECT_DESIGN.md §7.1/§12）；A 用
+/// `spawn_node_no_punch` 关掉打洞（同 forced_relay 测试的手法）——两个从未打过照面的
+/// 设备同时探测/打洞会在这台开发机的回环网络上互相干扰产生噪声连接（真实 NAT 环境下
+/// 不会遇到这种问题），关掉打洞后中继这条路径本身就足以证明"无需配对"的核心结论。
+#[tokio::test]
+async fn create_and_open_share_without_pairing() {
+    let a = spawn_node_no_punch().await; // 逼中继这一档（同 forced_relay 测试），见下方注释
+    let b = spawn_node().await;
+    let (_server, _server_dir, server_url) = spawn_server().await;
+
+    enable_remote(&a.core, &server_url).await;
+    enable_remote(&b.core, &server_url).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // 让双方的常驻连接落地
+
+    // B 建一个共享文件夹 + 文件，生成分享
+    let shared = b._dir.path().join("shared");
+    tokio::fs::create_dir_all(&shared).await.unwrap();
+    tokio::fs::write(shared.join("doc.txt"), b"hello via share link")
+        .await
+        .unwrap();
+    b.core.add_sync_scope(shared.clone()).await.unwrap();
+    b.core.rescan_sync().await.unwrap();
+
+    let share = b.core.create_share("shared/doc.txt", None).await.unwrap();
+    assert_eq!(share.status, "open");
+    assert!(share.link.starts_with("aa4c://share/"));
+
+    // A 与 B 从未配对（A 的 devices 表里没有 B）；关掉 A 自己的 mDNS，逼走信令阶梯
+    // （同 forced_relay_path_completes_a_transfer 的手法）——mDNS 找到 B 不区分是否配对，
+    // 关掉它才能确认真的是靠「服务器信令 + 无需允许名单」这条路径打通的。
+    a.core.discovery.stop().await.unwrap();
+
+    let recv_dir = a._dir.path().join("recv");
+    let task_id = a
+        .core
+        .open_share(&share.link, Some(recv_dir.clone()))
+        .await
+        .unwrap();
+
+    let ev = a.core.subscribe();
+    wait_transfer_done(ev, &task_id).await;
+
+    assert_eq!(
+        tokio::fs::read(recv_dir.join("doc.txt")).await.unwrap(),
+        b"hello via share link"
+    );
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}
+
+/// 里程碑 C6 验收：过期 / 吊销 / 伪造的 token 一律拒绝，且不区分原因（不泄露「token 存在
+/// 但过期」和「token 压根不存在」的区别，同 Lookup 的既有防探测惯例）。直连打（用真实
+/// 监听端口手工构造地址，不依赖信令阶梯——阶梯本身已在上一个测试验证过）。
+#[tokio::test]
+async fn share_rejects_expired_revoked_and_forged_tokens() {
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+
+    let shared = b._dir.path().join("shared");
+    tokio::fs::create_dir_all(&shared).await.unwrap();
+    tokio::fs::write(shared.join("secret.txt"), b"top secret")
+        .await
+        .unwrap();
+    b.core.add_sync_scope(shared.clone()).await.unwrap();
+    b.core.rescan_sync().await.unwrap();
+    let b_addr = peer_info(&b).addr.unwrap();
+    let b_id = b.core.self_info().id;
+
+    // 过期：expires_at 钉在过去
+    let expired = b
+        .core
+        .create_share("shared/secret.txt", Some(1))
+        .await
+        .unwrap();
+    let recv1 = a._dir.path().join("recv1");
+    let task1 = a
+        .core
+        .transfer
+        .open_share(
+            &b_id,
+            Some(b_addr),
+            expired.token.clone(),
+            Some(recv1.clone()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !wait_terminal(a.core.subscribe(), &task1).await,
+        "expired token must not deliver content"
+    );
+    assert!(!recv1.join("secret.txt").exists());
+
+    // 吊销
+    let revoked = b
+        .core
+        .create_share("shared/secret.txt", None)
+        .await
+        .unwrap();
+    b.core.revoke_share(&revoked.id).await.unwrap();
+    let recv2 = a._dir.path().join("recv2");
+    let task2 = a
+        .core
+        .transfer
+        .open_share(
+            &b_id,
+            Some(b_addr),
+            revoked.token.clone(),
+            Some(recv2.clone()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !wait_terminal(a.core.subscribe(), &task2).await,
+        "revoked token must not deliver content"
+    );
+    assert!(!recv2.join("secret.txt").exists());
+
+    // 伪造 / 未知
+    let recv3 = a._dir.path().join("recv3");
+    let task3 = a
+        .core
+        .transfer
+        .open_share(
+            &b_id,
+            Some(b_addr),
+            "totally-made-up-token".into(),
+            Some(recv3.clone()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !wait_terminal(a.core.subscribe(), &task3).await,
+        "forged token must not deliver content"
+    );
+    assert!(!recv3.join("secret.txt").exists());
+
+    // 仍然 open 且未过期的 token 照常能取到——证明上面三个失败真的是各自原因，不是环境问题
+    let valid = b
+        .core
+        .create_share("shared/secret.txt", None)
+        .await
+        .unwrap();
+    let recv4 = a._dir.path().join("recv4");
+    let task4 = a
+        .core
+        .transfer
+        .open_share(
+            &b_id,
+            Some(b_addr),
+            valid.token.clone(),
+            Some(recv4.clone()),
+        )
+        .await
+        .unwrap();
+    assert!(wait_terminal(a.core.subscribe(), &task4).await);
+    assert_eq!(
+        tokio::fs::read(recv4.join("secret.txt")).await.unwrap(),
+        b"top secret"
+    );
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}

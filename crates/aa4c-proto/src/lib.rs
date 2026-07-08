@@ -116,6 +116,15 @@ pub enum Message {
         task_id: TaskId,
         progress: Vec<FileProgress>,
     },
+
+    // —— 分享链接（CONNECT_DESIGN.md §7 / PROTOCOL.md §16，里程碑 C6）——
+    /// 打开分享链接的一方握手后请求某个 token 对应的内容。**无需 `trusted`**——token
+    /// 本身就是访问能力（capability，CONNECT_DESIGN.md §7.1），不要求请求方是已配对设备。
+    /// 对端校验 token 有效（未过期、未吊销）后按 `FetchRequest` 同一套「反转角色回推」
+    /// 处理（`Offer` → 分块 → `FileDone`/`FileAck` → `TaskDone`），不新增数据通路。
+    ShareRequest {
+        token: String,
+    },
 }
 
 /// 断点续传进度条目（`ResumeReport` 载荷，PROTOCOL.md §13）。
@@ -238,6 +247,7 @@ pub fn unexpected(msg: &Message) -> Aa4cError {
         Message::IndexEntries { .. } => "IndexEntries",
         Message::FetchRequest { .. } => "FetchRequest",
         Message::ResumeReport { .. } => "ResumeReport",
+        Message::ShareRequest { .. } => "ShareRequest",
     };
     Aa4cError::Protocol(format!("unexpected message: {variant}"))
 }
@@ -371,6 +381,33 @@ mod tests {
             Message::Cancel {
                 task_id: "t1".into(),
                 reason: "done".into(),
+            },
+        ];
+        let (mut a, mut b) = tokio::io::duplex(64 * 1024);
+        for msg in &samples {
+            write_message(&mut a, msg).await.unwrap();
+            let got = read_message::<_, Message>(&mut b).await.unwrap();
+            assert_eq!(&got, msg);
+        }
+    }
+
+    #[tokio::test]
+    async fn share_request_roundtrips_and_appends_after_existing_variants() {
+        // 同 resume_report 的追加变体回归测试：混合旧变体编解码，判别号被打乱会在这里炸出来。
+        let samples = vec![
+            Message::Offer {
+                task_id: "t1".into(),
+                files: vec![FileMeta {
+                    rel_path: "a.bin".into(),
+                    size: 10,
+                }],
+            },
+            Message::ShareRequest {
+                token: "9WsBRcPzM5efFqZmYBcJExZzn6mzybf2mBGoDDzMWK5H".into(),
+            },
+            Message::Cancel {
+                task_id: "t1".into(),
+                reason: "invalid_or_expired_token".into(),
             },
         ];
         let (mut a, mut b) = tokio::io::duplex(64 * 1024);

@@ -6,6 +6,8 @@ import type {
   CommandError,
   DeviceInfo,
   Settings,
+  Share,
+  ShareAccess,
   SyncConflict,
   SyncFileEntry,
   SyncScope,
@@ -50,6 +52,14 @@ export const api = {
   fetchFile: (relPath: string, hash: string | null) =>
     invoke<string>("fetch_file", { relPath, hash }),
   listConflicts: () => invoke<SyncConflict[]>("list_conflicts"),
+
+  createShare: (relPath: string, expiresAt: number | null) =>
+    invoke<Share>("create_share", { relPath, expiresAt }),
+  listShares: () => invoke<Share[]>("list_shares"),
+  revokeShare: (id: string) => invoke<void>("revoke_share", { id }),
+  listShareAccess: (shareId: string) =>
+    invoke<ShareAccess[]>("list_share_access", { shareId }),
+  openShare: (link: string) => invoke<string>("open_share", { link }),
 };
 
 /** 把任意 reject 值收敛为 CommandError（兜底未知错误）。 */

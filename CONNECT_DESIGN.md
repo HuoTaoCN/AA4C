@@ -122,28 +122,30 @@ RelayClose
 - **在线判定**：`remote_index` 黄/红判定从「mDNS 在线」扩展为「mDNS 在线 **或** 最近一次远程索引同步仍在新鲜窗口内（90s，`orchestrate::REMOTE_INDEX_FRESH_WINDOW_MS`，约 3 倍周期定时器间隔）」——用"最近同步成功过"作为"当时确实可达"的证据，不必另起一次实时探测。注意这不是绝对保真（远程「新鲜」≠ 一定可达，NAT 变动等）——黄色条目拉取失败时给温和提示 + 可重试，不让黄色变成谎言。
 - **连接质量**：`CoreEvent::TransferConnected{task_id, via}`（`via: direct|relay`）在出站连接（`dial()`）建立成功后立即广播一次，只有发起方（发送/拉取）收得到；只存于当次会话内存，不落库。设置页新增「远程连接」区块（服务器地址 + 开关），传输卡片按 `via` 显示「直连」/「中继（较慢）」徽标。
 
-## 7. 分享链接（AA Share）
+## 7. 分享链接（AA Share）（✅ 已实现，里程碑 C6）
 
 把文件 / 文件夹分享给**指定好友或设备**（非社区分享，见 [PROJECT_VISION.md](PROJECT_VISION.md) §产品边界）。
 
 ### 7.1 模型
 
 - 一个分享 = `{ token, 目标(限定路径), 权限, 过期时间, 状态 }`，落 `shares` 表（§8）+ `share_access` 访问记录。
-- `token`：**≥128 bit 熵**随机串（base58），**即能力（capability）**：持有有效 token 即可按其权限访问，不需要账号。
+- `token`：**≥128 bit 熵**随机串（base58），**即能力（capability）**：持有有效 token 即可按其权限访问，不需要账号。实现用两个 UUID v4 拼出 32 字节（256 bit）随机数据 base58 编码，复用已有依赖（`uuid` 的 v4 生成走 `getrandom`），不单独引入 RNG 依赖。
 - **分享目标必须落在共享范围内（已索引内容）**：复用 V0.2 的 `resolve_shared` 解析与安全边界（绝不按任意路径读盘、天然防 `..` 穿越）。任意路径分享意味着全新的解析器与攻击面，**后置**。
 - 权限：V0.3 首版**只读**；读写留字段余量、不实现。
 - 过期：绝对时间，过期即拒绝；可手动吊销（`revoked`）。
 
 ### 7.2 链接格式与打开方式
 
-- 链接格式：**`aa4c://share/<base58(payload)>`**，payload 含 `{ host device_id, token, host 的 server 地址(含指纹) }`——不含内容、不含密钥；配套二维码（移动端扫码）。
-- 打开：AA 客户端识别链接 → 经 payload 里的服务器解析 host → 连接阶梯建连 → 出示 token → 按权限取文件。
-- 局域网内可不依赖服务器（mDNS 直接找到 host）——**分享链接可先在局域网落地**，远程可达随连接阶梯就绪自然生效。
-- ⚠️ 实现工作量提示：`aa4c://` 自定义 scheme 的 deep-link 注册涉及桌面三平台 + Android intent，是独立的平台适配工作，排期时单列。
+- 链接格式：**`aa4c://share/<base58(payload)>`**，payload 含 `{ host device_id, token, host 的 server 地址(含指纹) }`——不含内容、不含密钥。payload 序列化选 **JSON**（而非二进制格式）：这几个字段没有性能敏感场景，JSON 免去手写分隔符转义的心智负担，整体再 base58 一次让链接本身好看/好传播（不含容易看混的 `0`/`O`/`I`/`l`）。配套二维码（移动端扫码）**未实现**，留待移动端里程碑。
+- 打开：AA 客户端识别链接 → 解析地址阶梯（mDNS → 落库最后地址 → payload 里的 `host_server` 直接 Lookup → 本机自己配置的服务器 Lookup）→ 连接阶梯建连（直连/打洞/中继）→ 出示 token → 按权限取文件。**跨服务器的打洞/中继信令目前仍只会打向本机自己配置的服务器**（同 `server_hint` 的既有缺口，见 §12），payload 携带的 `host_server` 目前只用于地址解析阶梯里的一次额外 Lookup 尝试，不会让打洞/中继也换目标服务器——分享方与打开方使用不同服务器时，只有二者恰好互为已配对设备（在对方允许名单里）时这一档才生效。
+- 局域网内可不依赖服务器（mDNS 直接找到 host，不要求配对）——**分享链接可先在局域网落地**，远程可达随连接阶梯就绪自然生效。
+- **首版只支持「粘贴链接」打开**；⚠️ `aa4c://` 自定义 scheme 的 deep-link 注册涉及桌面三平台 + Android intent，是独立的平台适配工作，未纳入本里程碑，留待后续。
 
-### 7.3 与配对 / 信任的关系
+### 7.3 与配对 / 信任的关系（对设计初稿的收敛）
 
-- V0.3 首版**仅对已配对好友分享**（token 是「这次给你看这些」的范围限定，身份仍走配对信任）；匿名（未配对）分享后置，届时再定其鉴权模型。
+- **实现收敛为纯能力模型**：`Message::ShareRequest{token}` 的分发**完全不检查 `trusted`**——打开分享链接的一方不需要是已配对设备，token 本身就是唯一的访问凭证（与设计初稿"仍对已配对好友分享、身份仍走配对信任"的表述不同，是实现阶段的收敛：既然 §7.1 已经把 token 定义为 capability，就不该在连接层再叠加一层"必须先配对"的隐性要求，两者语义冲突）。
+- 打洞（`Signal`）与中继（`RelayRequest`）的服务器信令本身就不检查允许名单（§3.3/§4 的既有设计），这使得未配对设备也能借助中继/打洞可达——纯局域网（mDNS）访问则天然不受配对状态影响。
+- **实现时发现的真实约束冲突**：`transfer_tasks.peer_device_id` 有外键约束（`REFERENCES devices(id)`），这个表此前的所有写入路径（`Offer`/`FetchRequest`/`IndexRequest`）都要求 `trusted`，所以"peer 必然是已配对设备"这个假设从未被打破过。`ShareRequest` 是第一条允许未配对设备发起请求的路径，插入任务记录会直接违反外键、导致连接在协议中途被悄悄挂断。修法：`serve_fetch`（服务端）与 `fetch::drive`（客户端）在记录任务前先查一次对端是否是已知设备，未知则跳过任务落库（协议本身不受影响，只是这次传输不出现在双方的「记录」页，只留 `share_access` 审计）。
 - 好友打开分享即获得你的 server 地址提示（§3.4），无需事先手工同步。
 
 ## 8. 数据模型
@@ -186,7 +188,7 @@ RelayClose
 3. ✅ **Relay 中继**（`crates/aa4c-server`，同进程加中继面）：`RelayRequest/Grant` 换一次性短 TTL token（8s）+ `RelayOpen/OpenAck` 撮合后**裸字节透明转发**（对设计稿 `RelayData`/`RelayClose` 的一处收敛，理由见 PROTOCOL.md §11/§12）；被叫方靠一条**常驻连接**收 `IncomingRelay` 推送（`aa4c-core::server_link::spawn_register_loop`，用 `Notify` 让设置变更立即生效，取代早期「一次性连接也发 Register」踩过的竞态坑——见下方表格）；`aa4c-transfer` 新增 `RelayDialer` 注入点（出站兜底）与 `accept_external`（入站接入统一分流）。连接阶梯「LAN → 公网直连 → 中继」贯通——**远程可用自此成立**（可发 preview）。e2e 覆盖：强制走中继完成一次真实文件传输、过期/复用 token 被拒绝。
 4. ✅ **远程同步 / 发送**：`sync_exchange`（跨设备索引交换）与 `resolve_peer`（发送/拉取对端解析）改用同一套共享的解析阶梯（`orchestrate::resolve_addr`）；`fetch_index`/`fetch_file` 的 `addr` 参数改成 `Option<SocketAddr>`，解析不出地址（或直连失败）时同 `send()` 落中继兜底。`sync_exchange` 不再局限于 mDNS 在线快照——改为遍历全部完全信任配对设备，`DeviceFound` 即时触发之外新增 30s 周期定时器兜底远程设备。在线判定并入"最近一次远程索引同步是否新鲜"（90s 窗口）。连接质量：新增 `CoreEvent::TransferConnected{task_id, via: direct|relay}`，出站连接建立后广播一次（只存内存不落库）；前端设置页新增「远程连接」区块（服务器地址 + 开关），传输卡片按 `via` 显示「直连」/「中继（较慢）」徽标。e2e 覆盖：完全信任设备被逼到只剩中继一档时，索引同步与文件发送均能真实跑通。
 5. ✅ **NAT 打洞**：反射地址探测（`aa4c-server` 自带轻量 QUIC 反射端点，见 §3.2，不依赖公共 STUN）+ `ServerMessage::Signal`/`IncomingSignal` 候选交换（发起方在自己的常驻连接上发出，回信作为推送收回，复用中继已有的 `pushable` 推送表）→ `aa4c-transfer` 新增 `PunchDialer` 注入点，`dial()` 插入连接阶梯第 3 档（直连失败之后、中继兜底之前）→ 候选地址逐个 `quic::connect`，第一个握手成功即为打洞直连（`ConnectionVia::Punch`）。回环环境没有真实 NAT，打洞会稳定成功——CI 验证的是"候选交换 + 反射探测 + 双向连接"这套接线本身，不是"真实穿透 NAT"（后者按计划留给人工双网络验证）；专门测中继的用例需要 `TransferConfig::disable_punch` 显式挡掉打洞（实现时真的踩到过"打洞把中继测试悄悄截胡"的教训，见下方表格）。视情况在此后做单任务多流优化。
-6. **分享链接**：`shares`/`share_access` 表 + 生成 / 管理 / 吊销 / 访问记录 + token 鉴权 + deep-link（`aa4c://`）注册；先局域网落地。**可与 3–5 并行**。
+6. ✅ **分享链接**：`shares`/`share_access` 建表 + 生成 / 管理（列表/吊销）+ token 鉴权（`Message::ShareRequest{token}`，只追加变体，`PROTO_VERSION` 3→4）+ 复用 `serve_fetch` 反转角色回推。**实现收敛为纯能力模型**：不检查 `trusted`，未配对设备也能凭 token 访问（与设计初稿"仍需配对"不同，见 §7.3）。**deep-link 未纳入**，首版只支持粘贴链接打开。实现时发现并修复了一个真实 bug：`transfer_tasks` 的外键假设"peer 必然是已配对设备"被 `ShareRequest` 打破，导致连接中途被挂断，修法是记录任务前先判断对端是否已知（见 §7.3、PROTOCOL.md §16）。e2e 覆盖：从未配对的设备凭链接取回内容、过期/吊销/伪造 token 被拒绝。
 
 ## 12. 已确认的设计细节
 
@@ -203,7 +205,7 @@ RelayClose
 | 会话层 | QUIC（quinn）证书固定复用；**首版单流等价迁移**，多流并行留作打洞后的优化 | §5 |
 | 断点续传 | 接收方 accept 后回 `ResumeReport`（追加变体），**不修改既有 `Offer`** | §5 |
 | 设置项 | 单 `server_url`（中继端点由服务器下发）+ `enable_remote` **默认关** | §8 |
-| 分享范围 | 仅已配对好友、仅共享范围内已索引内容（复用 `resolve_shared` 边界）、默认只读 | §7 |
+| 分享范围（里程碑 C6 实现收敛） | **纯能力模型，不要求配对**——`ShareRequest` 不检查 `trusted`，token 是唯一凭证；分享目标仅限共享范围内已索引内容（复用 `resolve_shared` 边界）、默认只读 | §7 |
 | 里程碑顺序 | **中继先于打洞**：打洞是提速优化不是可达前提；远程可用在里程碑 3 成立 | §11 |
 | 账号体系 | 不引入，设备与服务器身份都是密钥对 | §1 / §3.1 |
 | 能力复用 | 远程同步 / 发送直接复用 V0.2 索引交换 + V0.1 ATP，不新增数据语义 | §6 |
@@ -218,7 +220,12 @@ RelayClose
 | STUN 服务器来源（里程碑 C5 确定） | **`aa4c-server` 自带一个轻量 QUIC 反射端点兼做**，不引入公共 STUN 依赖——与设备用于 P2P 的**同一个** QUIC 端点连一次即可拿到反射地址，保证映射对后续打洞有意义（不同本地端口的映射通常不通用） | §3.2 |
 | 打洞候选交换连接选择（里程碑 C5） | `Signal` 必须发在**发起方自己的常驻连接**上（不能用一次性连接）：对端的回信是另一条 `Signal`，服务器会把它当 `IncomingSignal` 推送**回同一条连接**——复用中继（C3）已有的 `pushable` 推送表，不需要新基础设施 | §3.2，`aa4c-core::server_link` |
 | 打洞响应去重（里程碑 C5 教训） | 收到 `IncomingSignal` 时必须先判断"这是不是我自己在等的回信"——只有不是时才需要反向回信 + 打洞；不做这个区分会导致两边对同一次交换无休止地互相"回信"，是实现时真实踩到的死循环，不是假设风险 | `aa4c-core::server_link::SignalChannel` |
+| 分享链接鉴权模型（里程碑 C6 实现收敛） | `Message::ShareRequest{token}` 分发**不检查 `trusted`**，与设计初稿"仍需配对信任"不同——token 本身已经是完整的访问凭证，再叠加配对要求是语义冲突；未配对设备可凭 mDNS（同局域网）或中继/打洞（`Signal`/`RelayRequest` 本身不查允许名单）访问 | §7.3，PROTOCOL.md §16 |
+| 分享链接 payload 编码 | JSON 序列化 + 整体 base58（而非二进制格式）：字段少、无性能敏感场景，JSON 省去手写分隔符转义的心智负担；base58 只是让链接本身好看/好传播 | §7.2，`aa4c_types::ShareLink` |
+| token 生成 | 两个 UUID v4 拼出 32 字节随机数据 base58 编码，不单独引入 RNG 依赖（`uuid` v4 已经走 `getrandom`） | §7.1，`aa4c-core::orchestrate::generate_token` |
+| `transfer_tasks` 外键与未配对访问的冲突（里程碑 C6 实现时发现的真实 bug） | `transfer_tasks.peer_device_id REFERENCES devices(id)` 隐含"peer 必然是已配对设备"，`ShareRequest` 是第一条打破这个假设的路径，插入任务记录会直接违反外键、把连接在协议中途悄悄挂断；修法是 `serve_fetch`/`fetch::drive` 记录任务前先查一次对端是否已知，未知则跳过任务落库（不影响协议本身，只是这次传输不出现在「记录」页） | DATABASE_SCHEMA.md §4c.1，`aa4c-transfer::send::serve_fetch`/`fetch::drive` |
+| deep-link 范围（里程碑 C6 缩小） | 只做「粘贴链接打开」，`aa4c://` scheme 的系统级注册（桌面三平台 + Android intent）不在本里程碑，是独立的平台适配工作 | §7.2 |
 | QUIC 连接生命周期（里程碑 C5 教训，但影响面回溯到 C1） | 入站 QUIC 连接如果走的是"转交给钩子后立即返回"的分流分支（如 `IndexRequest`，钩子内部自己 `tokio::spawn` 不等它跑完），必须让 `quinn::Connection` 句柄和分离出去的读写流绑在一起活着——只传流、让本地 `Connection` 变量随分发函数返回而丢弃，钩子那个后台任务会在数据真正发出前就先撞见连接被拆（`Offer`/`FetchRequest` 因为全程 `.await` 到底不受影响）。同理，写完最后一条消息后不能立刻丢连接——写成功只代表进了本地发送缓冲区，不代表已送达，需要半关闭写侧再等对端也关闭它那侧 | `aa4c-transfer::quic::QuicDuplex`，`aa4c-core::dispatch::finish_write_side` |
 | 打洞与中继的测试隔离（里程碑 C5 教训） | 回环/CI 环境没有真实 NAT，打洞一旦存在就会稳定成功并抢在中继之前——C3 那个"强制走中继"的测试在打洞加入后其实已经在悄悄测打洞。新增 `TransferConfig::disable_punch` 测试专用开关（同 `prefer_quic` 的先例），让验证中继/打洞的测试能各自确定性地隔离到自己的档位，并在测试里显式断言 `ConnectionVia` 而不只看"传输成功" | `aa4c-transfer::TransferConfig` |
 
-仍待实现阶段细化：配对协议交换 `server_hint` 的具体消息设计（跨服务器好友寻址的前提）、打洞成功率的真实双网络验证（回环/CI 只能验证接线正确，不能验证真实穿透率）、单任务多流优化、匿名（未配对）分享的鉴权模型（后置）、读写分享（后置）、多服务器联邦（后置）、iOS 后台长连接受限的退化方案。
+仍待实现阶段细化：配对协议交换 `server_hint` 的具体消息设计（跨服务器好友/分享寻址的前提——分享链接 payload 已携带 `host_server`，但打洞/中继信令目前仍只打向本机自己配置的服务器，见 §7.2/§12）、打洞成功率的真实双网络验证（回环/CI 只能验证接线正确，不能验证真实穿透率）、单任务多流优化、`aa4c://` deep-link 系统级注册（桌面三平台 + Android intent）、分享二维码生成、读写分享（后置）、多服务器联邦（后置）、iOS 后台长连接受限的退化方案。

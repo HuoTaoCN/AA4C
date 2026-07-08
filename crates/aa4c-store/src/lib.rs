@@ -15,8 +15,8 @@ use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aa4c_types::{
-    Aa4cError, DeviceId, RemoteIndexEntry, Result, ScopeKind, SyncConflict, SyncFileEntry,
-    SyncScope, TaskId, TransferFile, TransferStatus, TransferTask, TrustLevel,
+    Aa4cError, DeviceId, RemoteIndexEntry, Result, ScopeKind, Share, ShareAccess, SyncConflict,
+    SyncFileEntry, SyncScope, TaskId, TransferFile, TransferStatus, TransferTask, TrustLevel,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -740,6 +740,138 @@ impl Store {
         })
         .await
     }
+
+    // —— 分享链接（CONNECT_DESIGN.md §7/§8，里程碑 C6）——
+
+    /// 新建一条分享记录（`id`/`created_at` 由 Store 生成）。`token` 唯一性由调用方保证
+    /// （Core 生成时已有足够熵，冲突概率可忽略不计）；`UNIQUE` 约束仍在，真撞上会报错。
+    pub async fn insert_share(
+        &self,
+        token: &str,
+        rel_path: &str,
+        expires_at: Option<i64>,
+    ) -> Result<Share> {
+        let token = token.to_string();
+        let rel_path = rel_path.to_string();
+        self.call(move |conn| {
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = now_ms();
+            conn.execute(
+                "INSERT INTO shares (id, token, rel_path, permission, expires_at, status, created_at)
+                 VALUES (?1, ?2, ?3, 'read', ?4, 'open', ?5)",
+                params![id, token, rel_path, expires_at, now],
+            )
+            .map_err(db_err)?;
+            Ok(Share {
+                id,
+                token,
+                rel_path,
+                permission: "read".to_string(),
+                expires_at,
+                status: "open".to_string(),
+                created_at: now,
+                link: String::new(),
+            })
+        })
+        .await
+    }
+
+    /// 按创建时间倒序列出全部分享记录。`link` 字段留空——完整链接需要本机 device_id +
+    /// 当前配置的服务器地址（`aa4c_types::Share` 文档），由调用方（`aa4c-core`）现算。
+    pub async fn list_shares(&self) -> Result<Vec<Share>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, token, rel_path, permission, expires_at, status, created_at
+                     FROM shares ORDER BY created_at DESC",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], row_to_share)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 按 token 查一条分享记录（供打开分享链接的一方校验用）。**不区分**「不存在」/
+    /// 「已吊销」/「已过期」——统一回 `None`，调用方按同一套「不泄露拒绝原因」的惯例
+    /// 处理（同服务器 Lookup 对未注册/不在允许名单的处理，见 `aa4c-server`）。
+    pub async fn get_share_by_token(&self, token: &str) -> Result<Option<Share>> {
+        let token = token.to_string();
+        self.call(move |conn| {
+            conn.query_row(
+                "SELECT id, token, rel_path, permission, expires_at, status, created_at
+                 FROM shares WHERE token = ?1",
+                params![token],
+                row_to_share,
+            )
+            .optional()
+            .map_err(db_err)
+        })
+        .await
+    }
+
+    /// 吊销一条分享：置 `status='revoked'`，保留记录供审计（CONNECT_DESIGN.md §7.1）。
+    pub async fn revoke_share(&self, id: &str) -> Result<()> {
+        let id = id.to_string();
+        self.call(move |conn| {
+            let n = conn
+                .execute(
+                    "UPDATE shares SET status = 'revoked' WHERE id = ?1",
+                    params![id],
+                )
+                .map_err(db_err)?;
+            if n == 0 {
+                return Err(Aa4cError::Db(format!("share not found: {id}")));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// 记一条访问记录（可选功能，供「查看访问记录」，DATABASE_SCHEMA.md §4c.2）。
+    pub async fn record_share_access(
+        &self,
+        share_id: &str,
+        peer_id: Option<&str>,
+        action: &str,
+    ) -> Result<()> {
+        let share_id = share_id.to_string();
+        let peer_id = peer_id.map(str::to_owned);
+        let action = action.to_string();
+        self.call(move |conn| {
+            conn.execute(
+                "INSERT INTO share_access (share_id, peer_id, action, at) VALUES (?1, ?2, ?3, ?4)",
+                params![share_id, peer_id, action, now_ms()],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 某条分享的全部访问记录（按时间倒序）。
+    pub async fn list_share_access(&self, share_id: &str) -> Result<Vec<ShareAccess>> {
+        let share_id = share_id.to_string();
+        self.call(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, share_id, peer_id, action, at
+                     FROM share_access WHERE share_id = ?1 ORDER BY at DESC",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map(params![share_id], row_to_share_access)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
 }
 
 fn open_and_migrate(path: &Path) -> Result<Connection> {
@@ -832,6 +964,29 @@ fn row_to_remote_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemoteIndexE
         size: get_u64(row, 2)?,
         hash: row.get(3)?,
         seen_at: row.get(4)?,
+    })
+}
+
+fn row_to_share(row: &rusqlite::Row<'_>) -> rusqlite::Result<Share> {
+    Ok(Share {
+        id: row.get(0)?,
+        token: row.get(1)?,
+        rel_path: row.get(2)?,
+        permission: row.get(3)?,
+        expires_at: row.get(4)?,
+        status: row.get(5)?,
+        created_at: row.get(6)?,
+        link: String::new(),
+    })
+}
+
+fn row_to_share_access(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShareAccess> {
+    Ok(ShareAccess {
+        id: row.get(0)?,
+        share_id: row.get(1)?,
+        peer_id: row.get(2)?,
+        action: row.get(3)?,
+        at: row.get(4)?,
     })
 }
 

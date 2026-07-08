@@ -143,6 +143,7 @@ impl Core {
         transfer.set_pair_dispatch(Arc::new(dispatch::PairDispatch::new(pairing.clone())));
         transfer.set_index_dispatch(Arc::new(dispatch::IndexServe::new(store.clone())));
         transfer.set_fetch_resolver(Arc::new(dispatch::FetchServe::new(store.clone())));
+        transfer.set_share_resolver(Arc::new(dispatch::ShareServe::new(store.clone())));
         // 中继拨号器（连接阶梯第 4 档，里程碑 C3）：未开启远程/未配置服务器时其内部
         // 会自行报错，不影响任何现有行为（同其余注入钩子的「未注入即不启用」惯例）。
         transfer.set_relay_dialer(Arc::new(server_link::RelayDialerImpl::new(

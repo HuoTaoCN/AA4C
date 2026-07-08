@@ -49,6 +49,9 @@ blake3 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1"
+# 分享链接编码（CONNECT_DESIGN.md §7.2，里程碑 C6）：token 与链接 payload 都编成 base58
+# （不含易混淆字符 0/O/I/l，人工传播/粘贴更不容易出错）
+bs58 = "0.5"
 
 # 存储
 rusqlite = { version = "0.32", features = ["bundled"] }
