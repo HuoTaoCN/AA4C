@@ -64,9 +64,20 @@ jobs:
       - name: Install aria2 (macOS)
         if: matrix.os == 'macos-latest'
         run: brew install aria2
+      # 不用 `choco install aria2`：choco 装的是一个 shim，真正的 aria2c.exe 在别处，
+      # shim 靠相对路径找它，这个相对路径解析是相对于**调用进程的工作目录**——直接
+      # 把这个 shim 文件复制进 bundle 会打包出一个实际执行不了的"假" aria2c.exe，
+      # 实测在 ci.yml 的 `cargo test` 里踩到过（报"Cannot find file at '..\lib\..."），
+      # 这里如果沿用 choco 会把同一个坏文件打进正式安装包里。改成直接下官方 Windows
+      # 压缩包解出真正的二进制，版本号要跟 scripts/fetch-engines.sh 的 ARIA2_VERSION
+      # 保持一致。
       - name: Install aria2 (Windows)
         if: matrix.os == 'windows-latest'
-        run: choco install aria2 -y
+        shell: bash
+        run: |
+          curl -fsSL -o aria2.zip "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
+          unzip -j aria2.zip "*/aria2c.exe" -d "$RUNNER_TEMP/aria2"
+          echo "$RUNNER_TEMP/aria2" >> "$GITHUB_PATH"
       - name: Stage aria2c sidecar (dev/preview only, not checksum-verified)
         shell: bash
         run: bash scripts/fetch-engines.sh --from-path

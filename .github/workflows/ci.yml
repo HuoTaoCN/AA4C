@@ -55,23 +55,25 @@ jobs:
       - name: Install aria2 (macOS)
         if: matrix.os == 'macos-latest'
         run: brew install aria2
+      # 不用 `choco install aria2`：choco 装的是一个 shim（真正的 aria2c.exe 在别处，
+      # shim 靠相对路径找它），这个相对路径解析是相对于**调用进程的工作目录**、不是
+      # shim 自己所在的目录——从 `cargo test`（工作目录是仓库根/crate 目录）调用会
+      # 直接报"Cannot find file at '..\lib\aria2\tools\...'"，是真机 CI 上实测踩到
+      # 的坑，不是猜的。改成直接下官方 Windows 压缩包解出真正的二进制，版本号要跟
+      # scripts/fetch-engines.sh 的 ARIA2_VERSION 保持一致。
       - name: Install aria2 (Windows)
         if: matrix.os == 'windows-latest'
-        run: choco install aria2 -y
+        shell: bash
+        run: |
+          curl -fsSL -o aria2.zip "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
+          unzip -j aria2.zip "*/aria2c.exe" -d "$RUNNER_TEMP/aria2"
+          echo "$RUNNER_TEMP/aria2" >> "$GITHUB_PATH"
       - name: Stage aria2c sidecar placeholder
         shell: bash
         run: bash scripts/fetch-engines.sh --from-path
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # `shell: bash` 是有意的（不是随手统一风格）：Windows runner 上 choco 装的
-      # aria2c 在这一步默认的 pwsh 里找不到（PATH 传播时机问题，实测踩到——`bash
-      # scripts/fetch-engines.sh --from-path` 那一步用 bash 能找到、验证过 aria2c
-      # 确实装上了，但 aa4c-core 的下载端到端测试在 pwsh 里跑 `cargo test` 时报
-      # `Unavailable("download engine not available")`，说明子进程继承的 PATH
-      # 视图不一样）；`cargo test` 本身在 bash 里跑，其子进程（测试二进制）才能
-      # 继承到同一份能找到 aria2c.exe 的 PATH。
-      - shell: bash
-        run: cargo test --workspace
+      - run: cargo test --workspace
 
   frontend:
     name: Frontend (type-check + build)
