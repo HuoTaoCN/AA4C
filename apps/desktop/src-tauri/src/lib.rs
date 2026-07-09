@@ -4,6 +4,7 @@
 //! 业务编排全部在 `aa4c_core::Core`（同时服务桌面端与 Android）。
 
 mod commands;
+mod download_spawner;
 
 use std::sync::Arc;
 
@@ -37,6 +38,25 @@ fn spawn_event_forwarder(app: tauri::AppHandle, core: Arc<Core>) {
     });
 }
 
+/// 桌面三平台注入基于 `tauri-plugin-shell` 的下载引擎子进程拉起器；Android 等
+/// 移动构建返回 `None`——下载能力整体不存在，`aa4c_core::orchestrate` 侧的
+/// 下载相关 Command 会统一报 `Unavailable`（V0.4 范围决定，见 DOWNLOAD_DESIGN.md §1.1）。
+#[cfg(desktop)]
+fn desktop_download_spawner(
+    app: &tauri::AppHandle,
+) -> Option<Arc<dyn aa4c_download::SidecarSpawner>> {
+    Some(Arc::new(download_spawner::TauriSidecarSpawner::new(
+        app.clone(),
+    )))
+}
+
+#[cfg(not(desktop))]
+fn desktop_download_spawner(
+    _app: &tauri::AppHandle,
+) -> Option<Arc<dyn aa4c_download::SidecarSpawner>> {
+    None
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -49,6 +69,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // 数据目录由 Tauri 注入（桌面为应用数据目录，Android 为应用私有目录）。
             // 联调钩子：AA4C_DATA_DIR 覆盖数据目录（含接收目录），使同一台机器能跑
@@ -75,6 +96,9 @@ pub fn run() {
             if let Ok(name) = std::env::var("AA4C_DEVICE_NAME") {
                 config.device_name = Some(name);
             }
+            // 下载中心（DOWNLOAD_DESIGN.md，里程碑 D1）：只在桌面三平台注入 sidecar
+            // 拉起器——V0.4 明确不含 Android，`cfg(desktop)` 由 Tauri 自动区分。
+            config.download_spawner = desktop_download_spawner(app.handle());
 
             // 启动序列是异步的；setup 在事件循环前运行，可阻塞等待
             let core = tauri::async_runtime::block_on(Core::start(config))?;
@@ -110,6 +134,11 @@ pub fn run() {
             commands::revoke_share,
             commands::list_share_access,
             commands::open_share,
+            commands::add_download,
+            commands::pause_download,
+            commands::resume_download,
+            commands::cancel_download,
+            commands::list_downloads,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

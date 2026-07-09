@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use aa4c_core::Core;
 use aa4c_types::{
-    Aa4cError, CoreEvent, DeviceInfo, Settings, Share, ShareAccess, SyncConflict, SyncFileEntry,
-    SyncScope, TransferTask, TrustLevel, UnifiedFile,
+    Aa4cError, CoreEvent, DeviceInfo, DownloadTask, Settings, Share, ShareAccess, SyncConflict,
+    SyncFileEntry, SyncScope, TransferTask, TrustLevel, UnifiedFile,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -198,6 +198,31 @@ pub async fn open_share(core: State<'_, Arc<Core>>, link: String) -> CmdResult<S
     Ok(core.open_share(&link, None).await?)
 }
 
+#[tauri::command]
+pub async fn add_download(core: State<'_, Arc<Core>>, url: String) -> CmdResult<String> {
+    Ok(core.add_download(url).await?)
+}
+
+#[tauri::command]
+pub async fn pause_download(core: State<'_, Arc<Core>>, task_id: String) -> CmdResult<()> {
+    Ok(core.pause_download(task_id).await?)
+}
+
+#[tauri::command]
+pub async fn resume_download(core: State<'_, Arc<Core>>, task_id: String) -> CmdResult<()> {
+    Ok(core.resume_download(task_id).await?)
+}
+
+#[tauri::command]
+pub async fn cancel_download(core: State<'_, Arc<Core>>, task_id: String) -> CmdResult<()> {
+    Ok(core.cancel_download(task_id).await?)
+}
+
+#[tauri::command]
+pub async fn list_downloads(core: State<'_, Arc<Core>>) -> CmdResult<Vec<DownloadTask>> {
+    Ok(core.list_downloads().await?)
+}
+
 /// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。
 pub fn event_payload(event: &CoreEvent) -> Value {
     match event {
@@ -238,5 +263,22 @@ pub fn event_payload(event: &CoreEvent) -> Value {
             json!({ "taskId": task_id, "error": error })
         }
         CoreEvent::SyncIndexUpdated => Value::Null,
+        CoreEvent::DownloadProgress {
+            task_id,
+            downloaded_bytes,
+            total_bytes,
+            speed_bps,
+        } => json!({
+            "taskId": task_id,
+            "downloadedBytes": downloaded_bytes,
+            "totalBytes": total_bytes,
+            "speedBps": speed_bps,
+        }),
+        CoreEvent::DownloadDone { task_id, save_path } => {
+            json!({ "taskId": task_id, "savePath": save_path })
+        }
+        CoreEvent::DownloadFailed { task_id, error } => {
+            json!({ "taskId": task_id, "error": error })
+        }
     }
 }

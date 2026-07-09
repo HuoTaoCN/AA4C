@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod device;
+mod download;
 mod error;
 mod event;
 mod server_addr;
@@ -15,6 +16,7 @@ mod sync;
 mod transfer;
 
 pub use device::{DeviceId, DeviceInfo, Platform, TrustLevel};
+pub use download::{DownloadKind, DownloadStatus, DownloadTask};
 pub use error::{Aa4cError, Result};
 pub use event::{ConnectionVia, CoreEvent};
 pub use server_addr::ServerAddr;

@@ -1,0 +1,131 @@
+name: Build Engines
+
+# 一次性/低频的引擎二进制构建流水线（V0.4 里程碑 D1，DOWNLOAD_DESIGN.md §3.1）：
+# 只手动触发，不随每次应用 release 重新编译。产物 + SHA256SUMS 发到一个专门的
+# `engines/aria2-<version>` release，供 scripts/fetch-engines.sh 下载校验。
+#
+# ⚠️ 首次运行前的已知风险（未经真实 CI 验证，写作时只能依据 aria2 官方 README
+# 的构建说明推断，见 https://github.com/aria2/aria2#build-from-git-repository）：
+#   - macOS x86_64 交叉编译（在 arm64 runner 上）用 `-arch x86_64` 让 Xcode clang
+#     原生跨架构编译；如果失败，改用真正的 x86_64 runner 或分别在两种 runner 上跑。
+#   - Linux 静态链接依赖 `ARIA2_STATIC=yes`，需要对应的 *-dev/静态版依赖包全部
+#     装好，缺一个都会 configure 失败——第一次跑大概率要按报错调整 apt 包列表。
+# 跑完第一次后，把结果核对进 DOWNLOAD_DESIGN.md 与本文件注释，供后续维护参考。
+
+on:
+  workflow_dispatch:
+    inputs:
+      aria2_version:
+        description: "aria2 release tag to build (e.g. 1.37.0)"
+        required: true
+        default: "1.37.0"
+
+jobs:
+  windows:
+    name: aria2c (Windows, official prebuilt)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download official Windows build
+        run: |
+          curl -fsSL -o aria2.zip \
+            "https://github.com/aria2/aria2/releases/download/release-${{ inputs.aria2_version }}/aria2-${{ inputs.aria2_version }}-win-64bit-build1.zip"
+          unzip -j aria2.zip "*/aria2c.exe" -d out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aria2c-x86_64-pc-windows-msvc
+          path: out/aria2c.exe
+
+  macos:
+    name: aria2c (macOS ${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+          - target: x86_64-apple-darwin
+            arch: x86_64
+    steps:
+      - name: Download source
+        run: |
+          curl -fsSL -o aria2.tar.xz \
+            "https://github.com/aria2/aria2/releases/download/release-${{ inputs.aria2_version }}/aria2-${{ inputs.aria2_version }}.tar.xz"
+          tar xf aria2.tar.xz
+      - name: Install build deps
+        run: brew install autoconf automake libtool pkg-config sqlite3 c-ares
+      - name: Build (AppleTLS, cross-arch via clang -arch)
+        working-directory: aria2-${{ inputs.aria2_version }}
+        env:
+          CC: clang -arch ${{ matrix.arch }}
+          CXX: clang++ -arch ${{ matrix.arch }}
+        run: |
+          autoreconf -i
+          ./configure --without-openssl --without-gnutls --without-libnettle \
+            --without-libgcrypt --without-libxml2 --with-appletls
+          make -j"$(sysctl -n hw.ncpu)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aria2c-${{ matrix.target }}
+          path: aria2-${{ inputs.aria2_version }}/src/aria2c
+
+  linux:
+    name: aria2c (Linux x86_64, static)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download source
+        run: |
+          curl -fsSL -o aria2.tar.xz \
+            "https://github.com/aria2/aria2/releases/download/release-${{ inputs.aria2_version }}/aria2-${{ inputs.aria2_version }}.tar.xz"
+          tar xf aria2.tar.xz
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake autotools-dev libtool pkg-config \
+            libssl-dev libxml2-dev zlib1g-dev libsqlite3-dev libc-ares-dev
+      - name: Build (static)
+        working-directory: aria2-${{ inputs.aria2_version }}
+        run: |
+          autoreconf -i
+          ./configure ARIA2_STATIC=yes
+          make -j"$(nproc)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aria2c-x86_64-unknown-linux-gnu
+          path: aria2-${{ inputs.aria2_version }}/src/aria2c
+
+  publish:
+    name: Publish engines release
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Stage + checksum
+        run: |
+          mkdir -p dist
+          for dir in artifacts/*/; do
+            name="$(basename "$dir")"
+            file="$(find "$dir" -type f | head -1)"
+            suffix=""
+            case "$name" in *windows*) suffix=".exe" ;; esac
+            cp "$file" "dist/${name}${suffix}"
+            chmod +x "dist/${name}${suffix}"
+          done
+          (cd dist && sha256sum * > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: engines/aria2-${{ inputs.aria2_version }}
+          name: "aria2 engine binaries ${{ inputs.aria2_version }}"
+          body: |
+            自建 / 官方转发的 aria2c 二进制，供 AA4C 桌面端 sidecar 打包用
+            （见 `scripts/fetch-engines.sh`，按 SHA256SUMS 里的值下载校验）。
+            这不是 AA4C 应用本身的发布，跑完后请把 SHA256SUMS 的值填进
+            `scripts/fetch-engines.sh` 的 `checksum_for()`。
+          draft: false
+          prerelease: false
+          files: dist/*

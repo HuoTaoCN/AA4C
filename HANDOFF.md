@@ -1,6 +1,6 @@
 # AA4C 开发交接（换机指南）
 
-> 最后更新：2026-07-08（`v0.3.0-preview` 已发布；V0.4「Download」设计 v2 定稿 + 实现计划已产出，下一步实现 D1）。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
+> 最后更新：2026-07-09（`v0.3.0-preview` 已发布；**V0.4「Download」里程碑 D1（Aria2/HTTP-FTP）已实现并通过真机走查**，下一步是决策点：D2/D3 还是切preview发布）。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
 > 给 AI Agent：开工前先读本文档"当前进度"与"下一步"，再按 [AGENTS.md](AGENTS.md) 的必读清单工作。
 
 ## 一、当前进度
@@ -44,8 +44,9 @@
 | v0.3.0-preview 发布 | ✅ | — | 打包预览版：V0.3「AA Connect」六个里程碑（QUIC+续传/自建信令/中继/远程同步发送+连接质量/NAT 打洞/分享链接）随三平台安装包 + Android arm64 APK + `aa4c-server` Linux 二进制发布（GitHub Release，prerelease）；工作区版本号 0.2.0→0.3.0 |
 | V0.4 设计评审修订（v2） | ✅ | `c20f0dd` | 评审 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md) 发现并修正 4 个实质问题：①官方 release 无 macOS/Linux 预编译产物（已逐项核实），改自建引擎构建流水线 + 校验和写死进仓库；②补齐 v1 缺失的任务跨重启恢复（aria2 `save-session` 管续传 + 启动对账管记录，普通 URI 下载 GID 跨重启不变是"GID=id"成立的前提）；③ `rpc-secret` 从命令行（`ps`/WMI 任意用户可见）改进 0600 conf 文件；④默认下载目录从自相矛盾的"save_dir 同级的 Downloads 子目录"改为系统下载目录——Inbox 索引根是整个 save_dir，落进子树=自动分享给完全信任设备。另补 `stop-with-process` 孤儿进程防护、端口竞态重试、进度写库节流、上游维护风险条目 |
 | V0.4 实现计划 | ✅ | — | 新增 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md)：D1（Aria2 + 引擎流水线，细化到 10 步）→ D2（qBittorrent）→ D3（任务中心打磨）。关键排序决定：引擎二进制流水线放在代码**之后**——开发/测试/CI 全程用 PATH 安装的系统 aria2c（`ProcessSpawner` 本来就是 Docker/headless 要的实现），打包流水线零耦合、可单独攻坚不阻塞。设计 §3.2 同步收敛：RPC 载体从"HTTP+WS"改为 WS 单连接（少一个 HTTP 客户端依赖，id 关联表照 `SignalChannel` 先例） |
+| **V0.4 里程碑 D1（Aria2 集成——下载中心第一次可用）** | ✅ | — | 新 crate `aa4c-download`（不依赖 Tauri）：`SidecarSpawner`/`EngineChild` 拆两个 trait（拉起 vs 终止，因为 Tauri `CommandChild::kill()` 同步、`tokio::process::Child::kill()` 异步，接口形状不同）；`conf.rs` 每次启动重写 aria2 配置文件（0600 权限，含随机端口/密钥/`stop-with-process`/`save-session`），命令行只传 `--conf-path`；`rpc.rs`（`Aria2Client`）JSON-RPC over WebSocket 单连接；`lib.rs`（`DownloadService`）单线程 actor 模型，公开方法经 channel 发命令；`reconcile()` 把"WS 通知""断线重连对账""轮询兜底"收敛成一段幂等逻辑。新表 `download_tasks`（`008_downloads.sql`）；`CoreEvent` 追加 `DownloadProgress`/`DownloadDone`/`DownloadFailed`；`Settings` 追加 `download_dir`；`Aa4cError` 追加 `Unavailable`。Tauri：`tauri-plugin-shell` + capabilities（`shell:allow-execute` + sidecar + 参数正则校验，**已通过真实 `tauri dev` 走查验证**）+ 5 个 Command；前端 `DownloadPage.vue`/`DownloadCard.vue`/`stores/download.ts`。CI/发布：`scripts/fetch-engines.sh`（`--from-path` 本地开发用系统 aria2c 顶位）+ `.github/workflows/engines.yml`（手动触发，未经真实 CI 验证）+ `ci.yml`/`release.yml` 相应改动；`tauri.conf.json` 新增 `bundle.externalBin`——**声明后任何触碰 `aa4c-desktop` 的 `cargo` 命令都要求该二进制文件存在，不是可选步骤**。**实测发现真实 aria2 行为**：`aria2.shutdown` RPC 内部等约 3 秒才退出，`SHUTDOWN_GRACE` 定为 5 秒。**人工走查中发现并修复真实 bug**：`aa4c-core` 下载端到端测试未隔离 `download_dir`，测试文件曾落进开发机真实 `~/Downloads`（已修复为 `Core::start` 前预置隔离路径到 settings 表）。新增 `aa4c-download` 6 条真实 aria2c 集成测试 + 4 条 conf 单测；`aa4c-store`/`aa4c-types`/`aa4c-core` 各自补充测试 |
 
-整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。**V0.3「AA Connect」六个里程碑（C1–C6）全部完成**：广域网 QUIC 会话层、自建信令+中继服务器、远程同步/发送接入完整连接阶梯、NAT 打洞、分享链接，一整条「局域网直连 → 公网直连 → 打洞 → 中继」的连接阶梯贯通，外加脱离设备配对关系的能力型分享。**V0.2 同步五个里程碑（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取 / 冲突标记）全部落地**（SYNC_DESIGN.md §10）；线路协议已升到 `proto=2` 并对同步路径按版本 gate（与 v0.2.0-preview 的同步不再互通，趁预发布窗口对齐）。**真机 GUI 走查已人工跑通**（`scripts/dev-two-nodes.sh` 起两实例：配对 → 互标我的设备 → 黄「可下载」→ 点黄拉取转绿 → 同名不同内容「多版本」并列，均正常）。
+整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。**V0.3「AA Connect」六个里程碑（C1–C6）全部完成**：广域网 QUIC 会话层、自建信令+中继服务器、远程同步/发送接入完整连接阶梯、NAT 打洞、分享链接，一整条「局域网直连 → 公网直连 → 打洞 → 中继」的连接阶梯贯通，外加脱离设备配对关系的能力型分享。**V0.4「Download」里程碑 D1（Aria2/HTTP-FTP 下载）已实现**——新 crate `aa4c-download`、下载页可用、真实 `tauri dev` 走查跑通（sidecar 拉起、Tauri capability 权限、`stop-with-process` 孤儿进程防护均实测有效）；D2（qBittorrent/BT）与 D3（任务中心打磨）仍是设计稿。**V0.2 同步五个里程碑（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取 / 冲突标记）全部落地**（SYNC_DESIGN.md §10）；线路协议已升到 `proto=2` 并对同步路径按版本 gate（与 v0.2.0-preview 的同步不再互通，趁预发布窗口对齐）。**真机 GUI 走查已人工跑通**（`scripts/dev-two-nodes.sh` 起两实例：配对 → 互标我的设备 → 黄「可下载」→ 点黄拉取转绿 → 同名不同内容「多版本」并列，均正常）。
 
 ### 已实现 crate 概览（`crates/`）
 
@@ -59,8 +60,9 @@
 | `aa4c-transfer` | 传输 + 索引交换 + 按需拉取 + QUIC + 中继 + 打洞 + 分享 | `TransferService::new`（返回 `Arc<Self>`）、`start_listener`/`send`/`accept`/`cancel`/`fetch_index`/`fetch_file`/`open_share`/`accept_external`/`reflexive_addr`/`punch_probe`；`set_pair_dispatch` / `set_index_dispatch` / `set_fetch_resolver` / `set_share_resolver` / `set_relay_dialer` / `set_punch_dialer` 注入钩子（`IncomingPairDispatch` / `IncomingIndexDispatch` / `SharedFileResolver` / `ShareResolver` / `RelayDialer` / `PunchDialer` trait）；推送与拉取共用 `recv::receive_files` + `send::serve_fetch`（`serve_fetch`/`fetch::drive` 里的任务落库现在会先判断对端是否已知设备，见 C6 教训）；`quic.rs` 会话层（`QuicDuplex` 持有 `Connection` 句柄，见 C5 教训）；`dial()`（`pub(crate)`）直连失败依次尝试打洞、中继；`TransferConfig::disable_punch`/`prefer_quic` 是测试专用开关 |
 | `aa4c-core` | 组装 | `Core::start`/`shutdown`/`subscribe`/`self_info`/`listen_port`；§9 的 11 个 Command 在 Core 上有同名编排方法；`CoreConfig`、`Settings` 读写；`server_link.rs`（自建服务器客户端接入：一次性 `register_once`/`lookup_once` + 常驻连接 `spawn_register_loop`，返回 `(Notify, Arc<SignalChannel>)`——`Notify` 供 `nudge_register` 立即唤醒重新注册，`SignalChannel` 供 `PunchDialerImpl` 提交打洞候选请求）；`orchestrate.rs` 新增 `create_share`/`list_shares`/`revoke_share`/`list_share_access`/`open_share`（里程碑 C6）；`dispatch::ShareServe` 实现 `ShareResolver` |
 | `aa4c-server` | 自建信令 + 中继 + 打洞反射服务器（bin+lib） | `run(ServerConfig{data_dir, listen_addr}) -> Arc<Server>`；`Server::device_id`/`local_addr`/`address_with_host`；内嵌 `run()` 供测试驱动，供部署用 `main.rs`（`AA4C_SERVER_DATA_DIR`/`AA4C_SERVER_LISTEN` 环境变量）；中继面（`RelayRequest`/`RelayOpen` 等）与打洞面（`Signal`/`IncomingSignal`）都随常驻连接的 `Register` 一并处理，无独立公开 API；`reflect.rs` 额外绑定一个轻量 QUIC 反射端点（同端口号，独立 ALPN） |
+| `aa4c-download` | 下载中心（V0.4 里程碑 D1，不依赖 Tauri） | `DownloadService::start(spawner, store, events, data_dir, download_dir) -> Arc<Self>`（内部单线程 actor）；`add`/`pause`/`resume`/`cancel`/`list`/`shutdown`；`SidecarSpawner`/`EngineChild` trait（`ProcessSpawner` 是 Docker/headless 与测试共用的实现，Tauri 壳层的 `TauriSidecarSpawner` 见 `apps/desktop/src-tauri/src/download_spawner.rs`）；`Aria2Client`（JSON-RPC over WebSocket 单连接） |
 
-CI 现状：7 个 job 全绿（lint、三平台 test、frontend、audit、android 哨兵）。
+CI 现状：7 个 job 全绿（lint、三平台 test、frontend、audit、android 哨兵）；三平台 lint/test job 新增 aria2 安装 + `scripts/fetch-engines.sh --from-path` 步骤（V0.4 D1 起 `aa4c-desktop` 的 `externalBin` 声明要求该二进制存在才能编译）。
 
 ## 二、新电脑环境安装（macOS）
 
@@ -70,15 +72,26 @@ CI 现状：7 个 job 全绿（lint、三平台 test、frontend、audit、androi
 # 1. Homebrew（如未装）https://brew.sh
 # 2. Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-# 3. Node 工具链
-brew install node pnpm gh
+# 3. Node 工具链 + aria2（下载中心 sidecar，V0.4 里程碑 D1 起必装，见下方说明）
+brew install node pnpm gh aria2
 # 4. gh 登录
 gh auth login
 # 5. 克隆并验证
 git clone https://github.com/HuoTaoCN/AA4C.git && cd AA4C
+bash scripts/fetch-engines.sh --from-path   # 见下方「下载引擎二进制」说明，缺这步 cargo build 会报错
 cargo test --workspace            # Rust 全绿
 cd apps/desktop && pnpm install && pnpm tauri dev   # 应出现 AA4C 欢迎窗口
 ```
+
+**下载引擎二进制（V0.4 里程碑 D1 起必做，一次性）**：`apps/desktop/src-tauri/tauri.conf.json` 声明了
+`bundle.externalBin`（Tauri sidecar 机制，供 `aa4c-download` 拉起 aria2c），一旦声明，
+`tauri_build::build()` 会在**任何** `cargo build`/`cargo check`/`cargo test`/`cargo clippy`
+碰到 `aa4c-desktop` 这个 crate 时校验对应二进制文件存在——不是可选步骤，也不只影响下载相关代码，
+整个工作区的 Rust 命令都会失败，直到你跑过一次
+`bash scripts/fetch-engines.sh --from-path`（把 PATH 里刚装的系统 aria2c 复制到
+`apps/desktop/src-tauri/binaries/` 顶位，不校验、仅本地开发用，产物已被 `.gitignore` 排除）。
+真正发版用的引擎二进制走 `.github/workflows/engines.yml`（手动触发，按写死校验和下载，见
+DOWNLOAD_DESIGN.md §3.1）。
 
 ### 可选（Android 轨，A1 起需要，约 30-60 分钟）
 
@@ -139,15 +152,17 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：实现 V0.4 里程碑 D1（Aria2 集成）
+## 四、下一步：V0.4 里程碑 D1 已实现，等用户选下一步方向
 
 **V0.3「AA Connect」六个里程碑（C1–C6）全部实现完毕并测试通过，且已打包发布 `v0.3.0-preview`**：连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档贯通，外加脱离配对关系的能力型分享，随三平台安装包 + Android arm64 APK + `aa4c-server` Linux 二进制一起发出（GitHub Release，prerelease）。设计见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（§12 已确认决策清单）、实现拆解见 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)。
 
-**V0.4「Download」设计已定稿（v2，经评审修订并推送），实现计划已产出**：设计见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)（§9 已确认决策表，头部有 v1→v2 修订摘要），实现拆解见 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md)（D1 细化到 10 步，含验收清单与明确不做清单）。核心结构：新 crate `aa4c-download` + `SidecarSpawner` 依赖倒置（Tauri 壳层注入，Core 保持纯 Rust）；新表 `download_tasks`（迁移 `008_downloads.sql`）；引擎二进制自建流水线（官方 release 没有 macOS/Linux 产物）放在代码之后做，开发/测试/CI 全程用 PATH 安装的系统 aria2c。
+**V0.4「Download」里程碑 D1（Aria2 集成，HTTP/HTTPS/FTP 直链下载）已实现**：新 crate `aa4c-download`（不依赖 Tauri）+ `SidecarSpawner` 依赖倒置（Tauri 壳层注入，Core 保持纯 Rust）；新表 `download_tasks`（迁移 `008_downloads.sql`）；「下载」页可用（链接输入 + 任务列表 + 暂停/继续/取消/打开文件夹）。已过真实 `tauri dev` 走查：sidecar 拉起、Tauri capability 权限配置、`stop-with-process` 孤儿进程防护均实测有效（细节见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md) §3.5「D1 实现偏差」）。**受限于本环境没有原生 GUI 自动化工具，走查没有覆盖实际点击「暂停/继续/打开文件夹」按钮这几步**——底层命令行为已由 `aa4c-download` 的 6 条真实 aria2c 集成测试覆盖，但如果你本人在桌面上快速点一遍这几个按钮，能补上这最后一段信心。
 
-**下一步就是按计划实现 D1**（对 Agent 说"继续"即可开工，按计划步骤 1–10 顺序走，每步的决策依据都在 DOWNLOAD_DESIGN §9，不要重开已定案的讨论）。注意事项：
-- 开发机与 CI 都需要 `aria2` 在 PATH（本机 `brew install aria2`；CI 安装步骤是计划步骤 8 的一部分）。
-- 也可以穿插补 V0.3 已知缺口（见下），不冲突。
+**D1 遗留的下一步选项**（不要凭本文档自己假设该做哪一个，直接问用户）：
+- **D2（qBittorrent/BT-Magnet）**：见 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md) D2 概要——qBittorrent 没有 `stop-with-process` 等价物，孤儿进程防护要另想办法；动手前先核实 qbittorrent-nox 官方产物对三平台的实际覆盖（D1 在这一点上吃过亏，见 DOWNLOAD_DESIGN.md §3.1）。
+- **D3（任务中心打磨）**：设置页下载区块（目录/限速/并发）、下载目录落在同步范围内的警示交互、批量操作。
+- **引擎构建流水线首跑**：`.github/workflows/engines.yml` 从未真实跑过（写作时只能依据 aria2 官方 README 推断构建命令，见 workflow 内注释的已知风险），第一次手动触发大概率要按报错调整；跑完后把 `SHA256SUMS` 填进 `scripts/fetch-engines.sh` 的 `checksum_for()`，`release.yml` 才能真正发布带下载能力的正式安装包（目前 release 流程会在这一步失败，因为校验和还是空的）。
+- 也可以先切一版 `v0.4.0-preview` 发布验证 D1（同 V0.2/V0.3 的 preview 先例），或补 V0.3 已知缺口（见下）——都不冲突，可穿插进行。
 
 **V0.3 范围内已知的、有意缩小的缺口**（不阻塞任何已完成里程碑，可随时单独补）：
 - `devices.server_hint` 已建表但配对协议未交换它，`resolve_peer`/`sync_exchange`/中继的 `RelayDialer`/打洞的 `PunchDialer`/分享的地址解析目前都只查/连**自己配置的服务器**——跨服务器好友寻址（含跨服务器分享）还不可用，只覆盖「自己的多台设备」+「双方恰好用同一服务器」两种场景；交换 server_hint 需要一条新的追加协议消息（`PairRequest`/`PairAccept`/`DeviceInfo` 是既有结构体，不能直接加字段）。
@@ -203,5 +218,8 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - **回环/CI 测试环境没有真实 NAT，会让"打洞"这类优化性质的连接阶梯档位在测试里显得比生产环境更强势**（C5 教训）：C3 写 `forced_relay_path_completes_a_transfer` 时，"强制走中继"的手法（关 mDNS + 钉死地址逼前两档失败）在当时是对的——那会儿还没有打洞。等 C5 把打洞插到中继前面，同一套强制手法就不再能保证测到"中继"了，因为打洞在回环环境下会稳定成功、抢在中继之前把连接接上，而测试本身只断言了"传输成功"，从没检查过走的是哪一档，所以这个回归**在测试绿灯的情况下悄悄发生了**，直到这次专门去追查才发现。**教训**：给"连接阶梯第 N 档"这类有明确优先级、且后加的档位可能截胡先加的档位的测试，光断言最终结果（文件到了）是不够的，必须断言"走的是哪一档"（这里用 `ConnectionVia` 事件）；新增一档时，第一件事是检查有没有现存测试隐含假设了"这一档不存在"。
 - **QUIC 的 `Connection` 句柄和从它派生出的 `RecvStream`/`SendStream` 生命周期不是自动绑定的**（C5 教训，但影响面回溯到 C1）：`quic::connect()`/入站 accept 拿到 `(send, recv)` 后，如果只把这两个流传下去、让本地 `connection: quinn::Connection` 变量自己随函数返回而丢弃，流仍然能用（因为 quinn 内部有自己的引用计数），但如果调用方紧接着又立刻返回（比如"转交给钩子后不等它跑完"这种 fire-and-forget 分流），`Connection` 句柄计数可能提前归零，连接被拆得比数据真正发送完还早。**排查方法**：先怀疑协议层握手逻辑（对照 `client_hello`/`server_hello` 双方日志确认握手本身没问题），确认握手成功但后续读写报 "connection lost" 后，才想到去查"谁在什么时候丢了 Connection 对象"——加 `eprintln!` 打点到每个可能提前返回的路径，能看到「写完 → 函数返回 → 紧接着才报错」的时序。**根治方案**：让承载流的类型自己拿着 `Connection` 一起走（本例是给 `QuicDuplex` 加一个 `_connection` 字段），不要指望每个调用点都记得"顺手多存一个变量"。**配套教训**：写完最后一条消息就直接返回也不安全——"写成功"只代表数据进了本地发送缓冲区，不代表已经送达对端，紧接着丢连接可能把还没发出的字节冲掉；需要显式半关闭写侧、读到对端也关闭为止，才能确认数据交接完毕。
 - **打破一个"从未被打破过的隐性假设"时，要主动去找所有依赖它的地方，而不是等它报错**（C6 教训）：`transfer_tasks.peer_device_id REFERENCES devices(id)` 这个外键从 V0.1 建表起就在，此前"peer 必然是已配对设备"从未被打破过（`Offer`/`FetchRequest`/`IndexRequest` 都要求 `trusted`），所以从没人验证过"peer 未知时会怎样"。`ShareRequest` 允许未配对设备访问后，第一次踩进这个假设——但 bug 不是一次性暴露的：`serve_fetch`/`fetch::drive` 各自有**两处**依赖同一个前提的数据库写入（`insert_task` 和后续的 `update_task_status`），改第一处后测试换了个新错误（同类根因，不同代码位置），改完第一处以为修好了，跑测试才发现还有第二处——这是"打了地鼠才发现还有一只"的典型模式。**排查方法**：给整条链路（`relay_dial` → `spawn_relay_accept` → `accept_external` → `dispatch_shared` → `serve_fetch`/`fetch::drive`）临时加 `eprintln!` 逐段打点，而不是只看最外层的错误信息（"connection lost" 完全没提示真正原因是数据库外键，因为错误发生在远端，本地只看到连接异常关闭）。**教训**：遇到"这个假设是不是第一次被打破"的场景，与其头痛医头改一处报错再等下一处报错，不如先搜一遍这个字段/表在所有写入路径里的用法（`grep -n "insert_task\|update_task_status" crates/aa4c-transfer/src/*.rs`），一次性确认哪些调用点共享同一个前提。**根治方案的取舍**：没有改外键约束本身（会连带改变"解除配对级联删除历史记录"这个既有 V0.1 行为，风险面更大），而是在调用点判断"对端是否已知"来决定是否落库——牺牲的是"未配对访问不出现在传输记录页"，换来零行为改动。
+- **第三方进程的"优雅关闭"可能自带你不知道的内部延迟**（D1 教训）：设计阶段假设"RPC 发一条 shutdown 指令 + 短暂宽限期 + 超时强杀"就够了，宽限期直觉上设了 2 秒。真机联调时下载任务反复无法验证"是否真的优雅落盘"，一开始怀疑是自己的 RPC 客户端有 bug，加了一堆 `eprintln!` 排查（甚至一度怀疑是 tokio 单线程 runtime 调度问题），最后发现是 aria2 自己的 `aria2.shutdown`（区别于 `forceShutdown`）内部就会等**约 3 秒**才真正退出（日志明确打印"3 second(s) has passed. Stopping application."）——这是 aria2 的既定行为，不是我们能改的，2 秒宽限期系统性地"抢跑"在它完成 session 落盘之前发生。**教训**：包一层外部工具时，"优雅关闭需要多久"不要凭直觉估一个数字，尤其涉及数据落盘的场景——如果文档没写清楚，直接跑一次真实的关闭流程、看它自己的日志输出，比调试自己的代码更快找到真相。
+- **测试如果不显式隔离"进程会实际写文件的目录"，早晚会污染开发者的真实文件系统**（D1 教训，人工走查中发现）：`aa4c-core` 的下载端到端测试用了真实 `ProcessSpawner` + 真实 aria2c，但没有像 `transfer.default_save_dir` 那样显式覆盖下载目录——`Settings.download_dir` 没被覆盖时会读到 `default_download_dir()` 的默认值（系统真实 Downloads 目录），于是每跑一次这个测试就会真的在开发机 `~/Downloads` 里留下一个文件。这个 bug 在纯自动化测试运行中完全不会被发现（CI 的 `~/Downloads` 是一次性容器，没人会去看），只有在真人做真机联调、恰好瞟了一眼自己的下载文件夹时才会注意到。**教训**：任何"这段代码会执行真实副作用（写文件/发网络请求/改系统状态）"的测试，都要显式检查它用的路径/地址是不是打点在隔离的临时目录里——不能假设"用了 tempdir 作为 data_dir 就完全隔离了"，因为某个字段（这里是 `download_dir`）完全可能来自另一条独立的默认值链路，压根没被 tempdir 覆盖到。**修法**：`Core::start()` 之前，直接向同一个 `aa4c.db` 文件预置一条 `settings` KV（`Store::open` + `set_setting`），确保 `settings::load()` 在 Core 真正启动、`DownloadService` 生成 aria2 conf 文件之前就读到隔离路径——`update_settings()` 太晚了，`DownloadService::start()` 在 `Core::start()` 内部就已经把 `dir=` 写死进 conf 文件了。
+- **一份从 WebFetch/文档摘要拼出来的 Tauri capability JSON，正确性只有真机跑起来才算数**（D1 教训）：`shell:allow-execute` + `sidecar:true` + 参数 `validator` 正则的精确字段名，没有任何一次 WebFetch 查证给出过完全一致、可信引用源码的答案（不同请求给出的字段名甚至互相矛盾），最后是凭对 Tauri v2 shell 插件 `scope.rs` 大致结构的推断写的。这类"格式高度特定、光靠读文档/摘要很难 100%确定"的配置，宁可老老实实跑一次真实场景（`pnpm tauri dev` + 观察 sidecar 是否真的拉起来），也不要满足于"读起来像是对的"就直接认定完成——真机走查这次直接给出了决定性证据（日志里出现"download engine (aria2c) connected"，说明 capability 权限确实放行了）。
 
 V0.3「AA Connect」六个里程碑（C1 QUIC + 断点续传、C2 `aa4c-server` 信令面、C3 Relay 中继、C4 远程同步/发送 + 连接质量、C5 NAT 打洞、C6 分享链接）**全部实现并测试通过，且已打包发布 `v0.3.0-preview`**——连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档全部贯通，外加脱离配对关系的能力型分享，随三平台安装包/APK/服务器二进制发出。**V0.4「Download」设计已定稿（v2）、实现计划已产出**（[DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md) + [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md)），尚未开始实现。**下一步是既定任务：按计划实现里程碑 D1（Aria2 集成）**，按计划步骤 1–10 顺序走，决策依据在 DOWNLOAD_DESIGN §9，不要重开已定案的讨论。

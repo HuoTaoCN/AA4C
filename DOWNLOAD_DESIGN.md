@@ -1,6 +1,6 @@
 # AA4C 下载中心设计（V0.4）
 
-> 状态：**v2（评审修订，已定稿）**，对应 [ROADMAP.md](ROADMAP.md) V0.4（AA Download）。本文档是落地依据，不含实现代码；实现拆解见 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md)（D1 细化到步骤级）。
+> 状态：**里程碑 D1 已实现**（v2 设计定稿，对应 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md) D1 的 10 个步骤全部完成）。D2（qBittorrent）/D3（任务中心打磨）仍是设计稿，未实现。实现相对设计的偏差记在 §3.5。
 > **v1 → v2 评审修订的四个实质问题**：① aria2 官方 release 实际上**不提供 macOS / Linux x86_64 预编译二进制**（只有 Windows + Android aarch64 + 源码，已对官方 release 资产逐项核实），v1"直接下载官方产物"对三分之二的目标平台不成立，改为自建引擎构建流水线（§3.1）；② v1 完全没有回答"应用退出再启动，下载任务怎么办"，补任务持久化与启动对账（§3.4）；③ `--rpc-secret` 走命令行参数会被本机任意进程经 `ps`/WMI 看到，直接推翻 v1 §7 自己写的"拿不到密钥就调不了"，改走 data_dir 下 0600 权限的配置文件（§3.1/§7）；④ v1 默认下载目录"save_dir 同级的 Downloads 子目录"表述自相矛盾，且若按"子目录"理解会落进 Inbox 索引根（=整个 save_dir，递归扫描），等于"下载即自动分享给所有完全信任设备"，改为系统下载目录 + 范围警示（§5/§7）。另补孤儿进程防护（`stop-with-process`）、端口竞态重试、进度写库节流等小项。
 > 关联：产品定位见 [PROJECT_VISION.md](PROJECT_VISION.md) §四.4 / §七 / §十三；架构分层见 [ARCHITECTURE.md](ARCHITECTURE.md)；表结构见 [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md) §4e；界面见 [UI_DESIGN_SPEC.md](UI_DESIGN_SPEC.md)。
 > 本次会话确认的三个范围决定：**AA4C 自动打包并管理外部下载引擎的子进程**（而非要求用户自己装好）；**先做 Aria2（HTTP/HTTPS/FTP），qBittorrent（BT/Magnet）后置为独立里程碑**；**V0.4 只覆盖桌面三平台，不含 Android**。三点理由见 §1.1 与 §9。
@@ -90,6 +90,15 @@ v1 没有回答"应用退出再启动，进行中的下载怎么办"。答案分
 - **续传数据归 aria2 管**：`save-session` 让 aria2 在退出时（外加每 30s 一次，覆盖崩溃窗口）把未完成任务写进 `aria2.session`，下次启动经 `input-file` 装回。**普通 URI 下载在 session 文件里保存原 GID**（aria2 手册明确保证；只有本地 torrent/metalink 文件这类元数据驱动的下载有 GID 保存的例外——D1 的 HTTP/HTTPS/FTP 直链全部属于"普通 URI"，不受影响）。这正是 §3.3"GID 直接当 `download_tasks.id`"能跨重启成立的前提——如果 GID 每次重启都变，那个决定就得推翻。半成品文件的字节级续传由 aria2 自己的 `.aria2` 控制文件 + `continue=true` 负责，AA4C 不掺和。
 - **任务记录归 AA4C 管，启动时对账**：aria2c 健康检查通过后拉一次 `tellActive`/`tellWaiting`/`tellStopped` 全量，与 `download_tasks` 表对齐：两边都有 → 以 aria2 为准刷新状态/进度；表里是未完态（active/waiting/paused）但 aria2 里没有（session 文件丢失/损坏/被手动删）→ 标 `error`（转译成"应用重启后任务已丢失，请重新添加"），同 V0.1 起 `restart_marks_stale_tasks_failed` 对 `transfer_tasks` 的既有先例；aria2 里有但表里没有（上次 `addUri` 成功后、写库前恰好崩了）→ 补插一行。对账逻辑幂等，WebSocket 断线重连后跑同一段，不为重连单写一套。
 
+### 3.5 D1 实现偏差（相对本设计定稿）
+
+- **单线程 actor 模型**：`DownloadService` 内部不是"锁保护共享状态"，而是一个独占持有连接（子进程句柄 + RPC 客户端）的后台任务，公开方法（`add`/`pause`/`resume`/`cancel`）通过 channel 发命令、等回复。好处是"服务当前不可用"有唯一判定点——channel 发送失败 = actor 已退出，不需要额外的健康标志位。
+- **事件通知 + 轮询兜底合并成一个函数**：设计稿里"收到 WS 通知 → 精细 `tellStatus(gid)`"与"低频轮询兜底"是两套逻辑；实现收敛成一个 `reconcile()`：不管是通知触发还是定时器触发，都拉一次 `tellActive`/`tellWaiting`/`tellStopped` 全量、按"状态/进度真的变了才写库和广播"做幂等处理。牺牲一点 RPC 精确性换实现简单——个人量级的任务列表下这点开销可忽略，也顺带让"启动对账"“断线重连对账”“运行时兜底”变成同一段代码，不用维护三套相似逻辑。
+- **`SHUTDOWN_GRACE` 定为 5 秒（不是随便选的）**：实测发现 aria2 的 `aria2.shutdown` RPC（区别于 `forceShutdown`）内部会等**约 3 秒**才真正退出（日志明确打印「3 second(s) has passed. Stopping application.」），这是 aria2 自己的行为，不是我们能改的；`SHUTDOWN_GRACE` 必须明显长于这 3 秒，否则我们自己的强杀会抢在 aria2 完成 session 落盘之前发生，直接违背"先礼后兵"的本意——这是文档评审阶段没有预料到的细节，靠真实调试才发现。
+- **`EngineChild`/`SidecarSpawner` 拆两个 trait**：设计稿把"拉起子进程"当一个整体职责；实现里拆成 `SidecarSpawner::spawn()`（拿到句柄）与 `EngineChild::kill()`（终止），因为 Tauri 的 `CommandChild`（同步 `kill()`）与 `tokio::process::Child`（异步 `kill()`）接口形状不同，拆开后两种壳层实现都能干净适配。
+- **`Core.download` 是 `Option`，不是必然存在**：`CoreConfig.download_spawner: Option<Arc<dyn SidecarSpawner>>`，桌面壳层注入、Android 等未接入平台留 `None`——`None` 与"注入了但 aria2c 启动失败"是两种不同的不可用，前端统一收到 `Unavailable` 错误码，不需要区分。
+- **人工走查中发现并验证**（V0.4_IMPLEMENTATION_PLAN.md D1 步骤 9）：Tauri capability 权限配置（`shell:allow-execute` + `sidecar:true` + 参数 `validator` 正则）与设计一致、真实跑通；`stop-with-process` 在真实的 `tauri dev` 热重载场景下（进程被替换三次）均正确避免了 aria2c 孤儿进程累积；顺带发现一个真实 bug——`aa4c-core` 的下载端到端测试没有隔离下载目录，实际下载文件落进了开发机真实的系统 Downloads 目录，已修复（测试改为 `Core::start` 之前预置隔离的 `download_dir` 到 settings 表）。
+
 ## 4. 数据模型
 
 新表 `download_tasks`（不复用 `transfer_tasks`，理由见 §9）：
@@ -143,7 +152,7 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 
 ## 8. 里程碑切分
 
-1. **D1 — Aria2 集成（HTTP/HTTPS/FTP，本文档的实现重点）**：sidecar 打包 + 生命周期管理（`SidecarSpawner` 注入点）+ `Aria2Client`（RPC + WebSocket 事件）+ `download_tasks` 表 + Core 集成（`CoreEvent`/Command）+「下载」页基础 UI（链接输入 + 任务列表 + 暂停/取消/打开文件夹）。
+1. **D1 ✅ — Aria2 集成（HTTP/HTTPS/FTP）**：sidecar 打包 + 生命周期管理（`SidecarSpawner` 注入点）+ `Aria2Client`（RPC + WebSocket 事件）+ `download_tasks` 表 + Core 集成（`CoreEvent`/Command）+「下载」页基础 UI（链接输入 + 任务列表 + 暂停/取消/打开文件夹）。已实现，见 §3.5 实现偏差。
 2. **D2 — qBittorrent 集成（BT/Magnet）**：qbittorrent-nox sidecar；Web API 鉴权是 cookie session（与 aria2 的 token 模型完全不同，需要单独适配，不能照搬 `Aria2Client` 的鉴权逻辑）；`download_tasks.kind='bt'` 分支；磁力链接输入 + 做种数/连接数等 BT 专属信息展示。
 3. **D3 — 统一任务中心打磨**：设置页新增「下载」区块（下载目录、并发数/限速透传给 aria2/qBittorrent 的 options）；D1+D2 任务在同一个列表里按时间统一排序；批量操作（全部暂停/清除已完成记录）。
 

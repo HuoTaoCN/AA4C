@@ -19,6 +19,9 @@ const form = reactive<Settings>({
   listenPort: 42420,
   serverUrl: null,
   enableRemote: false,
+  // 下载目录字段编辑 UI 留给 D3（设置页「下载」区块）；这里只保证保存设置时
+  // 不会把用户已有的 downloadDir 覆盖成空字符串（watchEffect 会用真实值同步）。
+  downloadDir: "",
 });
 // 服务器地址单独用字符串编辑（空字符串 ⇄ null，避免保存一个全是空格的"已配置"假象）
 const serverUrlInput = computed({

@@ -64,7 +64,7 @@ async fn migration_is_idempotent_across_reopens() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 7); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares
+    assert_eq!(version, 8); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares + 008_downloads
 }
 
 #[tokio::test]
@@ -468,4 +468,67 @@ async fn share_crud_roundtrip() {
 
     // 吊销不存在的 id 报错
     assert!(store.revoke_share("nope").await.is_err());
+}
+
+#[tokio::test]
+async fn download_crud_roundtrip() {
+    use aa4c_types::{DownloadKind, DownloadStatus};
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    let task = store
+        .insert_download("gid1", DownloadKind::Http, "https://example.com/a.zip")
+        .await
+        .unwrap();
+    assert_eq!(task.id, "gid1");
+    assert_eq!(task.status, DownloadStatus::Waiting);
+    assert_eq!(task.save_path, None);
+
+    let listed = store.list_downloads().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, "gid1");
+
+    let unfinished = store.list_unfinished_downloads().await.unwrap();
+    assert_eq!(unfinished.len(), 1);
+
+    store
+        .update_download_progress("gid1", 500, 1000)
+        .await
+        .unwrap();
+    let fetched = store.get_download("gid1").await.unwrap().unwrap();
+    assert_eq!(fetched.downloaded_bytes, 500);
+    assert_eq!(fetched.total_bytes, 1000);
+    // 状态迁移未发生，仍是 waiting
+    assert_eq!(fetched.status, DownloadStatus::Waiting);
+
+    store
+        .update_download_status(
+            "gid1",
+            DownloadStatus::Complete,
+            None,
+            Some("/downloads/a.zip"),
+        )
+        .await
+        .unwrap();
+    let done = store.get_download("gid1").await.unwrap().unwrap();
+    assert_eq!(done.status, DownloadStatus::Complete);
+    assert_eq!(done.save_path.as_deref(), Some("/downloads/a.zip"));
+    assert_eq!(store.list_unfinished_downloads().await.unwrap().len(), 0);
+
+    // 失败态带错误原因，save_path 不传入时保留原值不变
+    store
+        .update_download_status("gid1", DownloadStatus::Error, Some("404 not found"), None)
+        .await
+        .unwrap();
+    let failed = store.get_download("gid1").await.unwrap().unwrap();
+    assert_eq!(failed.status, DownloadStatus::Error);
+    assert_eq!(failed.error.as_deref(), Some("404 not found"));
+    assert_eq!(failed.save_path.as_deref(), Some("/downloads/a.zip"));
+
+    assert!(store
+        .get_download("does-not-exist")
+        .await
+        .unwrap()
+        .is_none());
 }

@@ -7,6 +7,16 @@
     "core:default",
     "opener:default",
     "dialog:default",
-    "notification:default"
+    "notification:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "aria2c",
+          "sidecar": true,
+          "args": [{ "validator": "^--conf-path=.+$" }]
+        }
+      ]
+    }
   ]
 }

@@ -1,6 +1,6 @@
 // 展示层格式化与文案（UI_DESIGN_SPEC.md §6 / §7：说人话、零术语）。
 
-import type { Platform, TransferStatus } from "./types";
+import type { DownloadStatus, Platform, TransferStatus } from "./types";
 
 /** 字节数 → 人类可读（1.2 GB / 42 MB / 800 KB）。 */
 export function humanBytes(bytes: number): string {
@@ -63,6 +63,8 @@ export function errorText(code: string): string {
       return "已取消";
     case "io":
       return "空间不够了，清理一下磁盘或换个保存位置";
+    case "unavailable":
+      return "下载功能当前不可用，请重启应用后重试";
     default:
       return "出了点小问题，请重试";
   }
@@ -83,6 +85,24 @@ export function statusText(status: TransferStatus): string {
       return "已取消";
     case "rejected":
       return "被拒绝";
+  }
+}
+
+/** 下载任务状态 → 中文短语（人话，不出现 aria2/GID/RPC 等技术词）。 */
+export function downloadStatusText(status: DownloadStatus): string {
+  switch (status) {
+    case "active":
+      return "下载中";
+    case "waiting":
+      return "排队中";
+    case "paused":
+      return "已暂停";
+    case "error":
+      return "失败";
+    case "complete":
+      return "已完成";
+    case "removed":
+      return "已取消";
   }
 }
 

@@ -14,6 +14,7 @@ aa4c-identity = { workspace = true }
 aa4c-discovery = { workspace = true }
 aa4c-transfer = { workspace = true }
 aa4c-store = { workspace = true }
+aa4c-download = { workspace = true }
 blake3 = { workspace = true }
 notify-debouncer-mini = { workspace = true }
 tokio = { workspace = true }

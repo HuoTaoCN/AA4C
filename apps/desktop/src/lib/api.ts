@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CommandError,
   DeviceInfo,
+  DownloadTask,
   Settings,
   Share,
   ShareAccess,
@@ -60,6 +61,15 @@ export const api = {
   listShareAccess: (shareId: string) =>
     invoke<ShareAccess[]>("list_share_access", { shareId }),
   openShare: (link: string) => invoke<string>("open_share", { link }),
+
+  addDownload: (url: string) => invoke<string>("add_download", { url }),
+  pauseDownload: (taskId: string) =>
+    invoke<void>("pause_download", { taskId }),
+  resumeDownload: (taskId: string) =>
+    invoke<void>("resume_download", { taskId }),
+  cancelDownload: (taskId: string) =>
+    invoke<void>("cancel_download", { taskId }),
+  listDownloads: () => invoke<DownloadTask[]>("list_downloads"),
 };
 
 /** 把任意 reject 值收敛为 CommandError（兜底未知错误）。 */

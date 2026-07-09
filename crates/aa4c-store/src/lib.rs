@@ -15,8 +15,9 @@ use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aa4c_types::{
-    Aa4cError, DeviceId, RemoteIndexEntry, Result, ScopeKind, Share, ShareAccess, SyncConflict,
-    SyncFileEntry, SyncScope, TaskId, TransferFile, TransferStatus, TransferTask, TrustLevel,
+    Aa4cError, DeviceId, DownloadKind, DownloadStatus, DownloadTask, RemoteIndexEntry, Result,
+    ScopeKind, Share, ShareAccess, SyncConflict, SyncFileEntry, SyncScope, TaskId, TransferFile,
+    TransferStatus, TransferTask, TrustLevel,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -872,6 +873,153 @@ impl Store {
         })
         .await
     }
+
+    // —— 下载任务（DOWNLOAD_DESIGN.md §4/§9，里程碑 D1）——
+
+    /// 新建一条下载任务。`id` 由调用方传入（引擎原生任务号，如 aria2 GID），
+    /// 不由 Store 生成——这是"GID 直接当任务 id"决定的直接体现。
+    pub async fn insert_download(
+        &self,
+        id: &str,
+        kind: DownloadKind,
+        url: &str,
+    ) -> Result<DownloadTask> {
+        let id = id.to_string();
+        let url = url.to_string();
+        self.call(move |conn| {
+            let now = now_ms();
+            conn.execute(
+                "INSERT INTO download_tasks
+                   (id, kind, url, status, total_bytes, downloaded_bytes, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'waiting', 0, 0, ?4, ?4)",
+                params![id, kind.as_str(), url, now],
+            )
+            .map_err(db_err)?;
+            Ok(DownloadTask {
+                id,
+                kind,
+                url,
+                save_path: None,
+                status: DownloadStatus::Waiting,
+                total_bytes: 0,
+                downloaded_bytes: 0,
+                error: None,
+                created_at: now,
+            })
+        })
+        .await
+    }
+
+    pub async fn get_download(&self, id: &str) -> Result<Option<DownloadTask>> {
+        let id = id.to_string();
+        self.call(move |conn| {
+            conn.query_row(
+                "SELECT id, kind, url, save_path, status, total_bytes, downloaded_bytes,
+                        error, created_at
+                 FROM download_tasks WHERE id = ?1",
+                params![id],
+                row_to_download,
+            )
+            .optional()
+            .map_err(db_err)
+        })
+        .await
+    }
+
+    /// 按创建时间倒序列出全部下载任务。
+    pub async fn list_downloads(&self) -> Result<Vec<DownloadTask>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, kind, url, save_path, status, total_bytes, downloaded_bytes,
+                            error, created_at
+                     FROM download_tasks ORDER BY created_at DESC",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], row_to_download)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 未完成任务（active/waiting/paused）——供启动/WS 重连后的对账使用
+    /// （DOWNLOAD_DESIGN.md §3.4）。
+    pub async fn list_unfinished_downloads(&self) -> Result<Vec<DownloadTask>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, kind, url, save_path, status, total_bytes, downloaded_bytes,
+                            error, created_at
+                     FROM download_tasks
+                     WHERE status IN ('active','waiting','paused')
+                     ORDER BY created_at DESC",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], row_to_download)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 状态迁移（含可选的失败原因/落盘路径回填）——对应 §4 的"状态迁移必写"。
+    pub async fn update_download_status(
+        &self,
+        id: &str,
+        status: DownloadStatus,
+        error: Option<&str>,
+        save_path: Option<&str>,
+    ) -> Result<()> {
+        let id = id.to_string();
+        let error = error.map(str::to_owned);
+        let save_path = save_path.map(str::to_owned);
+        self.call(move |conn| {
+            conn.execute(
+                "UPDATE download_tasks
+                 SET status = ?2, error = ?3,
+                     save_path = COALESCE(?4, save_path),
+                     updated_at = ?5
+                 WHERE id = ?1",
+                params![id, status.as_str(), error, save_path, now_ms()],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 进度更新（调用方负责节流，Store 不管频率，见 §4）。
+    pub async fn update_download_progress(
+        &self,
+        id: &str,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+    ) -> Result<()> {
+        let id = id.to_string();
+        self.call(move |conn| {
+            conn.execute(
+                "UPDATE download_tasks
+                 SET downloaded_bytes = ?2, total_bytes = ?3, updated_at = ?4
+                 WHERE id = ?1",
+                params![
+                    id,
+                    i64::try_from(downloaded_bytes).unwrap_or(i64::MAX),
+                    i64::try_from(total_bytes).unwrap_or(i64::MAX),
+                    now_ms()
+                ],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 fn open_and_migrate(path: &Path) -> Result<Connection> {
@@ -987,6 +1135,20 @@ fn row_to_share_access(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShareAccess>
         peer_id: row.get(2)?,
         action: row.get(3)?,
         at: row.get(4)?,
+    })
+}
+
+fn row_to_download(row: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadTask> {
+    Ok(DownloadTask {
+        id: row.get(0)?,
+        kind: parse_col(row, 1)?,
+        url: row.get(2)?,
+        save_path: row.get(3)?,
+        status: parse_col(row, 4)?,
+        total_bytes: get_u64(row, 5)?,
+        downloaded_bytes: get_u64(row, 6)?,
+        error: row.get(7)?,
+        created_at: row.get(8)?,
     })
 }
 

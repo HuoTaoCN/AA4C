@@ -12,6 +12,7 @@ pub(crate) const KEY_AUTO_ACCEPT: &str = "auto_accept_from_trusted";
 pub(crate) const KEY_LISTEN_PORT: &str = "listen_port";
 pub(crate) const KEY_SERVER_URL: &str = "server_url";
 pub(crate) const KEY_ENABLE_REMOTE: &str = "enable_remote";
+pub(crate) const KEY_DOWNLOAD_DIR: &str = "download_dir";
 
 /// 平台默认接收目录：`~/Downloads/AA4C`（取不到下载目录时退回临时目录）。
 pub(crate) fn default_save_dir() -> PathBuf {
@@ -19,6 +20,13 @@ pub(crate) fn default_save_dir() -> PathBuf {
         .or_else(dirs::data_dir)
         .unwrap_or_else(std::env::temp_dir)
         .join("AA4C")
+}
+
+/// 平台默认下载目录：系统下载目录本身（`~/Downloads`），**不**像 `save_dir` 那样
+/// 再拼一层 `AA4C` 子目录——必须落在 `save_dir` 子树之外，否则 Inbox 会把下载
+/// 内容自动索引、分享给全部完全信任设备（DOWNLOAD_DESIGN.md §5/§7，里程碑 D1）。
+pub(crate) fn default_download_dir() -> PathBuf {
+    dirs::download_dir().unwrap_or_else(std::env::temp_dir)
 }
 
 /// 本机默认设备名：取 hostname 并去掉 mDNS 风格的 `.local` 等后缀；
@@ -71,6 +79,9 @@ pub(crate) async fn load(
             .unwrap_or(DEFAULT_PORT),
         server_url: get_json(store, KEY_SERVER_URL).await?,
         enable_remote: get_json(store, KEY_ENABLE_REMOTE).await?.unwrap_or(false),
+        download_dir: get_json(store, KEY_DOWNLOAD_DIR)
+            .await?
+            .unwrap_or_else(|| default_download_dir().to_string_lossy().into_owned()),
     })
 }
 
@@ -82,6 +93,7 @@ pub(crate) async fn save(store: &Store, s: &Settings) -> Result<()> {
     set_json(store, KEY_LISTEN_PORT, &s.listen_port).await?;
     set_json(store, KEY_SERVER_URL, &s.server_url).await?;
     set_json(store, KEY_ENABLE_REMOTE, &s.enable_remote).await?;
+    set_json(store, KEY_DOWNLOAD_DIR, &s.download_dir).await?;
     Ok(())
 }
 

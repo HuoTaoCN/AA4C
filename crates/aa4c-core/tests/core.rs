@@ -1212,3 +1212,137 @@ async fn share_rejects_expired_revoked_and_forged_tokens() {
     a.core.shutdown().await.unwrap();
     b.core.shutdown().await.unwrap();
 }
+
+/// 里程碑 D1：未注入 `download_spawner` 的默认配置下（本文件全部其余测试都是
+/// 这个状态），下载相关的编排方法一律报 `Unavailable`，而不是 panic 或静默
+/// 返回空——前端能据此区分「这个平台/构建没有下载能力」与「有能力但列表为空」。
+#[tokio::test]
+async fn download_capability_absent_without_spawner_reports_unavailable() {
+    let node = spawn_node().await;
+
+    let err = node
+        .core
+        .add_download("http://example.invalid/file".into())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "unavailable");
+
+    assert!(node.core.list_downloads().await.is_err());
+    assert!(node.core.pause_download("gid".into()).await.is_err());
+    assert!(node.core.resume_download("gid".into()).await.is_err());
+    assert!(node.core.cancel_download("gid".into()).await.is_err());
+
+    node.core.shutdown().await.unwrap();
+}
+
+/// 里程碑 D1 端到端：真实 aria2c 通过 Core 编排方法完成一次下载，`CoreEvent`
+/// 正确广播，`list_downloads` 能看到落库记录。需要本机 PATH 里有 `aria2c`
+/// （`brew install aria2` 等，见 HANDOFF.md 环境要求）——找不到就显式 panic。
+#[tokio::test]
+async fn download_end_to_end_through_core_orchestration() {
+    use aa4c_download::ProcessSpawner;
+
+    fn require_aria2c() -> PathBuf {
+        let path_var = std::env::var_os("PATH").unwrap_or_default();
+        let exe_name = if cfg!(windows) {
+            "aria2c.exe"
+        } else {
+            "aria2c"
+        };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe_name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+        panic!("aria2c not found in PATH — install it to run this test (see HANDOFF.md)");
+    }
+
+    async fn spawn_http_server(body: Vec<u8>) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let body = body.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = vec![0u8; 4096];
+                    if stream.read(&mut buf).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    if stream.write_all(header.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    let _ = stream.write_all(&body).await;
+                });
+            }
+        });
+        addr
+    }
+
+    let body = b"AA4C D1 Core orchestration e2e payload".repeat(200);
+    let http_addr = spawn_http_server(body.clone()).await;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    // 下载目录必须在 Core::start 之前就落库指向隔离的临时目录——DownloadService
+    // 在 Core::start 内部启动时就把 download_dir 写死进 aria2 conf 文件，事后
+    // update_settings 已经来不及了。不预置的话会落进 `default_download_dir()`
+    // 的真实系统下载目录（这台测试机上真的发生过，测试文件混进了开发者本人的
+    // ~/Downloads，见 V0.4_IMPLEMENTATION_PLAN.md D1 步骤 9 人工走查记录）。
+    let download_dir = dir.path().join("test-downloads");
+    {
+        let seed_store = aa4c_store::Store::open(&dir.path().join("aa4c.db"))
+            .await
+            .unwrap();
+        seed_store
+            .set_setting(
+                "download_dir",
+                &serde_json::to_string(&download_dir.to_string_lossy().into_owned()).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let mut config = CoreConfig::new(dir.path().to_path_buf());
+    config.listen_port = 0;
+    config.transfer.default_save_dir = dir.path().join("downloads");
+    config.download_spawner = Some(Arc::new(ProcessSpawner::new(require_aria2c())));
+    let core = Core::start(config).await.expect("core starts");
+
+    let mut rx = core.subscribe();
+    let id = core
+        .add_download(format!("http://{http_addr}/file.bin"))
+        .await
+        .unwrap();
+
+    let done_path = timeout(Duration::from_secs(20), async {
+        loop {
+            match rx.recv().await.unwrap() {
+                CoreEvent::DownloadDone { task_id, save_path } if task_id == id => {
+                    return save_path
+                }
+                CoreEvent::DownloadFailed { task_id, error } if task_id == id => {
+                    panic!("download failed: {error}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("DownloadDone within timeout");
+
+    assert_eq!(tokio::fs::read(&done_path).await.unwrap(), body);
+
+    let listed = core.list_downloads().await.unwrap();
+    assert!(listed.iter().any(|t| t.id == id));
+
+    core.shutdown().await.unwrap();
+}

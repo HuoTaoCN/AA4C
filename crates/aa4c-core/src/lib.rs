@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use aa4c_discovery::DiscoveryService;
+use aa4c_download::{DownloadService, SidecarSpawner};
 use aa4c_identity::{Identity, PairingManager};
 use aa4c_store::Store;
 use aa4c_transfer::{TransferConfig, TransferService};
@@ -43,6 +44,12 @@ pub struct CoreConfig {
     pub listen_port: u16,
     /// 传输引擎配置（接收目录会被设置项覆盖）。
     pub transfer: TransferConfig,
+    /// 下载引擎子进程拉起器（DOWNLOAD_DESIGN.md §2，里程碑 D1）：桌面壳层注入
+    /// 基于 `tauri-plugin-shell` 的实现，`None` 时下载能力整体不存在（Android 等
+    /// 未接入的平台/构建，V0.4 范围）——与"注入了但 aria2c 启动失败"的降级
+    /// （仍是 `Some`，只是内部 `cmd_tx` 为空）是两种不同的不可用，后者由
+    /// `DownloadService::start` 自己处理。
+    pub download_spawner: Option<Arc<dyn SidecarSpawner>>,
 }
 
 impl CoreConfig {
@@ -59,6 +66,7 @@ impl CoreConfig {
                 default_save_dir: settings::default_save_dir(),
                 ..TransferConfig::default()
             },
+            download_spawner: None,
         }
     }
 }
@@ -70,6 +78,9 @@ pub struct Core {
     pub discovery: Arc<DiscoveryService>,
     pub transfer: Arc<TransferService>,
     pub pairing: Arc<PairingManager>,
+    /// 下载中心服务（里程碑 D1）；`None` = 本平台/构建未接入下载能力
+    /// （与"接入了但 aria2c 起不来"的降级是两种不同的不可用，见 `CoreConfig` 文档）。
+    pub download: Option<Arc<DownloadService>>,
     events: EventSender,
     self_info: DeviceInfo,
     listen_port: u16,
@@ -210,6 +221,24 @@ impl Core {
             signal_channel,
         )));
 
+        // 11. 下载中心（DOWNLOAD_DESIGN.md，里程碑 D1）：只在壳层注入了 spawner 时才
+        //     尝试拉起 aria2c；拉起/健康检查失败也不返回 Err，只让下载能力整体降级
+        //     不可用（`DownloadService::start` 内部处理，同其余可选能力的一贯降级
+        //     设计）。桌面注入 spawner，Android 等未接入的平台/构建保持 `None`。
+        let download = match config.download_spawner {
+            Some(spawner) => Some(
+                DownloadService::start(
+                    spawner,
+                    store.clone(),
+                    events.clone(),
+                    config.data_dir.clone(),
+                    PathBuf::from(&current.download_dir),
+                )
+                .await,
+            ),
+            None => None,
+        };
+
         tracing::info!(
             device = %self_info.name,
             id = %self_info.id,
@@ -222,6 +251,7 @@ impl Core {
             discovery,
             transfer,
             pairing,
+            download,
             events,
             self_info,
             listen_port: actual_port,
@@ -230,9 +260,12 @@ impl Core {
         }))
     }
 
-    /// 优雅关闭：停止 mDNS 广播与浏览（注销服务、清空在线表）。
+    /// 优雅关闭：停止 mDNS 广播与浏览（注销服务、清空在线表）+ 下载引擎优雅退出。
     pub async fn shutdown(&self) -> Result<()> {
         self.discovery.stop().await?;
+        if let Some(download) = &self.download {
+            download.shutdown().await;
+        }
         tracing::info!("AA4C core shut down");
         Ok(())
     }

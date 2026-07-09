@@ -46,6 +46,23 @@ jobs:
           cache-dependency-path: apps/desktop/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: apps/desktop
+      # 下载引擎 sidecar 二进制（V0.4 里程碑 D1）：按写死的校验和下载 + 校验，不在
+      # 这里重新编译（编译在 engines.yml，一次性/低频）。macOS 是 universal 构建，
+      # Tauri 打包时会自己 lipo 合并两个三元组，所以两个都要下好。
+      - name: Fetch aria2c sidecar (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: bash scripts/fetch-engines.sh x86_64-unknown-linux-gnu
+      - name: Fetch aria2c sidecar (macOS, both architectures)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          bash scripts/fetch-engines.sh aarch64-apple-darwin
+          bash scripts/fetch-engines.sh x86_64-apple-darwin
+      - name: Fetch aria2c sidecar (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: bash scripts/fetch-engines.sh x86_64-pc-windows-msvc
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

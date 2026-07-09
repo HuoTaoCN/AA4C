@@ -78,6 +78,26 @@ pub enum CoreEvent {
 
     /// 本机同步索引发生变化（扫描完成），UI 应重新拉取统一文件视图。
     SyncIndexUpdated,
+
+    /// 下载进度（V0.4 里程碑 D1，DOWNLOAD_DESIGN.md §5）：状态迁移必发，进行中按数秒级
+    /// 节流（不落库，前端本地维护——同 `TransferProgress` 的既有先例）。
+    #[serde(rename_all = "camelCase")]
+    DownloadProgress {
+        task_id: TaskId,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+        speed_bps: u64,
+    },
+    #[serde(rename_all = "camelCase")]
+    DownloadDone {
+        task_id: TaskId,
+        save_path: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    DownloadFailed {
+        task_id: TaskId,
+        error: String,
+    },
 }
 
 impl CoreEvent {
@@ -96,6 +116,9 @@ impl CoreEvent {
             Self::TransferDone { .. } => "transfer_done",
             Self::TransferFailed { .. } => "transfer_failed",
             Self::SyncIndexUpdated => "sync_index_updated",
+            Self::DownloadProgress { .. } => "download_progress",
+            Self::DownloadDone { .. } => "download_done",
+            Self::DownloadFailed { .. } => "download_failed",
         }
     }
 }
@@ -144,6 +167,25 @@ mod tests {
         assert_eq!(json["data"]["taskId"], "t1");
         assert_eq!(json["data"]["via"], "relay");
         assert_eq!(event.event_name(), "transfer_connected");
+
+        let back: CoreEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(back, event);
+    }
+
+    /// 里程碑 D1：下载进度事件的 JSON 形状（camelCase，同 `TransferProgress` 的既有约定）。
+    #[test]
+    fn download_progress_json_shape() {
+        let event = CoreEvent::DownloadProgress {
+            task_id: "gid1".into(),
+            downloaded_bytes: 500,
+            total_bytes: 1000,
+            speed_bps: 1_000_000,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "download_progress");
+        assert_eq!(json["data"]["taskId"], "gid1");
+        assert_eq!(json["data"]["downloadedBytes"], 500);
+        assert_eq!(event.event_name(), "download_progress");
 
         let back: CoreEvent = serde_json::from_value(json).unwrap();
         assert_eq!(back, event);

@@ -13,6 +13,9 @@ dist/
 apps/desktop/src-tauri/target/
 # gen/android 工程源文件入库；schemas 与 Gradle 产物由各级 .gitignore 排除
 apps/desktop/src-tauri/gen/schemas/
+# 下载引擎 sidecar 二进制（V0.4 里程碑 D1）：按校验和下载，不入库——
+# 用 scripts/fetch-engines.sh 生成，见 DOWNLOAD_DESIGN.md §3.1
+apps/desktop/src-tauri/binaries/
 
 # 数据与密钥（本地运行产生，绝不入库）
 *.db

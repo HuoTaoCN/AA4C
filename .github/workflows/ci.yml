@@ -19,7 +19,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev aria2
+      # aa4c-desktop 声明了 externalBin（下载中心 sidecar，里程碑 D1）：cargo 一碰这个
+      # crate 就会校验该文件存在，`--from-path` 只是把 CI 里装好的系统 aria2c 复制过去
+      # 顶个位置——lint/test 不需要真的执行子进程，不影响这一步验证的内容。
+      - name: Stage aria2c sidecar placeholder
+        run: bash scripts/fetch-engines.sh --from-path
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -42,6 +47,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      # aa4c-download 的集成测试驱动真实 aria2c（见 crates/aa4c-download/tests/），
+      # aa4c-desktop 的 externalBin 声明也需要一份摆在 binaries/ 下才能编译（见上）。
+      - name: Install aria2 (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y aria2
+      - name: Install aria2 (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install aria2
+      - name: Install aria2 (Windows)
+        if: matrix.os == 'windows-latest'
+        run: choco install aria2 -y
+      - name: Stage aria2c sidecar placeholder
+        shell: bash
+        run: bash scripts/fetch-engines.sh --from-path
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace

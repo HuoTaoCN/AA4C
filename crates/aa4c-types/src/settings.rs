@@ -21,6 +21,10 @@ pub struct Settings {
     pub server_url: Option<String>,
     /// 远程连接总开关，默认 **关闭**——不配置、不打开就完全不出网（CONNECT_DESIGN.md §8）。
     pub enable_remote: bool,
+    /// 下载目录（默认系统下载目录，如 `~/Downloads`），必须在 `save_dir` 子树之外——
+    /// 落进 `save_dir` 会被 Inbox 自动索引、分享给全部完全信任设备（DOWNLOAD_DESIGN.md
+    /// §5/§7，里程碑 D1）。
+    pub download_dir: String,
 }
 
 #[cfg(test)]
@@ -36,6 +40,7 @@ mod tests {
             listen_port: 42420,
             server_url: Some("aa4c://example.com:42420#abcd1234abcd1234".into()),
             enable_remote: true,
+            download_dir: "/Users/huo/Downloads".into(),
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["deviceName"], "Huo 的 MacBook");
@@ -46,6 +51,7 @@ mod tests {
             "aa4c://example.com:42420#abcd1234abcd1234"
         );
         assert_eq!(json["enableRemote"], true);
+        assert_eq!(json["downloadDir"], "/Users/huo/Downloads");
         let back: Settings = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }

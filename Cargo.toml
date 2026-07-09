@@ -9,6 +9,7 @@ members = [
     "crates/aa4c-store",
     "crates/aa4c-core",
     "crates/aa4c-server",
+    "crates/aa4c-download",
     "apps/desktop/src-tauri",
 ]
 
@@ -29,6 +30,7 @@ aa4c-transfer = { path = "crates/aa4c-transfer" }
 aa4c-store = { path = "crates/aa4c-store" }
 aa4c-core = { path = "crates/aa4c-core" }
 aa4c-server = { path = "crates/aa4c-server" }
+aa4c-download = { path = "crates/aa4c-download" }
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
@@ -55,6 +57,11 @@ bs58 = "0.5"
 
 # 存储
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+# 下载引擎 RPC（V0.4 里程碑 D1，DOWNLOAD_DESIGN.md §3.2）：JSON-RPC over WebSocket
+# 单连接，只连回环 aria2c，不需要 TLS 后端（default-features 关闭 native-tls）
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 # 文件系统监听（同步索引实时更新，SYNC_DESIGN §3.2；带去抖，定时扫描仍作兜底）
 notify-debouncer-mini = "0.4"

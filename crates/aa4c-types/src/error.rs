@@ -26,6 +26,8 @@ pub enum Aa4cError {
     Protocol(String),
     #[error("cancelled")]
     Cancelled,
+    #[error("capability unavailable: {0}")]
+    Unavailable(String),
 }
 
 impl Aa4cError {
@@ -44,6 +46,7 @@ impl Aa4cError {
             Self::Network(_) => "network",
             Self::Protocol(_) => "protocol",
             Self::Cancelled => "cancelled",
+            Self::Unavailable(_) => "unavailable",
         }
     }
 }

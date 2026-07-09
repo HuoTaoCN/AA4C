@@ -81,7 +81,7 @@ AA连接（AA4C）是一个**跨平台设备连接平台**——架构遵循"设
 
 负责持续同步、增量同步、版本管理、冲突处理。设计参考 Syncthing 的块交换模型。
 
-### Download Service（V0.4，设计中，见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)）
+### Download Service（V0.4，里程碑 D1 已实现，见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)）
 
 负责 HTTP / HTTPS / FTP（D1，Aria2 RPC）与 BT / Magnet（D2，qBittorrent API）下载；S3 后续评估。两个引擎都作为 AA4C 自动打包/管理的独立子进程运行（GPL 许可证隔离，只通过 RPC/API 调用，不链接源码），与 Core 之间用 `SidecarSpawner` trait 解耦，Core 本身不直接依赖 Tauri 专属的进程拉起 API。
 
@@ -139,6 +139,7 @@ Plugin（基础生命周期）
 | `aa4c-discovery` | Device Service | mDNS 发现 |
 | `aa4c-transfer` | Transfer Service | 传输协议与引擎 |
 | `aa4c-store` | Storage Service | SQLite 持久化 |
+| `aa4c-download` | Download Service | aria2 引擎子进程生命周期 + JSON-RPC 客户端（V0.4 里程碑 D1） |
 | `apps/desktop` | Desktop + Android UI | Tauri 2 + Vue3（Android 工程由 Tauri 生成于 `src-tauri/gen/android`） |
 
 详细接口定义见 [API_DESIGN.md](API_DESIGN.md)。

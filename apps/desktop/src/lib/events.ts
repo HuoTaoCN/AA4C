@@ -9,6 +9,7 @@ import {
 } from "@tauri-apps/plugin-notification";
 
 import { useDeviceStore } from "../stores/devices";
+import { useDownloadStore } from "../stores/download";
 import { usePairingStore } from "../stores/pairing";
 import { useSettingsStore } from "../stores/settings";
 import { useSyncStore } from "../stores/sync";
@@ -17,6 +18,9 @@ import { useTransferStore } from "../stores/transfer";
 import type {
   DeviceInfo,
   DeviceLostPayload,
+  DownloadDonePayload,
+  DownloadFailedPayload,
+  DownloadProgressPayload,
   PairingPinPayload,
   PairingRequestPayload,
   PairingResultPayload,
@@ -49,6 +53,7 @@ export async function startEventBridge(): Promise<UnlistenFn> {
   const settings = useSettingsStore();
   const sync = useSyncStore();
   const toast = useToastStore();
+  const download = useDownloadStore();
 
   const unlisten = await Promise.all([
     listen<DeviceInfo>("aa4c://device_found", (e) => devices.upsert(e.payload)),
@@ -102,6 +107,19 @@ export async function startEventBridge(): Promise<UnlistenFn> {
     }),
 
     listen<null>("aa4c://sync_index_updated", () => void sync.load()),
+
+    listen<DownloadProgressPayload>("aa4c://download_progress", (e) =>
+      download.onProgress(e.payload),
+    ),
+    listen<DownloadDonePayload>("aa4c://download_done", (e) => {
+      download.onDone(e.payload);
+      toast.push("success", "下载完成", e.payload.savePath);
+      notify("AA连接", "下载完成");
+    }),
+    listen<DownloadFailedPayload>("aa4c://download_failed", (e) => {
+      download.onFailed(e.payload);
+      toast.push("error", e.payload.error || "下载失败，请重试");
+    }),
   ]);
 
   return () => unlisten.forEach((fn) => fn());

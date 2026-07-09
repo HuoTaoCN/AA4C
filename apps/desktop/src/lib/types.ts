@@ -66,6 +66,8 @@ export interface Settings {
   serverUrl: string | null;
   /** 远程连接总开关，默认关闭（里程碑 C2/C4）。 */
   enableRemote: boolean;
+  /** 下载目录（默认系统下载目录），必须在 saveDir 子树之外（里程碑 D1）。 */
+  downloadDir: string;
 }
 
 /** 一次连接实际走的档位（里程碑 C4 连接质量 + C5 打洞，见 CONNECT_DESIGN.md §2）。
@@ -144,6 +146,31 @@ export interface ShareAccess {
   at: number;
 }
 
+/** 'bt' 留给 D2（qBittorrent）。 */
+export type DownloadKind = "http" | "bt";
+
+export type DownloadStatus =
+  | "active"
+  | "waiting"
+  | "paused"
+  | "error"
+  | "complete"
+  | "removed";
+
+/** 一条下载任务（里程碑 D1，DOWNLOAD_DESIGN.md §4）。 */
+export interface DownloadTask {
+  id: string;
+  kind: DownloadKind;
+  url: string;
+  savePath: string | null;
+  status: DownloadStatus;
+  totalBytes: number;
+  downloadedBytes: number;
+  error: string | null;
+  /** unix 毫秒。 */
+  createdAt: number;
+}
+
 /** Command 失败时后端返回的形状（API_DESIGN §9.1）。 */
 export interface CommandError {
   code: string;
@@ -186,6 +213,20 @@ export interface TransferDonePayload {
   taskId: string;
 }
 export interface TransferFailedPayload {
+  taskId: string;
+  error: string;
+}
+export interface DownloadProgressPayload {
+  taskId: string;
+  downloadedBytes: number;
+  totalBytes: number;
+  speedBps: number;
+}
+export interface DownloadDonePayload {
+  taskId: string;
+  savePath: string;
+}
+export interface DownloadFailedPayload {
   taskId: string;
   error: string;
 }

@@ -1,0 +1,23 @@
+[package]
+name = "aa4c-download"
+description = "AA4C 下载中心：aria2 引擎子进程生命周期 + JSON-RPC 客户端（DOWNLOAD_DESIGN.md）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aa4c-types = { workspace = true }
+aa4c-store = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
+bs58 = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

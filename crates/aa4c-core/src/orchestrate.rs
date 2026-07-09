@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use aa4c_discovery::DiscoveryService;
 use aa4c_identity::Identity;
@@ -494,6 +495,39 @@ impl Core {
             trusted: rec.trusted,
             trust_level: Some(rec.trust_level),
         })
+    }
+
+    // —— 下载中心（DOWNLOAD_DESIGN.md，里程碑 D1）——
+
+    /// `self.download` 为 `None` 时统一报 `Unavailable`——本平台/构建未接入下载能力
+    /// （与"接入了但 aria2c 起不来"是两种不同的不可用，后者由 `DownloadService`
+    /// 内部处理，同样会以 `Unavailable` 报出，前端不需要区分这两种情况）。
+    fn download_service(&self) -> Result<&Arc<aa4c_download::DownloadService>> {
+        self.download.as_ref().ok_or_else(|| {
+            Aa4cError::Unavailable("download capability not available on this build".into())
+        })
+    }
+
+    /// 新建一条下载任务（D1 只接受 HTTP/HTTPS/FTP 直链）。
+    pub async fn add_download(&self, url: String) -> Result<TaskId> {
+        self.download_service()?.add(url).await
+    }
+
+    pub async fn pause_download(&self, id: TaskId) -> Result<()> {
+        self.download_service()?.pause(id).await
+    }
+
+    pub async fn resume_download(&self, id: TaskId) -> Result<()> {
+        self.download_service()?.resume(id).await
+    }
+
+    pub async fn cancel_download(&self, id: TaskId) -> Result<()> {
+        self.download_service()?.cancel(id).await
+    }
+
+    /// 按创建时间倒序列出全部下载任务。
+    pub async fn list_downloads(&self) -> Result<Vec<aa4c_types::DownloadTask>> {
+        self.download_service()?.list().await
     }
 }
 

@@ -164,6 +164,16 @@ pub enum CoreEvent {
 
     /// 本机同步索引发生变化，UI 应重新拉取统一文件视图（里程碑 2）。
     SyncIndexUpdated,
+
+    /// 下载进度（V0.4 里程碑 D1，DOWNLOAD_DESIGN.md §5）：状态迁移必发，进行中按数秒级节流。
+    DownloadProgress {
+        task_id: TaskId,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+        speed_bps: u64,
+    },
+    DownloadDone { task_id: TaskId, save_path: String },
+    DownloadFailed { task_id: TaskId, error: String },
 }
 
 /// 一次连接实际走的档位（CONNECT_DESIGN.md §2 连接阶梯，里程碑 C4 + C5）。
@@ -427,6 +437,14 @@ pub struct CoreConfig {
 | `revoke_share` | `id` | `void` | 吊销一条分享 |
 | `list_share_access` | `shareId` | `ShareAccess[]` | 某条分享的访问记录 |
 | `open_share` | `link: string` | `taskId: string` | 打开一个分享链接，立即返回接收任务 id |
+| `add_download` | `url: string` | `taskId: string` | 新建下载任务（里程碑 D1，`url` 为 HTTP/HTTPS/FTP 直链） |
+| `pause_download` | `taskId` | `void` | 暂停一个下载任务 |
+| `resume_download` | `taskId` | `void` | 继续一个已暂停的下载任务 |
+| `cancel_download` | `taskId` | `void` | 取消（并从引擎移除）一个下载任务 |
+| `list_downloads` | — | `DownloadTask[]` | 列出全部下载任务（按创建时间倒序） |
+
+下载能力未就绪（aria2c 未打包/未启动成功，见 DOWNLOAD_DESIGN.md §3.1 健康检查降级）时，
+上述 5 个下载 Command 一律返回 `{ code: "unavailable", message }`。
 
 所有 Command 失败时返回 `{ code: string, message: string }`，`code` 取 `Aa4cError` 的变体名（如 `not_paired`）。
 
@@ -450,6 +468,9 @@ aa4c://transfer_progress   payload: { taskId, transferredBytes, totalBytes, spee
 aa4c://transfer_done       payload: { taskId }
 aa4c://transfer_failed     payload: { taskId, error }
 aa4c://sync_index_updated  payload: null
+aa4c://download_progress   payload: { taskId, downloadedBytes, totalBytes, speedBps }   // 里程碑 D1
+aa4c://download_done       payload: { taskId, savePath }
+aa4c://download_failed     payload: { taskId, error }
 ```
 
 JSON 一律使用 **camelCase**（serde `rename_all = "camelCase"` 在 Tauri 层统一处理）。
