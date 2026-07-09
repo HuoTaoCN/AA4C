@@ -14,7 +14,7 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::Mutex;
 
-const STDERR_TAIL_LINES: usize = 20;
+const STDIO_TAIL_LINES: usize = 20;
 
 pub struct TauriSidecarSpawner {
     app: AppHandle,
@@ -38,19 +38,26 @@ impl SidecarSpawner for TauriSidecarSpawner {
                 Aa4cError::Unavailable(format!("failed to spawn aria2c sidecar: {e}"))
             })?;
             // 持续消费 stdout/stderr/terminate 事件——必须持续消费，否则内部有界
-            // channel 满了会反过来阻塞子进程自己的输出写入。stderr 留最后几行
-            // （诊断用：健康检查反复失败但"进程看起来启动成功"时，唯一能解释
-            // 原因的线索往往是引擎自己打印的错误，之前全部丢弃过一次真实的
-            // Windows 端 aria2 conf 解析失败，只剩一个无信息量的连接被拒错误）。
-            let stderr_tail =
-                std::sync::Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_TAIL_LINES)));
-            let tail = stderr_tail.clone();
+            // channel 满了会反过来阻塞子进程自己的输出写入。stdout+stderr 合并
+            // 留最后几行（诊断用：健康检查反复失败但"进程看起来启动成功"时，
+            // 唯一能解释原因的线索往往是引擎自己打印的日志——一次真实排查中
+            // 发现 aria2 的 NOTICE/ERROR 日志实际上走 stdout 不是 stderr，只
+            // 捕获 stderr 会看到一片空白，两路都要捕获）。
+            let tail =
+                std::sync::Arc::new(StdMutex::new(VecDeque::with_capacity(STDIO_TAIL_LINES)));
+            let tail2 = tail.clone();
             tokio::spawn(async move {
                 while let Some(event) = rx.recv().await {
-                    if let CommandEvent::Stderr(bytes) = event {
-                        let line = String::from_utf8_lossy(&bytes).into_owned();
-                        let mut guard = tail.lock().unwrap_or_else(|e| e.into_inner());
-                        if guard.len() >= STDERR_TAIL_LINES {
+                    let line = match event {
+                        CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
+                            Some(String::from_utf8_lossy(&bytes).into_owned())
+                        }
+                        CommandEvent::Error(msg) => Some(msg),
+                        _ => None,
+                    };
+                    if let Some(line) = line {
+                        let mut guard = tail2.lock().unwrap_or_else(|e| e.into_inner());
+                        if guard.len() >= STDIO_TAIL_LINES {
                             guard.pop_front();
                         }
                         guard.push_back(line);
@@ -59,7 +66,7 @@ impl SidecarSpawner for TauriSidecarSpawner {
             });
             let handle: Box<dyn EngineChild> = Box::new(TauriEngineChild {
                 child: Mutex::new(Some(child)),
-                stderr_tail,
+                tail,
             });
             Ok(handle)
         })
@@ -68,7 +75,7 @@ impl SidecarSpawner for TauriSidecarSpawner {
 
 struct TauriEngineChild {
     child: Mutex<Option<CommandChild>>,
-    stderr_tail: std::sync::Arc<StdMutex<VecDeque<String>>>,
+    tail: std::sync::Arc<StdMutex<VecDeque<String>>>,
 }
 
 impl EngineChild for TauriEngineChild {
@@ -80,8 +87,8 @@ impl EngineChild for TauriEngineChild {
         })
     }
 
-    fn recent_stderr(&self) -> Vec<String> {
-        self.stderr_tail
+    fn recent_stdio(&self) -> Vec<String> {
+        self.tail
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()

@@ -32,19 +32,39 @@ pub trait SidecarSpawner: Send + Sync + 'static {
 /// 生命周期绑定在借用上，调用方立即 `.await` 即可，不存在跨借用悬垂的风险。
 pub type KillFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
-/// 一个正在运行的引擎子进程句柄：只暴露"终止"和"最近的 stderr 输出"，不暴露
+/// 一个正在运行的引擎子进程句柄：只暴露"终止"和"最近的 stdio 输出"，不暴露
 /// "如何与它通信"（数据面走回环 RPC，见 rpc.rs）。
 pub trait EngineChild: Send + Sync {
     /// 强制终止。幂等、尽力而为——进程已退出时静默忽略，绝不 panic。
     fn kill(&self) -> KillFuture<'_>;
-    /// 最近若干行 stderr（诊断用）：健康检查/连接反复失败但进程"看起来启动
-    /// 成功"时，唯一能解释原因的线索往往是引擎自己打印的错误——之前只
-    /// `Stdio::null()` 全部丢弃，Windows CI 上一次真实的 aria2 conf 解析失败
-    /// 就是这样被吞掉、只剩一个无信息量的"connection refused"。
-    fn recent_stderr(&self) -> Vec<String>;
+    /// 最近若干行 stdout+stderr（诊断用，合并成一份按行 tail）：健康检查/连接
+    /// 反复失败但进程"看起来启动成功"时，唯一能解释原因的线索往往是引擎自己
+    /// 打印的日志——之前用 `Stdio::null()` 全部丢弃，一次真实的 Windows CI 失败
+    /// 排查中先只捕获了 stderr，结果是空的：aria2 的 NOTICE/ERROR 日志实际上走
+    /// **stdout**（同 `aria2c --conf-path=...` 直接跑起来能看到的输出一致），
+    /// 两路都要捕获才不会又漏掉真正有信息量的那一路。
+    fn recent_stdio(&self) -> Vec<String>;
 }
 
-const STDERR_TAIL_LINES: usize = 20;
+const STDIO_TAIL_LINES: usize = 20;
+
+/// 起一个后台任务把 `reader`（子进程的 stdout 或 stderr）按行读进共享 tail
+/// 缓冲区（两路共用同一个缓冲区、按到达顺序合并，诊断时不需要分别看两份）。
+fn spawn_tail_reader(
+    reader: impl tokio::io::AsyncRead + Send + Unpin + 'static,
+    tail: std::sync::Arc<StdMutex<VecDeque<String>>>,
+) {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(reader).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let mut guard = tail.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.len() >= STDIO_TAIL_LINES {
+                guard.pop_front();
+            }
+            guard.push_back(line);
+        }
+    });
+}
 
 /// `tokio::process` 实现：显式二进制路径或 PATH 裸命令名（如 `"aria2c"`）。
 /// D1 的开发/测试/CI 与将来 Docker/headless 场景共用这一个实现——见
@@ -69,7 +89,7 @@ impl SidecarSpawner for ProcessSpawner {
             let mut child = tokio::process::Command::new(&binary)
                 .arg(arg)
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
+                .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true)
                 .spawn()
@@ -77,25 +97,18 @@ impl SidecarSpawner for ProcessSpawner {
                     Aa4cError::Unavailable(format!("failed to spawn {}: {e}", binary.display()))
                 })?;
 
-            let stderr_tail =
-                std::sync::Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_TAIL_LINES)));
+            let tail =
+                std::sync::Arc::new(StdMutex::new(VecDeque::with_capacity(STDIO_TAIL_LINES)));
+            if let Some(stdout) = child.stdout.take() {
+                spawn_tail_reader(stdout, tail.clone());
+            }
             if let Some(stderr) = child.stderr.take() {
-                let tail = stderr_tail.clone();
-                tokio::spawn(async move {
-                    let mut lines = BufReader::new(stderr).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        let mut guard = tail.lock().unwrap_or_else(|e| e.into_inner());
-                        if guard.len() >= STDERR_TAIL_LINES {
-                            guard.pop_front();
-                        }
-                        guard.push_back(line);
-                    }
-                });
+                spawn_tail_reader(stderr, tail.clone());
             }
 
             let handle: Box<dyn EngineChild> = Box::new(ProcessChild {
                 child: Mutex::new(Some(child)),
-                stderr_tail,
+                tail,
             });
             Ok(handle)
         })
@@ -104,7 +117,7 @@ impl SidecarSpawner for ProcessSpawner {
 
 struct ProcessChild {
     child: Mutex<Option<tokio::process::Child>>,
-    stderr_tail: std::sync::Arc<StdMutex<VecDeque<String>>>,
+    tail: std::sync::Arc<StdMutex<VecDeque<String>>>,
 }
 
 impl EngineChild for ProcessChild {
@@ -117,8 +130,8 @@ impl EngineChild for ProcessChild {
         })
     }
 
-    fn recent_stderr(&self) -> Vec<String> {
-        self.stderr_tail
+    fn recent_stdio(&self) -> Vec<String> {
+        self.tail
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
