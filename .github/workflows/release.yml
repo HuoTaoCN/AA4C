@@ -19,8 +19,14 @@ jobs:
           - os: ubuntu-latest
             args: ""
           - os: macos-latest
-            # Apple Silicon + Intel 双架构
-            args: "--target universal-apple-darwin"
+            # TODO(engines.yml 验证后恢复)：本该是 universal-apple-darwin（Apple Silicon +
+            # Intel 双架构），但 .github/workflows/engines.yml 从未真正跑过、校验和是空的，
+            # 这次 v0.4.0-preview 临时改成只出 arm64——GitHub Actions 的 macos-latest
+            # runner 本身是 arm64，用 --from-path 兜底只能拿到本机架构的系统 aria2c，
+            # 没有 x86_64 版本可用（brew 在 arm64 runner 上不装 x86_64 包）。engines.yml
+            # 跑通、拿到两个架构的自建产物并把校验和填进 scripts/fetch-engines.sh 后，
+            # 这里要改回 universal-apple-darwin。Intel Mac 用户这个 preview 版本用不了。
+            args: "--target aarch64-apple-darwin"
           - os: windows-latest
             args: ""
     runs-on: ${{ matrix.os }}
@@ -46,23 +52,24 @@ jobs:
           cache-dependency-path: apps/desktop/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: apps/desktop
-      # 下载引擎 sidecar 二进制（V0.4 里程碑 D1）：按写死的校验和下载 + 校验，不在
-      # 这里重新编译（编译在 engines.yml，一次性/低频）。macOS 是 universal 构建，
-      # Tauri 打包时会自己 lipo 合并两个三元组，所以两个都要下好。
-      - name: Fetch aria2c sidecar (Linux)
+      # 下载引擎 sidecar 二进制（V0.4 里程碑 D1）。
+      # TODO(engines.yml 验证后恢复)：本该是 `bash scripts/fetch-engines.sh <triple>`
+      # 按写死校验和下载自建/官方产物，但 engines.yml 从未真正跑过、校验和是空的——
+      # 这次 v0.4.0-preview 临时改用 --from-path（装系统包管理器版本的 aria2c 顶位，
+      # 不校验，见 CHANGELOG.md 0.4.0-preview 条目的说明）。engines.yml 跑通并把
+      # SHA256SUMS 填进 scripts/fetch-engines.sh 后，这三步都要改回真正的校验和下载。
+      - name: Install aria2 (Linux)
         if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: bash scripts/fetch-engines.sh x86_64-unknown-linux-gnu
-      - name: Fetch aria2c sidecar (macOS, both architectures)
+        run: sudo apt-get update && sudo apt-get install -y aria2
+      - name: Install aria2 (macOS)
         if: matrix.os == 'macos-latest'
-        shell: bash
-        run: |
-          bash scripts/fetch-engines.sh aarch64-apple-darwin
-          bash scripts/fetch-engines.sh x86_64-apple-darwin
-      - name: Fetch aria2c sidecar (Windows)
+        run: brew install aria2
+      - name: Install aria2 (Windows)
         if: matrix.os == 'windows-latest'
+        run: choco install aria2 -y
+      - name: Stage aria2c sidecar (dev/preview only, not checksum-verified)
         shell: bash
-        run: bash scripts/fetch-engines.sh x86_64-pc-windows-msvc
+        run: bash scripts/fetch-engines.sh --from-path
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -73,7 +80,8 @@ jobs:
           releaseBody: |
             桌面安装包（.dmg / .msi / .AppImage）与 Android APK（arm64，实验版）见下方 Assets。安装与防火墙说明见 README。
 
-            ${{ contains(github.ref_name, '-') && '⚠️ 预览版：配对协议与早期版本不兼容，互相配对的设备需都升级到本版本。' || '' }}
+            ${{ contains(github.ref_name, '-') && '⚠️ 预览版，详细变更见 CHANGELOG.md。' || '' }}
+            ${{ github.ref_name == 'v0.4.0-preview' && '⚠️ macOS 这次只出 Apple Silicon（arm64）安装包，不含 Intel——下载中心引擎二进制的自建构建流水线还未验证通过，见 CHANGELOG.md 0.4.0-preview 条目说明。协议完全兼容，无需强制同步升级。' || '' }}
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           args: ${{ matrix.args }}
