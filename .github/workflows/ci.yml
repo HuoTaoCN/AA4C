@@ -63,7 +63,15 @@ jobs:
         run: bash scripts/fetch-engines.sh --from-path
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      # `shell: bash` 是有意的（不是随手统一风格）：Windows runner 上 choco 装的
+      # aria2c 在这一步默认的 pwsh 里找不到（PATH 传播时机问题，实测踩到——`bash
+      # scripts/fetch-engines.sh --from-path` 那一步用 bash 能找到、验证过 aria2c
+      # 确实装上了，但 aa4c-core 的下载端到端测试在 pwsh 里跑 `cargo test` 时报
+      # `Unavailable("download engine not available")`，说明子进程继承的 PATH
+      # 视图不一样）；`cargo test` 本身在 bash 里跑，其子进程（测试二进制）才能
+      # 继承到同一份能找到 aria2c.exe 的 PATH。
+      - shell: bash
+        run: cargo test --workspace
 
   frontend:
     name: Frontend (type-check + build)
