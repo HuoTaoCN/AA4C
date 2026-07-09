@@ -1242,6 +1242,15 @@ async fn download_capability_absent_without_spawner_reports_unavailable() {
 async fn download_end_to_end_through_core_orchestration() {
     use aa4c_download::ProcessSpawner;
 
+    // `tracing` 默认在 #[tokio::test] 里没有订阅者——DownloadService::start 失败时
+    // 唯一的线索（spawn/健康检查失败的具体原因）是一条 tracing::warn!，平时完全
+    // 看不到。这条测试驱动真实子进程，失败原因值得能看见，装一个订阅者
+    // （`try_init` 幂等，多次调用/并行测试线程都安全）。
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_env_filter("aa4c_download=debug,aa4c_core=debug")
+        .try_init();
+
     fn require_aria2c() -> PathBuf {
         let path_var = std::env::var_os("PATH").unwrap_or_default();
         let exe_name = if cfg!(windows) {

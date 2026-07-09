@@ -31,3 +31,4 @@ bs58 = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 aa4c-server = { workspace = true }
+tracing-subscriber = { workspace = true }
