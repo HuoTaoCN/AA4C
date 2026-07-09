@@ -208,8 +208,14 @@ async fn spawn_and_connect_with_retries(
                 });
             }
             Err(e) => {
+                let stderr = child.recent_stderr();
                 child.kill().await;
-                tracing::warn!(attempt, error = %e, "aria2 spawn/health-check attempt failed, retrying with a new port");
+                tracing::warn!(
+                    attempt,
+                    error = %e,
+                    stderr = ?stderr,
+                    "aria2 spawn/health-check attempt failed, retrying with a new port"
+                );
                 last_err = Some(e);
             }
         }
