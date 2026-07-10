@@ -45,11 +45,14 @@ jobs:
           # 首次真实运行发现：在 arm64 runner 上用 `clang -arch x86_64` 交叉编译会链接失败
           # （Homebrew 在 arm64 runner 上只装 arm64 单架构的 c-ares/libssh2 等依赖库，交叉
           # 编译产物找不到 x86_64 符号）——改成每个架构用对应的原生 runner 各自编译，不
-          # 再跨架构，`macos-13` 是 GitHub 提供的 Intel（x86_64）hosted runner。
+          # 再跨架构。第二次运行踩了一个新坑：最初选的 `macos-13` 标签已经在 2025-12-04
+          # 被 GitHub 完全退役，job 会无限期排队排不到 runner（不会报错，只是卡住）——
+          # `macos-15-intel` 是目前 GitHub 仍在支持的最后一个 x86_64 镜像（计划支持到
+          # 2027-08，之后 GitHub 不再提供任何 Intel macOS hosted runner）。
           - target: aarch64-apple-darwin
             runner: macos-latest
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-15-intel
     steps:
       - name: Download source
         run: |
