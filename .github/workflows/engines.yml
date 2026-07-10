@@ -4,13 +4,23 @@ name: Build Engines
 # 只手动触发，不随每次应用 release 重新编译。产物 + SHA256SUMS 发到一个专门的
 # `engines/aria2-<version>` release，供 scripts/fetch-engines.sh 下载校验。
 #
-# ⚠️ 首次运行前的已知风险（未经真实 CI 验证，写作时只能依据 aria2 官方 README
-# 的构建说明推断，见 https://github.com/aria2/aria2#build-from-git-repository）：
-#   - macOS x86_64 交叉编译（在 arm64 runner 上）用 `-arch x86_64` 让 Xcode clang
-#     原生跨架构编译；如果失败，改用真正的 x86_64 runner 或分别在两种 runner 上跑。
-#   - Linux 静态链接依赖 `ARIA2_STATIC=yes`，需要对应的 *-dev/静态版依赖包全部
-#     装好，缺一个都会 configure 失败——第一次跑大概率要按报错调整 apt 包列表。
-# 跑完第一次后，把结果核对进 DOWNLOAD_DESIGN.md 与本文件注释，供后续维护参考。
+# ✅ 已在真实 CI 跑通验证（aria2_version=1.37.0，四条构建腿 + publish 全绿，产物
+# SHA256SUMS 已填进 scripts/fetch-engines.sh）。跑通前踩过的坑，升级 aria2 版本
+# 重跑时如果又炸，先看是不是这几个老问题复发：
+#   - macOS x86_64 不能在 arm64 runner 上用 `clang -arch x86_64` 交叉编译——Homebrew
+#     在 arm64 runner 上只装 arm64 单架构依赖库（c-ares/libssh2 等），链接会报
+#     "symbol(s) not found for architecture x86_64"。已改成每个架构用各自的原生
+#     runner（`macos-latest`=arm64，`macos-15-intel`=x86_64）分别编译。
+#   - GitHub 的 macOS x86_64 hosted 镜像标签会随时间退役（`macos-13` 已在
+#     2025-12-04 退役）——用了已退役标签的 job 不会报错，只会无限期排队排不到
+#     runner，容易被误判成"卡住了"。升级时如果 macos-15-intel 也退役了，去
+#     https://github.com/actions/runner-images 查当前还支持的最后一个 x86_64 镜像。
+#   - Linux 静态链接（`ARIA2_STATIC=yes`）：`autoreconf -i` 需要 `autopoint`，
+#     Ubuntu 上这是独立于 `gettext` 的另一个包，两个都要装；`liblzma-dev` 容易漏装
+#     （报 `ld: cannot find -llzma`）；`libc-ares-dev` 在 Ubuntu 上只带 `.so` 不带
+#     静态 `.a`（报 `ld: cannot find -lcares`），没有单独的静态版可装，直接
+#     `--without-libcares` 放弃这个依赖——代价是 DNS 解析退化成同步阻塞（走系统
+#     resolver），对下载中心 sidecar 用途没有实际影响。
 
 on:
   workflow_dispatch:

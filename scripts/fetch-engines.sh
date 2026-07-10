@@ -34,10 +34,10 @@ ENGINES_TAG="engines/aria2-${ARIA2_VERSION}"
 # 一路对 macOS 默认 shell 的迁就）。
 checksum_for() {
   case "$1" in
-    x86_64-pc-windows-msvc) echo "" ;;
-    aarch64-apple-darwin) echo "" ;;
-    x86_64-apple-darwin) echo "" ;;
-    x86_64-unknown-linux-gnu) echo "" ;;
+    x86_64-pc-windows-msvc) echo "be2099c214f63a3cb4954b09a0becd6e2e34660b886d4c898d260febfe9d70c2" ;;
+    aarch64-apple-darwin) echo "a79bdf829a479a77d2f0af775b2a61e1174466417af9c70d5eb75d891918ae08" ;;
+    x86_64-apple-darwin) echo "5481440a7c7bbde3cb0e339267684af6d1eb187f4fb7c299f721b7536b9d86df" ;;
+    x86_64-unknown-linux-gnu) echo "726c98e6a331f1e1e50b1d3711bf257b6472832d9b2dbae140dd9fbd113ee376" ;;
     *) echo "" ;;
   esac
 }
@@ -105,6 +105,10 @@ fi
 dest="$BIN_DIR/aria2c-${triple}${suffix}"
 url="https://github.com/HuoTaoCN/AA4C/releases/download/${ENGINES_TAG}/aria2c-${triple}${suffix}"
 
+# 先删再下载：同一目录常常已经躺着一份 `--from-path` 模式留下的文件（那份是从
+# Homebrew 装的 aria2c 直接 cp 来的，继承了只读权限位），`curl -o` 覆盖一个
+# 只读目标会写失败（"Failure writing output to destination"），本地实测踩到过。
+rm -f "$dest"
 echo "downloading $url"
 curl -fsSL -o "$dest" "$url"
 

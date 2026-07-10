@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `.github/workflows/engines.yml`（下载引擎二进制自建流水线，V0.4 D1）首次真实跑通验证：产物 + `SHA256SUMS` 已发到 `engines/aria2-1.37.0` release，校验和已填进 `scripts/fetch-engines.sh`。`release.yml` 恢复正式状态——macOS 目标从临时的 `aarch64-apple-darwin` 改回 `universal-apple-darwin`（下次发布起 Intel Mac 用户重新可用），三平台不再依赖系统包管理器（brew/apt/choco）装 aria2，改为 `fetch-engines.sh <triple>` 真实校验和下载。首跑过程中修了四个此前未知的坑（macOS 交叉编译链接失败、GitHub `macos-13` 镜像已退役、Ubuntu `autopoint`/`liblzma-dev` 缺包、`libc-ares-dev` 无静态库改 `--without-libcares`），详见 HANDOFF.md 第五节；`fetch-engines.sh` 自身也顺手修了一个只读文件覆盖失败的 bug。不影响任何已发布版本，无需用户操作。
+
 ## [0.4.0-preview.1] - 2026-07-10
 
 > **Windows 安装包修复重发**：`v0.4.0-preview` 发布后发现，`release.yml` 当时用 `choco install aria2` 给 Windows 装 aria2c——choco 装的其实是 Chocolatey 的一个转发器 shim，不是真正的可执行文件，它靠"调用者的当前工作目录"解析真身路径；直接把这个 shim 复制进安装包会打包出一个实际执行不了的 aria2c.exe（构建本身不会报错，只有真用户点下载时才会在运行时失败：下载中心整体不可用）。这个版本除 Windows 安装包外**没有任何功能或代码变化**——`aa4c-download`/`aa4c-core`/前端均与 `v0.4.0-preview` 完全一致。
