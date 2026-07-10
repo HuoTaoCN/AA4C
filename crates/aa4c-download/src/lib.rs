@@ -9,14 +9,23 @@
 //! 随时因为重连而整体替换"这种状态，也让"服务当前不可用"有一个天然、单一的
 //! 判定点（channel 发送失败 = actor 已退出 = 不可用）。
 
-#![forbid(unsafe_code)]
+// D1 上线时是 `forbid`——D2 接孤儿进程防护需要直接调用 Win32 API（Job Object）
+// 与 Linux `prctl`，两处都是必需的 unsafe FFI，`forbid` 连局部 `#[allow]` 都不
+// 认，收窄成 `deny` + 只在 `orphan_guard` 模块里 `#[allow(unsafe_code)]`，其余
+// 代码仍然维持"unsafe 默认不许"的原则不变。
+#![deny(unsafe_code)]
 
 mod conf;
+mod orphan_guard;
 mod rpc;
 mod spawner;
+mod transmission_conf;
+mod transmission_process;
+mod util;
 
 pub use rpc::{Aria2Client, Aria2Notification};
 pub use spawner::{EngineChild, KillFuture, ProcessSpawner, SidecarSpawner, SpawnFuture};
+pub use transmission_process::TransmissionProcess;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -189,7 +198,8 @@ async fn spawn_and_connect_with_retries(
                 continue;
             }
         };
-        let child = match spawner.spawn(&aria_conf.conf_path).await {
+        let arg = format!("--conf-path={}", aria_conf.conf_path.display());
+        let child = match spawner.spawn(&[arg]).await {
             Ok(c) => c,
             Err(e) => {
                 last_err = Some(e);

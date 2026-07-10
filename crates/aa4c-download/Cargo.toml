@@ -19,5 +19,17 @@ bs58 = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 
+# 孤儿进程防护（DOWNLOAD_DESIGN.md §3.6.2）：Windows 上用 Job Object 按 PID
+# 事后归属，仅 Windows 需要——`orphan_guard::windows` 是这个 crate 里唯一
+# 用到它的地方。Linux 的等价机制（`PR_SET_PDEATHSIG`）手写 FFI 声明，
+# 不为一个系统调用引入 libc 依赖。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
