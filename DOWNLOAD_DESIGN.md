@@ -124,7 +124,12 @@ v1 选 qBittorrent 时没有核实其 headless 构建的三平台分发情况—
 
 - **前台模式是硬要求**：`transmission-daemon` 默认启动后 fork 到后台、父进程立即退出——`SidecarSpawner` 拿到的句柄会抓错进程（拿到的是即将退出的父进程），`kill()`/退出监测全部失效。必须传 `-f`（`--foreground`）。命令行收敛为固定形状 `transmission-daemon -f --config-dir <data_dir>/transmission`（同 §3.1 只传 `--conf-path` 的思路，Tauri capability 参数放行仍可精确匹配）。
 - **配置**：`<config-dir>/settings.json` 每次启动整体重写（同 aria2 conf 先例）：`rpc-bind-address=127.0.0.1`、`rpc-port=<探测的空闲端口>`、`rpc-authentication-required=true`、`rpc-username`/`rpc-password`（每次启动随机生成；Transmission 启动时会把明文密码替换成加盐哈希写回，无碍——我们下次启动整体覆盖）、`download-dir=<Settings.download_dir>`、DHT/PEX/LPD 开启。凭据不进命令行，同 §3.1 的硬要求。注意 Transmission 退出时会把内存中的设置写回 `settings.json`——"每次启动整体重写"的既有决定天然免疫这一点。
-- **孤儿进程防护（与 aria2 的关键差异，本节最大的未定项）**：Transmission **没有** `stop-with-process` 等价物。候选组合：正常路径靠 `Core::shutdown()`（RPC `session-close` 优雅关闭 → 超时强杀）；异常路径（AA4C 崩溃/被强杀）——Windows 用 Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，内核层保证"宿主死→子进程死"）；Linux 有 `PR_SET_PDEATHSIG`；macOS 没有等价机制，兜底用 PID 文件 + 下次启动清扫（清扫时校验进程名，避免 PID 复用误杀）。**进方案前先小样验证**（尤其 Tauri sidecar 机制下能否拿到原始进程句柄做 Job Object 归属），定稿写回 §9——不要照抄本段就当已验证。
+- **孤儿进程防护（与 aria2 的关键差异，✅ 已小样验证）**：Transmission **没有** `stop-with-process` 等价物。正常路径靠 `Core::shutdown()`（RPC `session-close` 优雅关闭 → 超时强杀），与 aria2 一致；异常路径（AA4C 崩溃/被强杀，来不及做任何清理）三平台各自的机制均已用一次性 PoC（父进程 `std::process::abort()` 模拟不可控崩溃，验证子进程是否被自动清理）真实验证通过：
+  - **Windows**：`CreateJobObjectW` 建 Job → `SetInformationJobObject` 设 `JOBOBJECT_EXTENDED_LIMIT_INFORMATION.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` → `AssignProcessToJobObject` 把子进程句柄归到这个 Job。宿主进程异常终止时 OS 回收其持有的全部句柄（含 Job 句柄），触发"最后一个句柄关闭"条件，内核自动杀光 Job 里的全部进程——不需要宿主自己活着执行任何清理代码。在真实 `windows-latest` GitHub Actions runner 上用 `windows-sys` crate 验证：子进程（`ping -n 600` 占位）在父进程 abort 后确认自动死亡。
+  - **Linux**：子进程 `exec` 前（`std::os::unix::process::CommandExt::pre_exec` 钩子内）调用 `prctl(PR_SET_PDEATHSIG, SIGKILL)`，登记"父线程死亡时内核发 SIGKILL 给我"。在真实 `ubuntu-latest` GitHub Actions runner 上验证：子进程（`sleep 600` 占位）在父进程 abort 后确认自动死亡。
+  - **macOS**：没有内核层等价机制，用 PID 文件 + 下次启动清扫兜底——写文件时记录 `pid` + 进程启动时间戳（`ps -o lstart=`）+ 进程名（`ps -o comm=`）三元组；下次启动读文件后先核对这三者与当前 `ps` 输出完全一致才动手 kill（防 PID 复用误杀无关进程），核对失败则拒绝清理、静默跳过。本机 bash 脚本验证：正常清扫路径（身份匹配 → 成功清理）与防误杀路径（身份不匹配的"复用同一 PID 的另一进程"场景 → 正确拒绝）均通过。
+  
+  三个 PoC 的实现要点已固定，D2.4 写生产代码时直接照此实现，不需要再重新设计。
 - **健康检查**：轮询 `session-get`（等价于 aria2 的 `getVersion`），退避/降级策略同 §3.1。
 
 #### 3.6.3 RPC 通信
@@ -233,6 +238,7 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 | BT 引擎选型（v3） | qBittorrent → **Transmission**：三平台 headless 分发逐项核实后 qBittorrent 在 Windows/macOS 均无可用先例（Windows 完全空白），Transmission 官方 MSI 自带 daemon + Homebrew core formula 双架构齐全；RPC 更简单（header token vs cookie session）；无事件推送由 D1 已收敛的 `reconcile()` 轮询主路径补齐，不需要新机制 | §3.6 |
 | BT 任务 id | infohash 直接当 `download_tasks.id`（引擎原生 id 原则的 BT 分支），跨重启天然稳定 | §3.6.4 |
 | 做种策略（v3） | 下载完成标 `complete` 但**不停止做种**——保种是 BT 生态基本礼仪、私有 Tracker/PT（§10）的硬需求；分享率/做种时长限制 D3 透传设置 | §3.6.4 |
+| Transmission 孤儿进程防护（v3，✅ 已小样验证） | Windows `CreateJobObjectW`+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`+`AssignProcessToJobObject`；Linux `pre_exec` 内 `prctl(PR_SET_PDEATHSIG, SIGKILL)`；macOS PID 文件+进程身份（pid+启动时间+comm）核对后清扫。三者均用真实环境 PoC 验证通过（Windows/Linux 在真实 GitHub Actions runner 上，macOS 本机）——D2.4 直接照此实现 | §3.6.2 |
 | 插件语言（v3 预留） | **Lua**（mlua vendored 编译进二进制，无系统依赖）：嵌入式脚本事实标准、运行时体量小、可彻底沙箱、非专业用户照模板可写；对比 JS 引擎（体量/复杂度高一个量级）、WASM（写作门槛过高）、Python（需带解释器分发）均不符合"简单 > 复杂" | §10 |
 | 插件适用面（v3 预留） | 适用于**全部下载类型**，不是 BT 专属——HTTP 直链同样需要自定义请求头/鉴权/文件名规则/分类；钩子挂在引擎无关的任务模型层，不挂在具体引擎客户端上 | §10 |
 | 插件权限模型（v3 预留） | 默认零 IO + 能力制宿主 API + manifest 域名白名单用户确认；V0.4 只预留接缝（引擎无关请求描述中间层），实现推迟到独立里程碑 + 独立安全评审 | §10，§7 |
@@ -261,4 +267,4 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 
 ## 仍待实现 / 后续
 
-Transmission 孤儿进程防护的小样验证（Job Object / `PR_SET_PDEATHSIG` / PID 清扫组合，§3.6.2——**进 D2 编码前必须先做**）；Windows MSI 解包产物的 DLL 伴随清单核实与 `bundle.resources` 打包实测（§3.6.5）；engines.yml transmission 构建腿首跑（预期按 aria2 首跑教训再踩一轮新坑）；限速/并发数/分享率等选项具体要透传 aria2/Transmission 的哪些 option、设置页字段怎么设计；下载失败的自动重试策略；子进程崩溃后的自动重启策略；"下载目录落在同步范围内"警示的具体交互（D3 设置页一起做）；`.torrent` 文件输入（D2 只接 magnet，文件输入留给 D3 或插件阶段）；引擎版本升级的操作流程文档化（engines release 的产出步骤，做进 CONTRIBUTING 或脚本注释）；Lua 插件系统的独立设计文档 + 安全评审（§10，D4）；Android 平台的下载能力方案（很可能是完全不同的技术路径，比如系统 DownloadManager，而不是 bundled 二进制，需要单独评估）；S3 协议支持（PROJECT_VISION.md 提到但未细化，大概率需要凭证管理，单独评估，不在 D1–D3 范围内）。
+Windows MSI 解包产物的 DLL 伴随清单核实与 `bundle.resources` 打包实测（§3.6.5）；engines.yml transmission 构建腿首跑（预期按 aria2 首跑教训再踩一轮新坑）；限速/并发数/分享率等选项具体要透传 aria2/Transmission 的哪些 option、设置页字段怎么设计；下载失败的自动重试策略；子进程崩溃后的自动重启策略；"下载目录落在同步范围内"警示的具体交互（D3 设置页一起做）；`.torrent` 文件输入（D2 只接 magnet，文件输入留给 D3 或插件阶段）；引擎版本升级的操作流程文档化（engines release 的产出步骤，做进 CONTRIBUTING 或脚本注释）；Lua 插件系统的独立设计文档 + 安全评审（§10，D4）；Android 平台的下载能力方案（很可能是完全不同的技术路径，比如系统 DownloadManager，而不是 bundled 二进制，需要单独评估）；S3 协议支持（PROJECT_VISION.md 提到但未细化，大概率需要凭证管理，单独评估，不在 D1–D3 范围内）。
