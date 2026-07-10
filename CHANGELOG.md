@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.4.0-preview.1] - 2026-07-10
+
+> **Windows 安装包修复重发**：`v0.4.0-preview` 发布后发现，`release.yml` 当时用 `choco install aria2` 给 Windows 装 aria2c——choco 装的其实是 Chocolatey 的一个转发器 shim，不是真正的可执行文件，它靠"调用者的当前工作目录"解析真身路径；直接把这个 shim 复制进安装包会打包出一个实际执行不了的 aria2c.exe（构建本身不会报错，只有真用户点下载时才会在运行时失败：下载中心整体不可用）。这个版本除 Windows 安装包外**没有任何功能或代码变化**——`aa4c-download`/`aa4c-core`/前端均与 `v0.4.0-preview` 完全一致。
+>
+> **修复**：`release.yml`（连同 `ci.yml`）不再使用 choco，改为直接下载官方 aria2 Windows release 压缩包、解出真正的 `aria2c.exe`。macOS / Linux 安装包不受影响（choco 只用在 Windows），未重新发布。
+
+### Fixed
+
+- Windows 安装包里打包的 aria2c.exe 现在是真正可执行的官方二进制，下载中心在 Windows 上恢复可用（此前 Windows 用户点击下载会静默失败：进程启动即退出，RPC 连接被拒绝）。
+
 ## [0.4.0-preview] - 2026-07-09
 
 > **预览版**：V0.4「Download」**里程碑 D1（Aria2 集成）已实现**——下载中心第一次可用，粘贴一条 HTTP / HTTPS / FTP 直链即可下载，进度/暂停/继续/取消/完成后打开文件夹全部打通，应用重启后未完成的下载能自动恢复。新 crate `aa4c-download` 封装 aria2 子进程生命周期与 JSON-RPC 通信，不依赖 Tauri；桌面壳层通过 `tauri-plugin-shell` sidecar 机制拉起打包的 aria2c。已过真实 `tauri dev` 走查（sidecar 拉起、Tauri capability 权限配置、孤儿进程防护均实测有效）；受限于本次没有原生 GUI 自动化工具，走查没有覆盖实际点击暂停/继续/打开文件夹按钮，但底层行为已由 6 条真实 aria2c 集成测试覆盖。D2（qBittorrent / BT-Magnet）与 D3（任务中心打磨）仍是设计稿，未实现。
