@@ -82,10 +82,12 @@ jobs:
       - name: Install build deps
         run: |
           sudo apt-get update
-          # gettext 提供 autopoint——首次真实运行时 autoreconf 报
-          # "Can't exec autopoint" 才发现 Ubuntu runner 默认不带这个包。
+          # `autopoint` 在 Ubuntu 上是独立打包的（不是 gettext 的一部分——第二次真实
+          # 运行才发现：装了 gettext 之后 autoreconf 还是报 "Can't exec autopoint"，
+          # `apt-cache search autopoint` 才确认 Debian/Ubuntu 把它拆成了单独一个包，
+          # 版本号跟 gettext 一样但是不同的 .deb）。
           sudo apt-get install -y autoconf automake autotools-dev libtool pkg-config \
-            gettext libssl-dev libxml2-dev zlib1g-dev libsqlite3-dev libc-ares-dev
+            gettext autopoint libssl-dev libxml2-dev zlib1g-dev libsqlite3-dev libc-ares-dev
       - name: Build (static)
         working-directory: aria2-${{ inputs.aria2_version }}
         run: |
