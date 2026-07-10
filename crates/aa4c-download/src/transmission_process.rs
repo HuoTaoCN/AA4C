@@ -97,10 +97,15 @@ mod tests {
         which_in_path("transmission-daemon")
     }
 
+    /// 手写的最小 `which`：按 PATH 逐个目录找 `<bin><平台可执行后缀>`——
+    /// Windows 上文件系统按字面文件名查找，不会像 shell 那样自动给裸名补
+    /// `.exe`，漏了这一步会永远找不到（真机 CI 上踩到过：MSI 解包本身其实
+    /// 是成功的，是这个 helper 一直在找不带后缀的 `transmission-daemon`）。
     fn which_in_path(bin: &str) -> Option<std::path::PathBuf> {
+        let filename = format!("{bin}{}", std::env::consts::EXE_SUFFIX);
         std::env::var_os("PATH").and_then(|paths| {
             std::env::split_paths(&paths)
-                .map(|dir| dir.join(bin))
+                .map(|dir| dir.join(&filename))
                 .find(|p| p.is_file())
         })
     }
