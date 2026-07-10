@@ -90,12 +90,18 @@ jobs:
           # `apt-cache search autopoint` 才确认 Debian/Ubuntu 把它拆成了单独一个包，
           # 版本号跟 gettext 一样但是不同的 .deb）。
           sudo apt-get install -y autoconf automake autotools-dev libtool pkg-config \
-            gettext autopoint libssl-dev libxml2-dev zlib1g-dev libsqlite3-dev libc-ares-dev
+            gettext autopoint libssl-dev libxml2-dev zlib1g-dev liblzma-dev libsqlite3-dev libc-ares-dev
       - name: Build (static)
         working-directory: aria2-${{ inputs.aria2_version }}
         run: |
           autoreconf -i
-          ./configure ARIA2_STATIC=yes
+          # 第三次真实运行才发现：`ARIA2_STATIC=yes` 要求每个被探测到的依赖库都有
+          # 静态 .a 可链接——`liblzma-dev` 之前压根没装（缺 -llzma），而 Ubuntu 的
+          # `libc-ares-dev` 只带 .so 不带 .a（缺 -lcares，且没有单独的 -dev 包能补）。
+          # lzma 补包解决；c-ares 干脆 `--without-libcares` 不启用——代价是异步 DNS
+          # 解析退化成标准阻塞解析（走系统 resolver），对下载中心 sidecar 这种用途
+          # 没有实际影响，换一整套自建静态 c-ares 不值得为这点收益增加复杂度。
+          ./configure ARIA2_STATIC=yes --without-libcares
           make -j"$(nproc)"
       - uses: actions/upload-artifact@v4
         with:
