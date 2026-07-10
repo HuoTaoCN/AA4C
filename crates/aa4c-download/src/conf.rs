@@ -4,7 +4,6 @@
 //! `--conf-path`——密钥不放命令行是硬要求（命令行参数对本机任意用户的进程经
 //! `ps`/WMI 可见）。
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use aa4c_types::{Aa4cError, Result};
@@ -54,6 +53,7 @@ pub(crate) fn write_conf(data_dir: &Path, download_dir: &Path, host_pid: u32) ->
 
 #[cfg(unix)]
 fn write_file_0600(path: &Path, body: &str) -> Result<()> {
+    use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt;
     let mut f = std::fs::OpenOptions::new()
         .write(true)
