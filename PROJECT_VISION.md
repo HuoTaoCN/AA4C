@@ -172,7 +172,7 @@ AA4C Core → Plugin System → Transport Layer → Storage Layer
 | **Transport Engine** | 文件传输 | 局域网：TCP / QUIC；广域网：P2P、NAT 穿透、Relay |
 | **Sync Engine** | 块同步、哈希校验、冲突解决、版本管理 | 参考 Syncthing |
 | **Download Engine** | 多协议下载 | 第一阶段：Aria2 RPC；第二阶段：自研 |
-| **BT Engine** | BT / Magnet 下载 | 第一阶段：qBittorrent API；第二阶段：libtorrent |
+| **BT Engine** | BT / Magnet 下载 | 第一阶段：Transmission RPC（V0.4 D2 设计修订自 qBittorrent）；第二阶段：libtorrent |
 | **AI Engine** | 分类、标签、摘要、搜索 | 本地模型：llama.cpp + GGUF（Qwen / DeepSeek） |
 
 ## 十、安全架构
@@ -228,7 +228,7 @@ AA4C Core → Plugin System → Transport Layer → Storage Layer
 
 理由：允许商业使用、允许企业集成、提供专利保护、生态兼容性广。
 
-> ⚠️ 注意：GPL 组件（如 qBittorrent、Aria2）仅通过 API / RPC 调用，不直接嵌入源码，避免许可证传染。
+> ⚠️ 注意：GPL 组件（如 Aria2、Transmission）仅通过 API / RPC 调用，不直接嵌入源码，避免许可证传染。
 
 ## 十四、开发路线
 

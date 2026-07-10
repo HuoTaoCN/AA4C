@@ -79,10 +79,11 @@
 功能：
 
 - HTTP / HTTPS / FTP 下载（Aria2 RPC，桌面自动打包管理子进程）
-- BT / Magnet 下载（qBittorrent API，D2 里程碑）
+- BT / Magnet 下载（Transmission RPC，D2 里程碑——v3 设计修订从 qBittorrent 换引擎）
 - 统一任务中心
+- Lua 插件系统预留（私有 Tracker/PT、搜索、自动分类等站点化需求，实现是 V0.4 之后的独立里程碑）
 
-> 设计详见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)（v2，经评审修订）；实现计划见 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md)（D1–D3，D1 细化到步骤级）。**里程碑 D1（Aria2/HTTP-FTP）已实现**；D2（qBittorrent/BT-Magnet）、D3（任务中心打磨）仍是设计稿。V0.4 仅桌面三平台，不含 Android。
+> 设计详见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)（v3：D2 换 Transmission + Lua 插件预留边界）；实现计划见 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md)（D1–D3，D1 细化到步骤级）。**里程碑 D1（Aria2/HTTP-FTP）已实现**；D2（Transmission/BT-Magnet）、D3（任务中心打磨）仍是设计稿。V0.4 仅桌面三平台，不含 Android。
 
 ---
 

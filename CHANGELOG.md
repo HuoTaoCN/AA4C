@@ -6,6 +6,8 @@
 
 ### Changed
 
+- DOWNLOAD_DESIGN.md v3（D2 动手前的设计修订，纯文档）：① **D2 的 BT 引擎从 qBittorrent 换成 Transmission**——按 D1 教训逐项核实三平台 headless 分发后发现 qBittorrent 的 nox 构建在 Windows 官方/社区完全空白、macOS 官方缺失且上游有争议，而 Transmission 官方 Windows MSI 自带 `transmission_daemon.exe`（已实际拆包核实）、macOS/Linux 有 Homebrew core 既验证的 CMake 构建配置可直接进 engines.yml；RPC 也更简单（header token vs cookie session），无事件推送由 D1 已收敛的 `reconcile()` 轮询补齐（新增 §3.6 完整设计）。② **预留 Lua 插件系统设计边界**（新增 §10）：私有 Tracker/PT、搜索、自动分类等站点化长尾需求走用户可写的 Lua 插件（mlua vendored），适用于全部下载类型而非 BT 专属；权限模型（默认零 IO + 能力制 + manifest 域名白名单）现在写死，实现是 V0.4 之后的独立里程碑，D2/D3 只需保留引擎无关请求描述中间层这一个接缝。同步修订：V0.4_IMPLEMENTATION_PLAN.md（D2 步骤重写）、ARCHITECTURE.md、ROADMAP.md、DATABASE_SCHEMA.md §4e、PROJECT_VISION.md、HANDOFF.md。
+
 - `.github/workflows/engines.yml`（下载引擎二进制自建流水线，V0.4 D1）首次真实跑通验证：产物 + `SHA256SUMS` 已发到 `engines/aria2-1.37.0` release，校验和已填进 `scripts/fetch-engines.sh`。`release.yml` 恢复正式状态——macOS 目标从临时的 `aarch64-apple-darwin` 改回 `universal-apple-darwin`（下次发布起 Intel Mac 用户重新可用），三平台不再依赖系统包管理器（brew/apt/choco）装 aria2，改为 `fetch-engines.sh <triple>` 真实校验和下载。首跑过程中修了四个此前未知的坑（macOS 交叉编译链接失败、GitHub `macos-13` 镜像已退役、Ubuntu `autopoint`/`liblzma-dev` 缺包、`libc-ares-dev` 无静态库改 `--without-libcares`），详见 HANDOFF.md 第五节；`fetch-engines.sh` 自身也顺手修了一个只读文件覆盖失败的 bug。不影响任何已发布版本，无需用户操作。
 
 ## [0.4.0-preview.1] - 2026-07-10

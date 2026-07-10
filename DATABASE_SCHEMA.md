@@ -304,9 +304,13 @@ CREATE INDEX idx_share_access_share ON share_access(share_id);
 
 > 对应 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md) §4、[V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md)。
 > 迁移文件 `008_downloads.sql`（user_version=8）。首个里程碑 D1 只用到 `kind='http'`（Aria2，
-> 泛指 HTTP/HTTPS/FTP 直链）；`kind='bt'`（qBittorrent）留给 D2。
-> `id` 直接复用引擎原生任务号（aria2 GID）——跨重启稳定性由 aria2 `save-session` 保证
-> （普通 URI 下载 GID 原样保存，见 DOWNLOAD_DESIGN.md §3.4），否则这个决定不成立。
+> 泛指 HTTP/HTTPS/FTP 直链）；`kind='bt'`（Transmission，v3 从 qBittorrent 换引擎，
+> 见 DOWNLOAD_DESIGN.md §3.6）留给 D2。
+> `id` 直接复用引擎原生任务号（aria2 GID / BT infohash）——GID 跨重启稳定性由 aria2
+> `save-session` 保证（普通 URI 下载 GID 原样保存，见 DOWNLOAD_DESIGN.md §3.4），
+> infohash 天然稳定；否则这个决定不成立。
+> Lua 插件系统（DOWNLOAD_DESIGN.md §10）将来需要的 `category` 列**现在不加**——
+> `ALTER TABLE ADD COLUMN` 低成本，等插件里程碑定稿再迁移。
 > `downloaded_bytes`/`updated_at` 写库按数秒级节流（状态迁移必写），不随进度 tick 写。
 > 复用现有 `settings` KV 表新增一个 key：**`download_dir`**（默认取系统下载目录
 > `dirs::download_dir()`，必须在 `save_dir` 子树之外，见 DOWNLOAD_DESIGN.md §5/§7）。
@@ -315,9 +319,9 @@ CREATE INDEX idx_share_access_share ON share_access(share_id);
 
 ```sql
 CREATE TABLE download_tasks (
-    id                TEXT PRIMARY KEY,          -- aria2 GID，直接复用，不二次映射
+    id                TEXT PRIMARY KEY,          -- 引擎原生 id：aria2 GID / BT infohash，不二次映射
     kind              TEXT NOT NULL DEFAULT 'http'
-                      CHECK (kind IN ('http','bt')),   -- 'bt' 留给 D2（qBittorrent）
+                      CHECK (kind IN ('http','bt')),   -- 'bt' 留给 D2（Transmission）
     url               TEXT NOT NULL,              -- 原始 URL / magnet URI
     save_path         TEXT,                       -- 落盘路径（完成后由引擎汇报回填）
     status            TEXT NOT NULL DEFAULT 'waiting'

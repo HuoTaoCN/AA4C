@@ -1,9 +1,10 @@
 # AA4C 下载中心设计（V0.4）
 
-> 状态：**里程碑 D1 已实现**（v2 设计定稿，对应 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md) D1 的 10 个步骤全部完成）。D2（qBittorrent）/D3（任务中心打磨）仍是设计稿，未实现。实现相对设计的偏差记在 §3.5。
+> 状态：**里程碑 D1 已实现**（v2 设计定稿，对应 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md) D1 的 10 个步骤全部完成）。D2（BT/Magnet）/D3（任务中心打磨）仍是设计稿，未实现。实现相对设计的偏差记在 §3.5。
+> **v2 → v3 修订（D2 动手前）的两个决定**：① **D2 的 BT 引擎从 qBittorrent 换成 Transmission**——按 D1 教训（先逐项核实二进制分发再定方案）实际调查的结果：qBittorrent 的 headless（nox）构建在 Windows 上官方与社区**都不存在**、macOS 官方没有且上游对要不要提供仍有争议，等于两个平台要从零攻坚没有先例的 Boost+libtorrent 构建；而 Transmission 官方 Windows MSI 自带 `transmission_daemon.exe`（已实际拆包核实），macOS/Linux 的 Homebrew core formula 就是按 `-DENABLE_DAEMON=ON` 构建的（双架构 bottle 齐全），源码 CMake 路线可直接进 engines.yml。RPC 也更简单（header token vs cookie session）。详见 §3.6 与 §9。② **预留 Lua 插件系统的设计边界**（§10）：私有 Tracker/PT 站、搜索、自动分类等站点化长尾需求走用户可写的 Lua 插件，适用于全部下载类型而非 BT 专属；V0.4 不实现，但 D2/D3 的接缝现在就要按 §10 的约束留好。
 > **v1 → v2 评审修订的四个实质问题**：① aria2 官方 release 实际上**不提供 macOS / Linux x86_64 预编译二进制**（只有 Windows + Android aarch64 + 源码，已对官方 release 资产逐项核实），v1"直接下载官方产物"对三分之二的目标平台不成立，改为自建引擎构建流水线（§3.1）；② v1 完全没有回答"应用退出再启动，下载任务怎么办"，补任务持久化与启动对账（§3.4）；③ `--rpc-secret` 走命令行参数会被本机任意进程经 `ps`/WMI 看到，直接推翻 v1 §7 自己写的"拿不到密钥就调不了"，改走 data_dir 下 0600 权限的配置文件（§3.1/§7）；④ v1 默认下载目录"save_dir 同级的 Downloads 子目录"表述自相矛盾，且若按"子目录"理解会落进 Inbox 索引根（=整个 save_dir，递归扫描），等于"下载即自动分享给所有完全信任设备"，改为系统下载目录 + 范围警示（§5/§7）。另补孤儿进程防护（`stop-with-process`）、端口竞态重试、进度写库节流等小项。
 > 关联：产品定位见 [PROJECT_VISION.md](PROJECT_VISION.md) §四.4 / §七 / §十三；架构分层见 [ARCHITECTURE.md](ARCHITECTURE.md)；表结构见 [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md) §4e；界面见 [UI_DESIGN_SPEC.md](UI_DESIGN_SPEC.md)。
-> 本次会话确认的三个范围决定：**AA4C 自动打包并管理外部下载引擎的子进程**（而非要求用户自己装好）；**先做 Aria2（HTTP/HTTPS/FTP），qBittorrent（BT/Magnet）后置为独立里程碑**；**V0.4 只覆盖桌面三平台，不含 Android**。三点理由见 §1.1 与 §9。
+> v1 确认的三个范围决定：**AA4C 自动打包并管理外部下载引擎的子进程**（而非要求用户自己装好）；**先做 Aria2（HTTP/HTTPS/FTP），BT/Magnet 后置为独立里程碑 D2**（v1 时选型 qBittorrent，v3 换成 Transmission，见上）；**V0.4 只覆盖桌面三平台，不含 Android**。理由见 §1.1 与 §9。
 
 ## 1. 背景与目标
 
@@ -12,17 +13,17 @@ V0.1–V0.3（AA Nearby → AA Sync → AA Connect）解决的都是**设备与�
 四个目标：
 
 1. **统一任务中心**：HTTP/HTTPS/FTP 与后续 BT/Magnet 下载收进同一个任务列表，复用 AA 传输页已经验证过的进度/状态视觉语言（进度条、速度、ETA），不重新发明一套 UI。
-2. **不重新发明轮子**：不自研下载引擎、不自研 BT 客户端——包一层成熟、久经考验的外部工具（aria2、qBittorrent），通过 RPC/API 控制。BT 协议栈（DHT、piece 选择、tracker、磁力解析……）本身就是一个足以撑起一整个项目的工作量，自研不符合 [AGENTS.md](AGENTS.md) "简单 > 复杂"的原则。
-3. **许可证隔离**：aria2（GPLv2）、qBittorrent（GPLv3）只作为**独立进程**存在，AA4C 只通过网络协议（JSON-RPC / HTTP API）与它们通信，不链接、不嵌入源码——避免 copyleft 传染到 AA4C 自己的 Apache-2.0 代码（PROJECT_VISION.md §十三已经定下这条原则，V0.4 是它第一次真正要落地检验）。
-4. **开箱即用**：用户不需要自己安装、配置 aria2 或 qBittorrent——AA4C 打包对应平台的二进制，随应用生命周期自动拉起/退出，界面上感知不到"背后是个独立进程"。
+2. **不重新发明轮子**：不自研下载引擎、不自研 BT 客户端——包一层成熟、久经考验的外部工具（aria2、Transmission），通过 RPC/API 控制。BT 协议栈（DHT、piece 选择、tracker、磁力解析……）本身就是一个足以撑起一整个项目的工作量，自研不符合 [AGENTS.md](AGENTS.md) "简单 > 复杂"的原则。
+3. **许可证隔离**：aria2（GPLv2）、Transmission（GPL-2.0/3.0 双授权）只作为**独立进程**存在，AA4C 只通过网络协议（JSON-RPC / HTTP API）与它们通信，不链接、不嵌入源码——避免 copyleft 传染到 AA4C 自己的 Apache-2.0 代码（PROJECT_VISION.md §十三已经定下这条原则，V0.4 是它第一次真正要落地检验）。
+4. **开箱即用**：用户不需要自己安装、配置 aria2 或 Transmission——AA4C 打包对应平台的二进制，随应用生命周期自动拉起/退出，界面上感知不到"背后是个独立进程"。
 
 设计原则延续 [AGENTS.md](AGENTS.md)：稳定 > 功能，简单 > 复杂，默认安全；延续 V0.1–V0.3 已经验证过的模式（事件总线驱动 UI、依赖倒置解耦 Core 与具体实现、失败降级而非阻塞启动）而不是另起一套。
 
 ### 1.1 范围与阶段划分（已确认）
 
-- **V0.4 内部按里程碑切分**：D1（Aria2 / HTTP-FTP，本文档的实现重点）→ D2（qBittorrent / BT-Magnet）→ D3（统一任务中心打磨）。两个外部依赖一起接入会让第一版的进程管理、错误处理、测试面同时翻倍，参考 V0.3 拆成 C1–C6 分步验收的经验，V0.4 也分步走。
-- **子进程由 AA4C 自动管理**：打包对应平台的 aria2c（后续 qBittorrent-nox）二进制，随 Core 启动/关闭自动拉起/终止，不要求用户预先安装或手动配置 RPC 地址。这比"假设用户自己已经装好、只填 RPC 地址"多做了打包与生命周期管理的工作量，换来的是不熟悉这两个工具的用户也能开箱即用——符合 AA4C"不需要注册、登录、账号，连上就能用"的一贯产品姿态。
-- **V0.4 只覆盖桌面三平台**（Windows / macOS / Linux），不含 Android。aria2c/qBittorrent 是原生二进制，Android 上的打包、前台服务常驻、电池优化白名单是完全不同的一套问题，留到后续单独评估——同 V0.3 分享链接里程碑把 deep-link 系统注册单独拆出去、不阻塞主里程碑的处理方式一致。
+- **V0.4 内部按里程碑切分**：D1（Aria2 / HTTP-FTP，已实现）→ D2（Transmission / BT-Magnet，§3.6）→ D3（统一任务中心打磨）。两个外部依赖一起接入会让第一版的进程管理、错误处理、测试面同时翻倍，参考 V0.3 拆成 C1–C6 分步验收的经验，V0.4 也分步走。Lua 插件系统（§10）是 V0.4 之后的独立里程碑，本版只预留接缝。
+- **子进程由 AA4C 自动管理**：打包对应平台的 aria2c（D2 起加 transmission-daemon）二进制，随 Core 启动/关闭自动拉起/终止，不要求用户预先安装或手动配置 RPC 地址。这比"假设用户自己已经装好、只填 RPC 地址"多做了打包与生命周期管理的工作量，换来的是不熟悉这两个工具的用户也能开箱即用——符合 AA4C"不需要注册、登录、账号，连上就能用"的一贯产品姿态。
+- **V0.4 只覆盖桌面三平台**（Windows / macOS / Linux），不含 Android。aria2c/transmission-daemon 是原生二进制，Android 上的打包、前台服务常驻、电池优化白名单是完全不同的一套问题，留到后续单独评估——同 V0.3 分享链接里程碑把 deep-link 系统注册单独拆出去、不阻塞主里程碑的处理方式一致。
 
 ## 2. 架构总览
 
@@ -36,15 +37,19 @@ V0.1–V0.3（AA Nearby → AA Sync → AA Connect）解决的都是**设备与�
 AA4C UI (Vue3)
    │ Tauri IPC
 AA4C Core (纯 Rust，不依赖 Tauri)
-   │
+   │                          ┌─ PluginHost（Lua，§10 预留，V0.4 不实现）
 DownloadService (aa4c-download)
    │  SidecarSpawner  ←── 注入，Tauri 壳层用 tauri-plugin-shell 实现
-   │  Aria2Client（JSON-RPC + WebSocket，纯 Rust，不依赖 Tauri，可独立单测）
+   │  Aria2Client（JSON-RPC over WebSocket，D1 已实现）
+   │  TransmissionClient（HTTP RPC + session-id 握手，D2，§3.6）
    ▼
-aria2c 子进程（bundled sidecar，只监听 127.0.0.1，随机端口 + 随机密钥）
+aria2c / transmission-daemon 子进程
+（bundled sidecar，只监听 127.0.0.1，随机端口 + 随机凭据）
 ```
 
-## 3. aria2 集成
+## 3. 下载引擎集成
+
+§3.1–§3.5 是 aria2（D1，已实现）；§3.6 是 Transmission（D2，v3 设计稿）。两个引擎共用同一套外围机制：`SidecarSpawner` 拉起、conf/settings 文件每次启动重写（凭据不进命令行）、只绑回环、启动对账、`reconcile()` 幂等同步、`download_tasks` 同一张表。
 
 ### 3.1 进程生命周期
 
@@ -99,15 +104,61 @@ v1 没有回答"应用退出再启动，进行中的下载怎么办"。答案分
 - **`Core.download` 是 `Option`，不是必然存在**：`CoreConfig.download_spawner: Option<Arc<dyn SidecarSpawner>>`，桌面壳层注入、Android 等未接入平台留 `None`——`None` 与"注入了但 aria2c 启动失败"是两种不同的不可用，前端统一收到 `Unavailable` 错误码，不需要区分。
 - **人工走查中发现并验证**（V0.4_IMPLEMENTATION_PLAN.md D1 步骤 9）：Tauri capability 权限配置（`shell:allow-execute` + `sidecar:true` + 参数 `validator` 正则）与设计一致、真实跑通；`stop-with-process` 在真实的 `tauri dev` 热重载场景下（进程被替换三次）均正确避免了 aria2c 孤儿进程累积；顺带发现一个真实 bug——`aa4c-core` 的下载端到端测试没有隔离下载目录，实际下载文件落进了开发机真实的系统 Downloads 目录，已修复（测试改为 `Core::start` 之前预置隔离的 `download_dir` 到 settings 表）。
 
+### 3.6 Transmission 集成（D2，v3 设计稿）
+
+#### 3.6.1 为什么从 qBittorrent 换成 Transmission（v3 修订核心）
+
+v1 选 qBittorrent 时没有核实其 headless 构建的三平台分发情况——恰好是 D1 在 aria2 身上踩过的同一类坑（官方 release 缺 2/3 平台的产物，v2 才修正）。D2 动手前按教训逐项核实，结果：
+
+| 平台 | qBittorrent（nox/headless） | Transmission（daemon） |
+|------|------------------------------|-------------------------|
+| Windows | ❌ 官方与社区**都没有** nox 构建，官方只发 GUI 安装包；从零编译 Boost+libtorrent 的 headless 版本没有任何先例可参照 | ✅ **官方 MSI 自带 `transmission_daemon.exe`**（已实际拆包核实文件表，另含 `transmission_remote.exe` 等 CLI），静默解包即可提取，不执行安装 |
+| macOS | ⚠️ 官方无 nox；上游对"要不要提供 macOS nox"仍有争议（PR #6104 未定论）；Homebrew 的 GUI cask 因过不了 Gatekeeper 已被标记 2026-09 停用 | ✅ Homebrew **core** formula `transmission-cli` 就是 `-DENABLE_DAEMON=ON` 构建（arm64 + x86_64 bottle 齐全，活跃维护）；同一套 CMake 配置可直接进 engines.yml 自建 |
+| Linux | ✅ 社区 `userdocs/qbittorrent-nox-static` 多架构静态构建，质量好 | ✅ 各发行版标准包 `transmission-daemon`；源码 CMake 路线同上 |
+
+三平台里 Transmission 有两项是官方产物直接提供 headless 二进制，qBittorrent 一项都没有。次要收益：RPC 鉴权是 header token（比 cookie session 简单，不需要维护 cookie jar）；进程更轻。BT 功能面（DHT/PEX/LPD/magnet/加密）两者对本设计的需求无差异。
+
+#### 3.6.2 进程生命周期
+
+复用 §3.1 的全部机制骨架，差异点：
+
+- **前台模式是硬要求**：`transmission-daemon` 默认启动后 fork 到后台、父进程立即退出——`SidecarSpawner` 拿到的句柄会抓错进程（拿到的是即将退出的父进程），`kill()`/退出监测全部失效。必须传 `-f`（`--foreground`）。命令行收敛为固定形状 `transmission-daemon -f --config-dir <data_dir>/transmission`（同 §3.1 只传 `--conf-path` 的思路，Tauri capability 参数放行仍可精确匹配）。
+- **配置**：`<config-dir>/settings.json` 每次启动整体重写（同 aria2 conf 先例）：`rpc-bind-address=127.0.0.1`、`rpc-port=<探测的空闲端口>`、`rpc-authentication-required=true`、`rpc-username`/`rpc-password`（每次启动随机生成；Transmission 启动时会把明文密码替换成加盐哈希写回，无碍——我们下次启动整体覆盖）、`download-dir=<Settings.download_dir>`、DHT/PEX/LPD 开启。凭据不进命令行，同 §3.1 的硬要求。注意 Transmission 退出时会把内存中的设置写回 `settings.json`——"每次启动整体重写"的既有决定天然免疫这一点。
+- **孤儿进程防护（与 aria2 的关键差异，本节最大的未定项）**：Transmission **没有** `stop-with-process` 等价物。候选组合：正常路径靠 `Core::shutdown()`（RPC `session-close` 优雅关闭 → 超时强杀）；异常路径（AA4C 崩溃/被强杀）——Windows 用 Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，内核层保证"宿主死→子进程死"）；Linux 有 `PR_SET_PDEATHSIG`；macOS 没有等价机制，兜底用 PID 文件 + 下次启动清扫（清扫时校验进程名，避免 PID 复用误杀）。**进方案前先小样验证**（尤其 Tauri sidecar 机制下能否拿到原始进程句柄做 Job Object 归属），定稿写回 §9——不要照抄本段就当已验证。
+- **健康检查**：轮询 `session-get`（等价于 aria2 的 `getVersion`），退避/降级策略同 §3.1。
+
+#### 3.6.3 RPC 通信
+
+- **传输**：HTTP POST 单端点（`http://127.0.0.1:<port>/transmission/rpc`），请求/响应都是 JSON。**没有 WebSocket、没有事件推送**——Transmission 的 RPC 是纯请求-响应模型。这在 D1 之后不再是缺陷：§3.5 已把"通知触发"与"轮询兜底"收敛成同一个幂等 `reconcile()`，BT 侧直接以数秒级 `torrent-get` 轮询为主路径即可，不需要为"没有事件"另做机制——D1 的收敛决定在这里直接兑现了价值。
+- **鉴权**：`X-Transmission-Session-Id` header——首次请求会收到 409 响应、从响应 header 里取 session id，之后每次请求带上；session id 过期再收到 409 就重新取。外加 HTTP Basic（上面 settings.json 里的随机用户名/密码）。
+- **HTTP 客户端**：不引 reqwest（依赖树重，D1 已为同样理由弃过一次）——回环、单端点、纯 POST、无 TLS、无重定向，手写极简 HTTP/1.1 客户端（tokio TcpStream，几十行），同 D1 手写测试 HTTP 服务器的先例，放 `aa4c-download` 内部。`TransmissionClient` 独立实现，不硬套 `Aria2Client`（鉴权模型、错误形状、方法命名完全不同，强行抽象只会得到一个两边都别扭的中间层——真正的共享层在 `DownloadService` 的任务模型，不在 RPC 客户端）。
+- **用到的方法**：`torrent-add`（`filename` 字段直接放 magnet URI）、`torrent-stop`/`torrent-start`（暂停/继续）、`torrent-remove`（取消，`delete-local-data` 跟随用户选择）、`torrent-get`（全量对账 + 进度）、`session-get`（健康检查）、`session-close`（优雅关闭）、`session-set`（D3 限速透传）。
+
+#### 3.6.4 任务模型映射
+
+- **id**：torrent 的 infohash（`hashString`）直接当 `download_tasks.id`——同"引擎原生 id 不二次映射"的既定原则（§3.3）；infohash 跨重启天然不变，比 aria2 GID 的稳定性论证还简单。`kind='bt'`。
+- **入口路由**：`add_download(url)` 按 scheme 分流——`magnet:` → Transmission，其余 → aria2。用户不感知两个引擎的存在（`.torrent` 文件输入留给 D3 或插件阶段，D2 只接 magnet，同 v1 起的范围）。
+- **状态映射**：Transmission 的 status（stopped / check-wait / checking / download-wait / downloading / seed-wait / seeding）映射到既有六态：`downloading→active`，`*-wait/checking→waiting`，`stopped` 且未完成 → `paused`，`percentDone==1 → complete`（**做种继续进行**，不因标记完成而停——保种是 BT 生态的基本礼仪，也是私有 Tracker/PT 场景（§10）的硬需求；分享率/做种时长限制 D3 透传设置），错误从 `errorString` 转译。`removed` 由我们的取消动作落库，同 aria2。
+- **BT 专属信息**（做种数/连接的 peer 数/分享率）只进事件、不落库——同 speed 不落库的既有先例（§4）。
+- **跨重启恢复**：Transmission 原生把 .torrent 元数据与 resume 状态存在 config-dir 下（`torrents/`、`resume/`），不需要 aria2 那套 session 文件机制；启动对账与 §3.4 同构（`torrent-get` 全量 vs 表里 `kind='bt'` 的记录），孤儿未完记录标 `error`、引擎里有表里没有的补插——`reconcile()` 直接扩展，不另写一套。
+
+#### 3.6.5 引擎二进制来源
+
+同 §3.1 的供应链原则（信任锚定在官方产物/官方源码 tag + 我们自己的 CI，校验和写死进仓库）：
+
+- **Windows**：官方 MSI 静默解包提取 `transmission_daemon.exe`（`msiexec /a <msi> /qn TARGETDIR=...` 管理员镜像解包，**不是安装**——不注册服务、不写注册表、不进 PATH；这与 D1 从官方 zip 解 `aria2c.exe` 同级别的官方产物直取，也彻底避开包管理器 shim 那类坑）。注意 MSI 里的可执行文件依赖同目录的 DLL（拆包时一并核实清单）——sidecar 打包要连 DLL 一起进 bundle，`externalBin` 之外用 `bundle.resources` 放伴随文件，这一点 aria2（单文件静态）没有，是 D2 新增的打包差异点，实现时实测。
+- **macOS / Linux**：engines.yml 加 transmission 构建腿，CMake `-DENABLE_DAEMON=ON -DENABLE_CLI=OFF -DENABLE_UTILS=OFF -DENABLE_QT=OFF -DENABLE_GTK=OFF -DENABLE_MAC=OFF -DENABLE_TESTS=OFF -DENABLE_NLS=OFF`（照 Homebrew formula 的既验证配置裁剪），依赖 libevent/libpsl/miniupnpc/curl（Linux 另需 openssl/zlib）。macOS 双架构各用原生 runner、Linux 尽量静态——**全部按 aria2 首跑的教训预设**（runner 标签先核实存活、apt 包列表按报错补、静态库缺失时评估 `--without-*` 式裁剪），第一次跑通前不填校验和。
+- 产物进同一个 engines release 体系（如 `engines/transmission-<version>`），`scripts/fetch-engines.sh` 扩展第二个引擎条目。
+
 ## 4. 数据模型
 
 新表 `download_tasks`（不复用 `transfer_tasks`，理由见 §9）：
 
 ```sql
 CREATE TABLE download_tasks (
-    id                TEXT PRIMARY KEY,          -- aria2 GID，直接复用，不二次映射
+    id                TEXT PRIMARY KEY,          -- 引擎原生 id：aria2 GID / BT infohash，不二次映射
     kind              TEXT NOT NULL DEFAULT 'http'
-                      CHECK (kind IN ('http','bt')),   -- 'bt' 留给 D2（qBittorrent）
+                      CHECK (kind IN ('http','bt')),   -- 'bt' 留给 D2（Transmission，§3.6）
     url               TEXT NOT NULL,              -- 原始 URL / magnet URI
     save_path         TEXT,                       -- 落盘路径（完成后由 aria2 汇报回填）
     status            TEXT NOT NULL DEFAULT 'waiting'
@@ -123,14 +174,15 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 ```
 
 - 没有 `peer_device_id` 之类的设备关联字段——下载任务天然没有"对端设备"，这也是不复用 `transfer_tasks` 的直接原因（该表的 `peer_device_id` 有 `REFERENCES devices(id)` 外键，是"peer 必然是已配对设备"这个假设的产物，见 PROTOCOL.md §16 / DATABASE_SCHEMA.md §4c.1 记录的 C6 教训——不重蹈覆辙的最简单办法就是不共用这张表）。
-- 速度/ETA 不落库，只在事件里带、前端本地维护——同 `transfer_tasks` 不存 speed 字段的既有先例。
+- 速度/ETA 不落库，只在事件里带、前端本地维护——同 `transfer_tasks` 不存 speed 字段的既有先例；BT 的做种数/peer 数/分享率同理（§3.6.4）。
+- 插件系统（§10）将来需要的 `category` 列**现在不加**——SQLite `ALTER TABLE ADD COLUMN` 是低成本迁移，等插件里程碑真正定稿再加，不做推测性 schema 设计。
 - `downloaded_bytes`/`updated_at` **不随每个进度 tick 写库**：状态迁移（开始/暂停/完成/失败）必写，进行中按数秒级节流写一次——进度的实时性由事件负责，库里的值只服务于重启后的列表恢复显示（§3.4 对账时反正会被 aria2 的真实状态刷新），允许略旧。
 
 ## 5. Core 集成
 
 - `aa4c_types::CoreEvent` 追加（只追加变体，不改现有）：`DownloadProgress{task_id, downloaded_bytes, total_bytes, speed_bps}` / `DownloadDone{task_id, save_path}` / `DownloadFailed{task_id, error}`——形状照抄 `TransferProgress`/`TransferDone`/`TransferFailed`，前端能直接复用同一套卡片组件与节流写库逻辑（`Progress` 结构体的模式）。
 - `Settings` 追加 `download_dir: Option<String>`：默认取**系统下载目录**（`dirs::download_dir()`，与浏览器落点一致的直觉），**必须在 `save_dir` 子树之外**——这不是风格偏好：Inbox 的索引根就是整个 `save_dir`（`Core::start()` 里 `ensure_inbox_scope(&save_dir)`，扫描器递归遍历），落进去的任何文件都会被自动索引、对所有完全信任设备可见可拉取，等于"下载即分享"（v1 写的"save_dir 同级的 Downloads 子目录"表述自相矛盾，按"子目录"理解恰好踩中这一点，v2 修正）。默认 `save_dir` 是 `~/Downloads/AA4C`，系统下载目录 `~/Downloads` 是它的父目录、不在其子树内，隔离成立。用户手动改 `download_dir` 时，设置页对"目标落在任一同步范围内"的选择给出明确警示（说明会被同步出去，**不硬禁**——用户明白后果后有权把下载目录当同步源用）。
-- `Core` 新增 `download: Arc<DownloadService>` 字段，与现有 `transfer`/`pairing` 并列；`orchestrate.rs` 新增编排方法：`add_download(url) -> task_id`、`pause_download`/`resume_download`/`cancel_download`、`list_downloads`。
+- `Core` 新增 `download: Arc<DownloadService>` 字段，与现有 `transfer`/`pairing` 并列；`orchestrate.rs` 新增编排方法：`add_download(url) -> task_id`、`pause_download`/`resume_download`/`cancel_download`、`list_downloads`。D2 起 `add_download` 内部按 scheme 分流到两个引擎（§3.6.4），且任务添加路径改走一个**引擎无关的请求描述**中间结构（URL + 请求头 + 引擎选项 + 保存子路径）而非一根字符串直通引擎——这既是接第二个引擎本来就要做的抽象，也是 §10 插件系统 `on_before_add` 钩子的预留接缝。
 - Tauri 新增对应 Command（`add_download`/`pause_download`/`resume_download`/`cancel_download`/`list_downloads`）+ 事件转发（`event_payload` 加三个新分支）——同 C1–C6 每次新增能力时的既有接线流程，不再赘述。
 
 ## 6. UI
@@ -143,26 +195,28 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 
 | 议题 | 对策 |
 |------|------|
-| GPL 许可证传染 | aria2（GPLv2）/ qBittorrent（GPLv3，D2）只作为**独立进程**存在，AA4C 只通过网络协议（JSON-RPC / HTTP API）与之通信，不链接、不嵌入源码；随安装包分发时附带对应 LICENSE/NOTICE 文件，明确标注这是打包的第三方运行时依赖、许可证与 AA4C 自身代码（Apache-2.0）分开标注 |
-| RPC 暴露面 | `rpc-listen-all` 保持关闭（只绑 127.0.0.1），`rpc-secret` 每次启动随机生成；**密钥不走命令行参数**——命令行对本机任意用户的进程经 `ps`/WMI 可见，v1 的"拿不到密钥就调不了"在那个方案下不成立——改写进 data_dir 下 0600 权限的 conf 文件（§3.1）。诚实的边界声明：同一用户的其他进程本来就读得到 data_dir 里的一切（包括设备私钥），这不是本设计能扩大的边界；修掉的是"连**其他用户**的进程都能从进程列表里直接看到密钥"这个更大的洞 |
+| GPL 许可证传染 | aria2（GPLv2）/ Transmission（GPL-2.0/3.0 双授权，D2）只作为**独立进程**存在，AA4C 只通过网络协议（JSON-RPC / HTTP API）与之通信，不链接、不嵌入源码；随安装包分发时附带对应 LICENSE/NOTICE 文件，明确标注这是打包的第三方运行时依赖、许可证与 AA4C 自身代码（Apache-2.0）分开标注 |
+| RPC 暴露面 | `rpc-listen-all` 保持关闭（只绑 127.0.0.1），`rpc-secret` 每次启动随机生成（Transmission 侧对应 `rpc-bind-address=127.0.0.1` + 随机 Basic 凭据，§3.6.2）；**密钥不走命令行参数**——命令行对本机任意用户的进程经 `ps`/WMI 可见，v1 的"拿不到密钥就调不了"在那个方案下不成立——改写进 data_dir 下 0600 权限的 conf 文件（§3.1）。诚实的边界声明：同一用户的其他进程本来就读得到 data_dir 里的一切（包括设备私钥），这不是本设计能扩大的边界；修掉的是"连**其他用户**的进程都能从进程列表里直接看到密钥"这个更大的洞 |
 | 下载内容不受信 | 下载的是用户主动提供的任意公网 URL，AA4C 不做内容扫描/校验（同浏览器下载的信任模型，不是 AA4C 新引入的风险面）；aria2 能访问的网络范围与本机用户本身能访问的范围相同，不构成新的攻击面 |
 | 下载目录默认隔离 | `download_dir` 是独立设置项，不自动并入任何同步范围/Inbox——避免用户下载的内容未经确认就被分享给已配对设备 |
-| 子进程崩溃/被杀 | aria2c 异常退出时下载能力整体不可用，但不影响 AA4C 其余功能（同其余可选能力的一贯降级设计）；D1 先不做自动重启，观察实际故障率后再决定要不要加。反方向（AA4C 崩溃/被强杀、来不及跑 shutdown）由 `stop-with-process=<AA4C PID>` 兜底，aria2c 自行退出，不留孤儿进程（§3.1） |
-| 上游维护风险 | aria2 最新 release 是 1.37.0（2023-11），发版节奏明显放缓。对策：引擎版本由我们钉死并自建产物（§3.1），升级是显式受控动作、不自动跟随上游；RPC 只绑回环 + 密钥隔离，网络暴露面本就极小；`DownloadService` 对上层只暴露任务模型，引擎在背后可整体替换（D2 接 qBittorrent 本身就会验证这层抽象的可替换性） |
+| 子进程崩溃/被杀 | aria2c 异常退出时下载能力整体不可用，但不影响 AA4C 其余功能（同其余可选能力的一贯降级设计）；D1 先不做自动重启，观察实际故障率后再决定要不要加。反方向（AA4C 崩溃/被强杀、来不及跑 shutdown）由 `stop-with-process=<AA4C PID>` 兜底，aria2c 自行退出，不留孤儿进程（§3.1）。**Transmission 没有这个等价物**，异常路径的孤儿防护方案见 §3.6.2（Job Object / PDEATHSIG / PID 清扫组合，实现前小样验证） |
+| 上游维护风险 | aria2 最新 release 是 1.37.0（2023-11），发版节奏明显放缓；Transmission 4.x 活跃维护中。对策：引擎版本由我们钉死并自建产物（§3.1），升级是显式受控动作、不自动跟随上游；RPC 只绑回环 + 密钥隔离，网络暴露面本就极小；`DownloadService` 对上层只暴露任务模型，引擎在背后可整体替换（D2 接 Transmission 本身就会验证这层抽象的可替换性） |
+| Lua 插件（§10，预留） | 插件是**用户侧代码执行**，风险面与"下载不受信内容"不同量级——边界现在就写死：Lua 标准库的 io/os/加载器全部裁掉（默认零 IO）、宿主 API 走能力制（HTTP 访问按 manifest 声明的域名白名单、安装/启用时展示给用户确认）、不暴露文件系统与下载域之外的任何 Core 能力（设备身份/配对/同步一概不给）。实现推迟到独立里程碑并单独出安全评审，V0.4 期间任何人不得以"临时方便"为由先开小口子 |
 
 ## 8. 里程碑切分
 
 1. **D1 ✅ — Aria2 集成（HTTP/HTTPS/FTP）**：sidecar 打包 + 生命周期管理（`SidecarSpawner` 注入点）+ `Aria2Client`（RPC + WebSocket 事件）+ `download_tasks` 表 + Core 集成（`CoreEvent`/Command）+「下载」页基础 UI（链接输入 + 任务列表 + 暂停/取消/打开文件夹）。已实现，见 §3.5 实现偏差。
-2. **D2 — qBittorrent 集成（BT/Magnet）**：qbittorrent-nox sidecar；Web API 鉴权是 cookie session（与 aria2 的 token 模型完全不同，需要单独适配，不能照搬 `Aria2Client` 的鉴权逻辑）；`download_tasks.kind='bt'` 分支；磁力链接输入 + 做种数/连接数等 BT 专属信息展示。
-3. **D3 — 统一任务中心打磨**：设置页新增「下载」区块（下载目录、并发数/限速透传给 aria2/qBittorrent 的 options）；D1+D2 任务在同一个列表里按时间统一排序；批量操作（全部暂停/清除已完成记录）。
+2. **D2 — Transmission 集成（BT/Magnet）**（v3 换引擎，理由见 §3.6.1）：transmission-daemon sidecar（`-f` 前台模式；Windows 取官方 MSI 解包，macOS/Linux 走 engines.yml 自建）；`TransmissionClient`（HTTP RPC + `X-Transmission-Session-Id` 握手，手写极简 HTTP/1.1 客户端）；孤儿防护替代方案小样验证后定稿（无 `stop-with-process` 等价物，§3.6.2）；`download_tasks.kind='bt'` 分支（id=infohash）；magnet 输入 + 做种数/peer 数等 BT 专属信息展示（只进事件不落库）；`add_download` 改走引擎无关请求描述中间层（§5）。
+3. **D3 — 统一任务中心打磨**：设置页新增「下载」区块（下载目录、并发数/限速/分享率透传给 aria2/Transmission 的 options）；D1+D2 任务在同一个列表里按时间统一排序；批量操作（全部暂停/清除已完成记录）。
+4. **D4（预留，不在 V0.4 范围）— Lua 插件系统**：见 §10，动手前出独立设计文档 + 安全评审。
 
 ## 9. 已确认的设计细节
 
 | 议题 | 决定 | 落点 |
 |------|------|------|
-| 下载引擎实现路径 | 不自研，包外部成熟工具（aria2/qBittorrent），通过 RPC/API 调用、不链接源码——避免 GPL 传染，同时省下重新实现下载协议栈/BT 协议栈的巨大工作量 | §1，PROJECT_VISION.md §十三 |
+| 下载引擎实现路径 | 不自研，包外部成熟工具（aria2 + BT 引擎，BT 选型见 v3 行），通过 RPC/API 调用、不链接源码——避免 GPL 传染，同时省下重新实现下载协议栈/BT 协议栈的巨大工作量 | §1，PROJECT_VISION.md §十三 |
 | 子进程管理 | AA4C 自动打包 + 生命周期管理（Tauri sidecar），不要求用户自己装、自己配 RPC 地址 | §1.1，§3.1 |
-| 首个里程碑范围 | 先做 Aria2（HTTP/HTTPS/FTP），qBittorrent（BT/Magnet）后置为独立里程碑 D2——两个外部依赖一起接入会让第一版的进程管理/错误处理/测试面同时翻倍 | §1.1，§8 |
+| 首个里程碑范围 | 先做 Aria2（HTTP/HTTPS/FTP），BT/Magnet 后置为独立里程碑 D2（v1 时选型 qBittorrent，v3 换 Transmission）——两个外部依赖一起接入会让第一版的进程管理/错误处理/测试面同时翻倍 | §1.1，§8 |
 | V0.4 平台范围 | 仅桌面三平台，不含 Android——原生二进制打包/常驻在移动端是完全不同的问题，留到后续单独评估 | §1.1 |
 | DownloadService 与 Tauri 解耦 | 新增 `SidecarSpawner` trait（同 C1–C6 一路建立的依赖倒置先例：`RelayDialer`/`PunchDialer`/`ShareResolver`），`aa4c-download` 不直接依赖 `tauri-plugin-shell`，保持 Core 层"纯 Rust、可被 Docker/无 GUI 场景复用"的既定原则不被打破 | §2 |
 | 任务表不复用 `transfer_tasks` | 下载没有"对端设备"概念，`transfer_tasks.peer_device_id` 的外键假设不适用；新建 `download_tasks` 独立表，避免重蹈 C6 那次外键假设冲突的覆辙 | §4 |
@@ -176,7 +230,35 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 | 孤儿进程防护（v2） | conf 里写 `stop-with-process=<AA4C PID>`：宿主进程消失（含崩溃/强杀）时 aria2c 自行退出；不做 PID 文件 + 启动清扫 | §3.1，§7 |
 | 默认下载目录（v2） | 系统下载目录（`dirs::download_dir()`），必须在 `save_dir` 子树之外——Inbox 索引根=整个 `save_dir`，落进去=自动分享给完全信任设备；用户改到同步范围内时警示不硬禁 | §5，§7 |
 | RPC 传输载体（v2.1） | JSON-RPC over WebSocket **单连接**（指令与事件同一条），不为发指令引入 HTTP 客户端依赖；id 关联 pending 表同 `SignalChannel` 先例 | §3.2 |
+| BT 引擎选型（v3） | qBittorrent → **Transmission**：三平台 headless 分发逐项核实后 qBittorrent 在 Windows/macOS 均无可用先例（Windows 完全空白），Transmission 官方 MSI 自带 daemon + Homebrew core formula 双架构齐全；RPC 更简单（header token vs cookie session）；无事件推送由 D1 已收敛的 `reconcile()` 轮询主路径补齐，不需要新机制 | §3.6 |
+| BT 任务 id | infohash 直接当 `download_tasks.id`（引擎原生 id 原则的 BT 分支），跨重启天然稳定 | §3.6.4 |
+| 做种策略（v3） | 下载完成标 `complete` 但**不停止做种**——保种是 BT 生态基本礼仪、私有 Tracker/PT（§10）的硬需求；分享率/做种时长限制 D3 透传设置 | §3.6.4 |
+| 插件语言（v3 预留） | **Lua**（mlua vendored 编译进二进制，无系统依赖）：嵌入式脚本事实标准、运行时体量小、可彻底沙箱、非专业用户照模板可写；对比 JS 引擎（体量/复杂度高一个量级）、WASM（写作门槛过高）、Python（需带解释器分发）均不符合"简单 > 复杂" | §10 |
+| 插件适用面（v3 预留） | 适用于**全部下载类型**，不是 BT 专属——HTTP 直链同样需要自定义请求头/鉴权/文件名规则/分类；钩子挂在引擎无关的任务模型层，不挂在具体引擎客户端上 | §10 |
+| 插件权限模型（v3 预留） | 默认零 IO + 能力制宿主 API + manifest 域名白名单用户确认；V0.4 只预留接缝（引擎无关请求描述中间层），实现推迟到独立里程碑 + 独立安全评审 | §10，§7 |
+
+## 10. Lua 插件系统（v3 预留设计——只定边界，不定 API）
+
+### 10.1 动机
+
+私有 Tracker/PT 站（登录态/passkey 注入、RSS 订阅、分享率与保种规则）、站点搜索/聚合搜索、任务自动分类（按规则决定保存子目录/打标签）、下载完成后的自动化动作——这类需求**高度站点化、长尾、变更频繁**，写死在 Rust 主程序里意味着每个站点的每次改版都要发一个应用版本，不现实；正确形态是用户/社区自己写脚本。且这不是 BT 专属：HTTP 直链下载同样需要自定义请求头/鉴权、文件名规则、分类。**自己做插件宿主，不依赖第三方插件生态。**
+
+### 10.2 形态（预留稿）
+
+- **宿主位置**：`PluginHost` 在 Core 层（纯 Rust，`mlua` vendored 编译进二进制——不引系统依赖、不破坏"Core 不依赖 Tauri、可被 Docker/headless 复用"的既定边界）。
+- **钩子点**（初版枚举，精确签名留给实现期）：
+  - `on_before_add(request) -> request`：改写下载请求（URL、请求头、引擎选项、保存子目录、分类）——PT 站 passkey 注入、HTTP 站点鉴权都在这里；
+  - `on_task_complete(task)`：完成后的自动化动作（改名/移动到分类目录/通知）；
+  - `search(query) -> [results]`：给统一搜索 UI 供数据（站内搜索/聚合搜索）；
+  - `on_periodic()`：低频定时（RSS 拉取、保种策略巡检）。
+- **权限模型**（§7 已写死，此处重述要点）：默认零 IO（裁掉 Lua 的 io/os/require）；HTTP 经宿主受控 API + manifest 域名白名单 + 用户启用时确认；不暴露文件系统；不暴露下载域之外的任何 Core 能力。
+- **manifest 与分发**：`<data_dir>/plugins/<name>/`（manifest 声明名称/版本/钩子/域名权限），本地目录分发，无市场、无自动更新——插件市场的安全审查成本这个阶段不背。
+- **对 D2/D3 的实际约束（现在就要做的只有这三条，其余全部推迟）**：
+  1. 任务添加路径保留引擎无关的请求描述中间层（§5）——`on_before_add` 的天然挂点，D2 接第二个引擎本来就要做；
+  2. `download_tasks` 的 `category` 列**不加**（迁移低成本，避免推测性设计，§4）；
+  3. 事件总线既有，`on_task_complete`/`on_periodic` 挂点天然存在，无需预留动作。
+- **里程碑归属**：V0.4 之外的独立里程碑（暂记 D4），动手前出独立设计文档，安全模型单独评审——插件是用户侧代码执行，风险量级不同于"下载不受信内容"。
 
 ## 仍待实现 / 后续
 
-qBittorrent Web API 的具体鉴权细节（cookie session，需要单独设计；另注意 qBittorrent 没有 `stop-with-process` 等价物，孤儿进程防护要另想办法）；限速/并发数等选项具体要透传 aria2/qBittorrent 的哪些 option、设置页字段怎么设计；下载失败的自动重试策略；子进程崩溃后的自动重启策略；"下载目录落在同步范围内"警示的具体交互（D3 设置页一起做）；引擎版本升级的操作流程文档化（engines release 的产出步骤，做进 CONTRIBUTING 或脚本注释）；Android 平台的下载能力方案（很可能是完全不同的技术路径，比如系统 DownloadManager，而不是 bundled 二进制，需要单独评估）；S3 协议支持（PROJECT_VISION.md 提到但未细化，大概率需要凭证管理，单独评估，不在 D1–D3 范围内）。
+Transmission 孤儿进程防护的小样验证（Job Object / `PR_SET_PDEATHSIG` / PID 清扫组合，§3.6.2——**进 D2 编码前必须先做**）；Windows MSI 解包产物的 DLL 伴随清单核实与 `bundle.resources` 打包实测（§3.6.5）；engines.yml transmission 构建腿首跑（预期按 aria2 首跑教训再踩一轮新坑）；限速/并发数/分享率等选项具体要透传 aria2/Transmission 的哪些 option、设置页字段怎么设计；下载失败的自动重试策略；子进程崩溃后的自动重启策略；"下载目录落在同步范围内"警示的具体交互（D3 设置页一起做）；`.torrent` 文件输入（D2 只接 magnet，文件输入留给 D3 或插件阶段）；引擎版本升级的操作流程文档化（engines release 的产出步骤，做进 CONTRIBUTING 或脚本注释）；Lua 插件系统的独立设计文档 + 安全评审（§10，D4）；Android 平台的下载能力方案（很可能是完全不同的技术路径，比如系统 DownloadManager，而不是 bundled 二进制，需要单独评估）；S3 协议支持（PROJECT_VISION.md 提到但未细化，大概率需要凭证管理，单独评估，不在 D1–D3 范围内）。
