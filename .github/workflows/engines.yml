@@ -296,13 +296,15 @@ jobs:
             "https://github.com/transmission/transmission/releases/download/${{ inputs.transmission_version }}/transmission-${{ inputs.transmission_version }}.tar.xz"
           tar xf transmission.tar.xz
       - name: Install build deps
-        # 未实测过的组合——按 Homebrew formula 的 Linux 分支（openssl@3 +
-        # zlib-ng-compat，Linux 上不能像 macOS 那样吃系统自带的 CommonCrypto）
-        # 换算成 Ubuntu 包名推断，第一次跑大概率要按报错调整。
+        # 按 Homebrew formula 的 Linux 分支（openssl@3 + zlib-ng-compat，Linux
+        # 上不能像 macOS 那样吃系统自带的 CommonCrypto）换算成 Ubuntu 包名——
+        # 第一次真实运行报 "Could NOT find CURL"：`uses_from_macos "curl"` 这行
+        # 只对 macOS 成立（系统自带），Linux 必须显式装 curl 的开发头文件，
+        # 之前漏了这一项。
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake pkg-config libevent-dev libpsl-dev \
-            libminiupnpc-dev libssl-dev zlib1g-dev
+            libminiupnpc-dev libssl-dev zlib1g-dev libcurl4-openssl-dev
       - name: Build (dynamic, $ORIGIN rpath so it doesn't need an install step)
         working-directory: transmission-${{ inputs.transmission_version }}
         run: |
