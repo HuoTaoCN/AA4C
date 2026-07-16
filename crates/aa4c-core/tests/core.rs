@@ -1355,3 +1355,84 @@ async fn download_end_to_end_through_core_orchestration() {
 
     core.shutdown().await.unwrap();
 }
+
+/// 里程碑 D2：真实 transmission-daemon 通过 Core 编排方法完成 magnet 添加 →
+/// 落库为 `kind: Bt`（id = 40 位 infohash）→ 暂停/继续/取消全部生效，`Core::
+/// add_download` 按 scheme 正确路由到 Transmission 而不是 aria2。**不测完整
+/// 下载落盘**——BT 需要真实 peer/tracker 连通性，本地做种测试基础设施本身就
+/// 是个不小的工程量（要另起一个 daemon 当种子端 + 一份真实 .torrent 文件 +
+/// 处理 DHT/PEX 在纯回环环境下不一定能互相发现的问题），同 C5 NAT 打洞的
+/// 处理先例——CI 只验证真实进程间的接线是否正确，完整下载场景靠人工走查，
+/// DOWNLOAD_DESIGN.md §3.6 已经这样定。需要本机 PATH 里有 `aria2c` 与
+/// `transmission-daemon`（`download_spawner` 是"本平台是否支持下载能力"的
+/// 总闸，即使这条测试本身不碰 aria2 也得配，见 `CoreConfig` 文档）。
+#[tokio::test]
+async fn bt_download_routes_through_core_orchestration() {
+    use aa4c_download::ProcessSpawner;
+
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_env_filter("aa4c_download=debug,aa4c_core=debug")
+        .try_init();
+
+    fn require_on_path(name_without_ext: &str) -> PathBuf {
+        let path_var = std::env::var_os("PATH").unwrap_or_default();
+        let exe_name = format!("{name_without_ext}{}", std::env::consts::EXE_SUFFIX);
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(&exe_name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+        panic!("{exe_name} not found in PATH — install it to run this test (see HANDOFF.md)");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let download_dir = dir.path().join("test-downloads");
+    {
+        let seed_store = aa4c_store::Store::open(&dir.path().join("aa4c.db"))
+            .await
+            .unwrap();
+        seed_store
+            .set_setting(
+                "download_dir",
+                &serde_json::to_string(&download_dir.to_string_lossy().into_owned()).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let mut config = CoreConfig::new(dir.path().to_path_buf());
+    config.listen_port = 0;
+    config.transfer.default_save_dir = dir.path().join("downloads");
+    config.download_spawner = Some(Arc::new(ProcessSpawner::new(require_on_path("aria2c"))));
+    config.bt_spawner = Some(Arc::new(ProcessSpawner::new(require_on_path(
+        "transmission-daemon",
+    ))));
+    let core = Core::start(config).await.expect("core starts");
+
+    let magnet =
+        "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=aa4c-core-e2e-test";
+    let id = core.add_download(magnet.into()).await.unwrap();
+    assert_eq!(id.len(), 40, "BT task id should be the 40-hex infohash");
+
+    let listed = core.list_downloads().await.unwrap();
+    let task = listed
+        .iter()
+        .find(|t| t.id == id)
+        .expect("task should be listed after add_download");
+    assert_eq!(task.kind, aa4c_types::DownloadKind::Bt);
+
+    core.pause_download(id.clone()).await.unwrap();
+    core.resume_download(id.clone()).await.unwrap();
+    core.cancel_download(id.clone()).await.unwrap();
+
+    let listed = core.list_downloads().await.unwrap();
+    let task = listed
+        .iter()
+        .find(|t| t.id == id)
+        .expect("task should still be listed after cancel");
+    assert_eq!(task.status, aa4c_types::DownloadStatus::Removed);
+
+    core.shutdown().await.unwrap();
+}

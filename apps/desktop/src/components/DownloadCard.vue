@@ -4,7 +4,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { useDownloadStore, type LiveDownloadTask } from "../stores/download";
 import { useToastStore } from "../stores/toast";
 import { asCommandError } from "../lib/api";
-import { baseName, downloadStatusText, errorText, etaText, humanBytes, humanSpeed } from "../lib/format";
+import { downloadStatusText, errorText, etaText, humanBytes, humanSpeed, taskTitle } from "../lib/format";
 
 const props = defineProps<{ task: LiveDownloadTask }>();
 const download = useDownloadStore();
@@ -15,7 +15,13 @@ const percent = computed(() =>
     ? Math.min(100, Math.round((props.task.downloadedBytes / props.task.totalBytes) * 100))
     : 0,
 );
-const title = computed(() => baseName(props.task.url));
+const title = computed(() => taskTitle(props.task.url, props.task.id));
+const showBtStats = computed(
+  () =>
+    props.task.kind === "bt" &&
+    (props.task.status === "active" || props.task.status === "waiting") &&
+    props.task.seeders !== undefined,
+);
 const eta = computed(() =>
   props.task.status === "active"
     ? etaText(props.task.totalBytes - props.task.downloadedBytes, props.task.speedBps)
@@ -78,6 +84,11 @@ async function openFolder() {
         </span>
         <span v-if="task.status === 'active' && task.speedBps > 0">{{ humanSpeed(task.speedBps) }}</span>
         <span v-if="eta">{{ eta }}</span>
+        <template v-if="showBtStats">
+          <span>{{ task.seeders }} 做种</span>
+          <span>{{ task.peers }} 连接</span>
+          <span v-if="task.ratio !== undefined">分享率 {{ task.ratio.toFixed(2) }}</span>
+        </template>
       </template>
       <span v-if="task.status === 'error' && task.error" class="err">{{ task.error }}</span>
     </div>

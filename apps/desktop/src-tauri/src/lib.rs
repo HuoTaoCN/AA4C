@@ -38,22 +38,25 @@ fn spawn_event_forwarder(app: tauri::AppHandle, core: Arc<Core>) {
     });
 }
 
-/// 桌面三平台注入基于 `tauri-plugin-shell` 的下载引擎子进程拉起器；Android 等
-/// 移动构建返回 `None`——下载能力整体不存在，`aa4c_core::orchestrate` 侧的
-/// 下载相关 Command 会统一报 `Unavailable`（V0.4 范围决定，见 DOWNLOAD_DESIGN.md §1.1）。
+/// 桌面三平台注入基于 `tauri-plugin-shell` 的下载引擎子进程拉起器（`sidecar_name`
+/// 是 `"aria2c"` 或 `"transmission-daemon"`）；Android 等移动构建返回 `None`——
+/// 下载能力整体不存在，`aa4c_core::orchestrate` 侧的下载相关 Command 会统一报
+/// `Unavailable`（V0.4 范围决定，见 DOWNLOAD_DESIGN.md §1.1）。
 #[cfg(desktop)]
 fn desktop_download_spawner(
     app: &tauri::AppHandle,
+    sidecar_name: &str,
 ) -> Option<Arc<dyn aa4c_download::SidecarSpawner>> {
     Some(Arc::new(download_spawner::TauriSidecarSpawner::new(
         app.clone(),
-        "aria2c",
+        sidecar_name,
     )))
 }
 
 #[cfg(not(desktop))]
 fn desktop_download_spawner(
     _app: &tauri::AppHandle,
+    _sidecar_name: &str,
 ) -> Option<Arc<dyn aa4c_download::SidecarSpawner>> {
     None
 }
@@ -97,9 +100,11 @@ pub fn run() {
             if let Ok(name) = std::env::var("AA4C_DEVICE_NAME") {
                 config.device_name = Some(name);
             }
-            // 下载中心（DOWNLOAD_DESIGN.md，里程碑 D1）：只在桌面三平台注入 sidecar
-            // 拉起器——V0.4 明确不含 Android，`cfg(desktop)` 由 Tauri 自动区分。
-            config.download_spawner = desktop_download_spawner(app.handle());
+            // 下载中心（DOWNLOAD_DESIGN.md，里程碑 D1 aria2 + D2 Transmission）：只在
+            // 桌面三平台注入 sidecar 拉起器——V0.4 明确不含 Android，`cfg(desktop)`
+            // 由 Tauri 自动区分。两个引擎各自独立注入，互不影响对方的可用性。
+            config.download_spawner = desktop_download_spawner(app.handle(), "aria2c");
+            config.bt_spawner = desktop_download_spawner(app.handle(), "transmission-daemon");
 
             // 启动序列是异步的；setup 在事件循环前运行，可阻塞等待
             let core = tauri::async_runtime::block_on(Core::start(config))?;

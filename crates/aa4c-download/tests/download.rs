@@ -150,6 +150,7 @@ async fn start_service(
     let spawner = Arc::new(ProcessSpawner::new(require_aria2c()));
     let svc = DownloadService::start(
         spawner.clone(),
+        None,
         store.clone(),
         events,
         data_dir.to_path_buf(),
@@ -289,6 +290,7 @@ async fn task_resumes_across_service_restart_with_same_gid() {
     let (events, _rx) = broadcast::channel(64);
     let svc = DownloadService::start(
         spawner.clone(),
+        None,
         store.clone(),
         events,
         dir.path().to_path_buf(),
@@ -303,6 +305,7 @@ async fn task_resumes_across_service_restart_with_same_gid() {
     let (events2, _rx2) = broadcast::channel(64);
     let svc2 = DownloadService::start(
         spawner,
+        None,
         store.clone(),
         events2,
         dir.path().to_path_buf(),
@@ -340,6 +343,7 @@ async fn missing_session_file_marks_orphaned_task_as_error() {
     let (events, _rx) = broadcast::channel(64);
     let svc = DownloadService::start(
         spawner.clone(),
+        None,
         store.clone(),
         events,
         dir.path().to_path_buf(),
@@ -355,6 +359,7 @@ async fn missing_session_file_marks_orphaned_task_as_error() {
     let (events2, _rx2) = broadcast::channel(64);
     let svc2 = DownloadService::start(
         spawner,
+        None,
         store.clone(),
         events2,
         dir.path().to_path_buf(),

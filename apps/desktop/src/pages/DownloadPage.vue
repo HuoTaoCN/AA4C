@@ -35,8 +35,8 @@ async function add() {
   <div class="download">
     <h2>下载</h2>
     <p class="intro muted">
-      粘贴一条 HTTP / HTTPS / FTP 直链即可下载，完成后自然可以走同步/分享继续流动
-      （BT / 磁力链接见后续里程碑）。
+      粘贴一条 HTTP / HTTPS / FTP 直链，或者一条 magnet 磁力链接，即可下载，完成后
+      自然可以走同步/分享继续流动。
     </p>
 
     <div class="card form">
@@ -44,7 +44,7 @@ async function add() {
         <input
           v-model="url"
           type="text"
-          placeholder="https://…"
+          placeholder="https://… 或 magnet:?xt=…"
           @keyup.enter="add"
         />
         <button class="btn btn-primary" :disabled="adding || !url.trim()" @click="add">

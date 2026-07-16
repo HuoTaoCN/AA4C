@@ -44,12 +44,19 @@ pub struct CoreConfig {
     pub listen_port: u16,
     /// 传输引擎配置（接收目录会被设置项覆盖）。
     pub transfer: TransferConfig,
-    /// 下载引擎子进程拉起器（DOWNLOAD_DESIGN.md §2，里程碑 D1）：桌面壳层注入
-    /// 基于 `tauri-plugin-shell` 的实现，`None` 时下载能力整体不存在（Android 等
-    /// 未接入的平台/构建，V0.4 范围）——与"注入了但 aria2c 启动失败"的降级
-    /// （仍是 `Some`，只是内部 `cmd_tx` 为空）是两种不同的不可用，后者由
-    /// `DownloadService::start` 自己处理。
+    /// 下载引擎（aria2，HTTP/HTTPS/FTP，里程碑 D1）子进程拉起器
+    /// （DOWNLOAD_DESIGN.md §2）：桌面壳层注入基于 `tauri-plugin-shell` 的实现，
+    /// `None` 时下载能力整体不存在（Android 等未接入的平台/构建，V0.4 范围）——
+    /// 与"注入了但 aria2c 启动失败"的降级（仍是 `Some`，只是内部 `cmd_tx` 为空）
+    /// 是两种不同的不可用，后者由 `DownloadService::start` 自己处理。这个字段
+    /// 是"本平台是否支持下载能力"的总闸——`bt_spawner` 只决定 BT 这一个引擎
+    /// 自己的可用性，不单独决定整个下载中心存不存在。
     pub download_spawner: Option<Arc<dyn SidecarSpawner>>,
+    /// BT 引擎（Transmission，Magnet，里程碑 D2）子进程拉起器
+    /// （DOWNLOAD_DESIGN.md §3.6）：与 `download_spawner` 是两个独立的可选注入，
+    /// 各自的启动/健康检查失败互不影响对方——`None` 时只是 BT 能力不可用，
+    /// HTTP/HTTPS/FTP 直链正常工作。
+    pub bt_spawner: Option<Arc<dyn SidecarSpawner>>,
 }
 
 impl CoreConfig {
@@ -67,6 +74,7 @@ impl CoreConfig {
                 ..TransferConfig::default()
             },
             download_spawner: None,
+            bt_spawner: None,
         }
     }
 }
@@ -221,14 +229,18 @@ impl Core {
             signal_channel,
         )));
 
-        // 11. 下载中心（DOWNLOAD_DESIGN.md，里程碑 D1）：只在壳层注入了 spawner 时才
-        //     尝试拉起 aria2c；拉起/健康检查失败也不返回 Err，只让下载能力整体降级
-        //     不可用（`DownloadService::start` 内部处理，同其余可选能力的一贯降级
-        //     设计）。桌面注入 spawner，Android 等未接入的平台/构建保持 `None`。
+        // 11. 下载中心（DOWNLOAD_DESIGN.md，里程碑 D1 aria2 + D2 Transmission）：只在
+        //     壳层注入了 aria2 spawner 时才尝试拉起下载中心（这是"本平台支不支持
+        //     下载能力"的总闸，Android 等未接入的平台/构建保持 `None`）；
+        //     `bt_spawner` 独立传入，两个引擎各自的启动/健康检查失败互不影响
+        //     对方，也都不返回 Err——下载能力（或其中一个引擎）整体降级不可用，
+        //     不阻塞 Core 启动（`DownloadService::start` 内部处理，同其余可选
+        //     能力的一贯降级设计）。
         let download = match config.download_spawner {
             Some(spawner) => Some(
                 DownloadService::start(
                     spawner,
+                    config.bt_spawner,
                     store.clone(),
                     events.clone(),
                     config.data_dir.clone(),

@@ -57,7 +57,7 @@ export const CAPABILITIES: NavItem[] = [
     icon: "⬇️",
     built: true,
     version: "V0.4",
-    desc: "HTTP / HTTPS / FTP 直链下载（BT / 磁力见 D2）",
+    desc: "HTTP / HTTPS / FTP 直链下载，也支持 BT / 磁力链接",
   },
   {
     path: "/archive",

@@ -268,12 +268,32 @@ pub fn event_payload(event: &CoreEvent) -> Value {
             downloaded_bytes,
             total_bytes,
             speed_bps,
-        } => json!({
-            "taskId": task_id,
-            "downloadedBytes": downloaded_bytes,
-            "totalBytes": total_bytes,
-            "speedBps": speed_bps,
-        }),
+            seeders,
+            peers,
+            ratio,
+        } => {
+            // 同 aa4c_types::CoreEvent 的 serde 语义：BT 字段是 None（HTTP 任务）
+            // 时整个 key 不出现，不是出现成 null——前端按"字段存在与否"判断这条
+            // 任务是不是 BT，不是按"值是不是 null"。
+            let mut payload = json!({
+                "taskId": task_id,
+                "downloadedBytes": downloaded_bytes,
+                "totalBytes": total_bytes,
+                "speedBps": speed_bps,
+            });
+            if let Value::Object(map) = &mut payload {
+                if let Some(v) = seeders {
+                    map.insert("seeders".to_string(), json!(v));
+                }
+                if let Some(v) = peers {
+                    map.insert("peers".to_string(), json!(v));
+                }
+                if let Some(v) = ratio {
+                    map.insert("ratio".to_string(), json!(v));
+                }
+            }
+            payload
+        }
         CoreEvent::DownloadDone { task_id, save_path } => {
             json!({ "taskId": task_id, "savePath": save_path })
         }
