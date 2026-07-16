@@ -67,6 +67,7 @@ version = "0.4.0"
 dependencies = [
  "aa4c-store",
  "aa4c-types",
+ "base64 0.22.1",
  "bs58",
  "futures-util",
  "serde_json",
