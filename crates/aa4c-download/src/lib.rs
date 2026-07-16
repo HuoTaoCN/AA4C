@@ -21,11 +21,13 @@ mod rpc;
 mod spawner;
 mod transmission_conf;
 mod transmission_process;
+mod transmission_rpc;
 mod util;
 
 pub use rpc::{Aria2Client, Aria2Notification};
 pub use spawner::{EngineChild, KillFuture, ProcessSpawner, SidecarSpawner, SpawnFuture};
 pub use transmission_process::TransmissionProcess;
+pub use transmission_rpc::TransmissionClient;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

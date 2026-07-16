@@ -18,6 +18,10 @@ serde_json = { workspace = true }
 bs58 = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
+# Transmission RPC 的 HTTP Basic 鉴权用（DOWNLOAD_DESIGN.md §3.6.3）。已经是
+# 依赖树里现成的传递依赖（tungstenite 的 WebSocket 握手要用），这里只是把它
+# 提升成直接依赖，不引入新的依赖体量。
+base64 = "0.22"
 
 # 孤儿进程防护（DOWNLOAD_DESIGN.md §3.6.2）：Windows 上用 Job Object 按 PID
 # 事后归属，仅 Windows 需要——`orphan_guard::windows` 是这个 crate 里唯一
