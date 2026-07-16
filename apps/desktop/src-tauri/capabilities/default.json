@@ -15,6 +15,11 @@
           "name": "aria2c",
           "sidecar": true,
           "args": [{ "validator": "^--conf-path=.+$" }]
+        },
+        {
+          "name": "transmission-daemon",
+          "sidecar": true,
+          "args": [{ "validator": "^-f$" }, { "validator": "^--config-dir=.+$" }]
         }
       ]
     }

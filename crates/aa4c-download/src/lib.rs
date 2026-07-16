@@ -1,13 +1,17 @@
-//! 下载中心服务（V0.4 里程碑 D1，DOWNLOAD_DESIGN.md）。
+//! 下载中心服务（V0.4 里程碑 D1/D2，DOWNLOAD_DESIGN.md）。
 //!
 //! 独立于设备身份/配对——下载没有"对端设备"概念。对上层（`aa4c-core`）只暴露
-//! 任务模型（`add`/`pause`/`resume`/`cancel`/`list`），引擎细节（aria2 子进程 +
-//! JSON-RPC）全部封装在这个 crate 内部。
+//! 统一的任务模型（`add`/`pause`/`resume`/`cancel`/`list`），引擎细节（aria2 子
+//! 进程 + JSON-RPC，D1；transmission-daemon 子进程 + HTTP RPC，D2）全部封装在
+//! 这个 crate 内部——调用方不需要知道一条 `magnet:` 链接背后连的是哪个进程。
 //!
-//! 内部是一个单线程 actor：一个后台任务独占持有"当前连接"状态（子进程句柄 +
-//! RPC 客户端），公开方法通过 channel 发命令、等回复——避免用锁去保护"连接可能
-//! 随时因为重连而整体替换"这种状态，也让"服务当前不可用"有一个天然、单一的
-//! 判定点（channel 发送失败 = actor 已退出 = 不可用）。
+//! 内部是**两个独立的单线程 actor**（aria2 一个、Transmission 一个），各自
+//! 独占持有自己的"当前连接"状态（子进程句柄 + RPC 客户端），公开方法按 URL
+//! scheme（`add`）或任务 id 形状（`pause`/`resume`/`cancel`，见
+//! `is_bt_task_id`）分流到对应 actor 的 channel——两个引擎的生命周期
+//! 互不影响：aria2 不可用不妨碍 BT 下载正常工作，反之亦然。“服务当前不可用”
+//! 对每个引擎各自有一个天然、单一的判定点（对应 channel 发送失败 = 那个
+//! actor 已退出 = 那个引擎不可用）。
 
 // D1 上线时是 `forbid`——D2 接孤儿进程防护需要直接调用 Win32 API（Job Object）
 // 与 Linux `prctl`，两处都是必需的 unsafe FFI，`forbid` 连局部 `#[allow]` 都不
@@ -56,6 +60,11 @@ const RECONCILE_INTERVAL: Duration = Duration::from_secs(2);
 /// application.」）——这个宽限期必须明显长于那 3 秒，否则我们自己的强杀会抢在
 /// aria2 完成 session 落盘之前发生，直接违背"先礼后兵"想要的效果。
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// Transmission 的 RPC 是纯请求-响应（HTTP，每次调用开关一条连接），没有 aria2
+/// WS 连接那种"断开"信号可以监听——`torrent-get` 轮询本身就是唯一的存活信号。
+/// 连续这么多次轮询失败（daemon 进程可能已经崩溃）才判定 BT 能力在本次会话
+/// 剩余时间内不可用，避免偶发的单次网络抖动就整个宣布降级。
+const BT_FAILURE_THRESHOLD: u32 = 5;
 
 type EventSender = broadcast::Sender<CoreEvent>;
 
@@ -81,54 +90,137 @@ enum Cmd {
     },
 }
 
-/// 下载中心服务句柄。`cmd_tx` 为 `None`（引擎启动失败）或后台 actor 已退出
-/// （重连耗尽/已 shutdown）时，全部操作性方法统一返回 `Aa4cError::Unavailable`。
+/// BT（Transmission）actor 的命令——形状同 `Cmd`，`Add` 换成接收 magnet URI。
+enum BtCmd {
+    Add {
+        magnet: String,
+        reply: oneshot::Sender<Result<TaskId>>,
+    },
+    Pause {
+        id: TaskId,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    Resume {
+        id: TaskId,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    Cancel {
+        id: TaskId,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    Shutdown {
+        reply: oneshot::Sender<()>,
+    },
+}
+
+/// aria2 GID 固定 16 位十六进制、BT infohash（SHA-1）固定 40 位十六进制——
+/// 两种引擎原生 id 的固定长度不同是协议本身决定的，不是巧合，用长度判断一个
+/// 任务 id 该路由去哪个 actor 比额外查一次数据库拿 `kind` 更省一次往返
+/// （`pause`/`resume`/`cancel` 都要用，热路径）。
+fn is_bt_task_id(id: &str) -> bool {
+    id.len() == 40
+}
+
+/// 下载中心服务句柄——统一封装 aria2（D1，HTTP/HTTPS/FTP）与 Transmission
+/// （D2，BT/Magnet）两个独立 actor，调用方不需要关心一个任务 id 具体是哪个
+/// 引擎在管。任一 `cmd_tx` 为 `None`（对应引擎启动失败）或后台 actor 已退出
+/// （BT 侧轮询连续失败耗尽/已 shutdown）时，路由到那个引擎的操作性方法统一
+/// 返回 `Aa4cError::Unavailable`——两个引擎的可用性完全独立。
 pub struct DownloadService {
     store: Store,
     cmd_tx: Option<mpsc::UnboundedSender<Cmd>>,
+    bt_cmd_tx: Option<mpsc::UnboundedSender<BtCmd>>,
 }
 
 impl DownloadService {
-    /// 启动：拉起 aria2c、健康检查、启动时对账、起后台 actor。**启动失败不返回
-    /// `Err`**——下载能力整体降级不可用，但不阻塞调用方（同 QUIC 端点等既有
-    /// 可选能力的一贯降级设计，DOWNLOAD_DESIGN.md §3.1）。
+    /// 启动：并行拉起 aria2c 与 transmission-daemon（`bt_spawner` 为 `None`
+    /// 时 BT 能力整体不存在，同 `spawner` 为 `None` 时 HTTP 能力不存在——两者
+    /// 互不阻塞，一个引擎起不来不影响另一个）。**启动失败不返回 `Err`**——
+    /// 下载能力整体降级不可用，但不阻塞调用方（同 QUIC 端点等既有可选能力的
+    /// 一贯降级设计，DOWNLOAD_DESIGN.md §3.1/§3.6）。
     pub async fn start(
         spawner: Arc<dyn SidecarSpawner>,
+        bt_spawner: Option<Arc<dyn SidecarSpawner>>,
         store: Store,
         events: EventSender,
         data_dir: PathBuf,
         download_dir: PathBuf,
     ) -> Arc<Self> {
-        match spawn_and_connect_with_retries(spawner.as_ref(), &data_dir, &download_dir).await {
+        let cmd_tx = match spawn_and_connect_with_retries(
+            spawner.as_ref(),
+            &data_dir,
+            &download_dir,
+        )
+        .await
+        {
             Ok(connected) => {
                 reconcile(&store, &events, &connected.client).await;
                 tracing::info!(port = connected.port, "download engine (aria2c) connected");
                 let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-                tokio::spawn(actor_loop(store.clone(), events, connected, cmd_rx));
-                Arc::new(Self {
-                    store,
-                    cmd_tx: Some(cmd_tx),
-                })
+                tokio::spawn(actor_loop(store.clone(), events.clone(), connected, cmd_rx));
+                Some(cmd_tx)
             }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "download engine unavailable at startup; download capability disabled for this session"
+                    "aria2 unavailable at startup; HTTP/FTP download capability disabled for this session"
                 );
-                Arc::new(Self {
-                    store,
-                    cmd_tx: None,
-                })
+                None
             }
-        }
+        };
+
+        let bt_cmd_tx = match bt_spawner {
+            None => None,
+            Some(bt_spawner) => {
+                match spawn_and_connect_bt_with_retries(
+                    bt_spawner.as_ref(),
+                    &data_dir,
+                    &download_dir,
+                )
+                .await
+                {
+                    Ok(connected) => {
+                        let _ = bt_reconcile(&store, &events, &connected.client).await;
+                        tracing::info!(
+                            port = connected.port,
+                            "download engine (transmission-daemon) connected"
+                        );
+                        let (bt_cmd_tx, bt_cmd_rx) = mpsc::unbounded_channel();
+                        tokio::spawn(bt_actor_loop(store.clone(), events, connected, bt_cmd_rx));
+                        Some(bt_cmd_tx)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "transmission-daemon unavailable at startup; BT download capability disabled for this session"
+                        );
+                        None
+                    }
+                }
+            }
+        };
+
+        Arc::new(Self {
+            store,
+            cmd_tx,
+            bt_cmd_tx,
+        })
     }
 
     fn unavailable() -> Aa4cError {
         Aa4cError::Unavailable("download engine not available".into())
     }
 
-    /// 新建一条下载任务（D1 只接受 HTTP/HTTPS/FTP 直链）。
+    /// 新建一条下载任务：`magnet:` 链接路由给 Transmission（D2），其余（HTTP/
+    /// HTTPS/FTP 直链，D1）路由给 aria2——调用方不需要自己判断该走哪个引擎。
     pub async fn add(&self, url: String) -> Result<TaskId> {
+        if url.starts_with("magnet:") {
+            let tx = self.bt_cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
+            let (reply, rx) = oneshot::channel();
+            tx.send(BtCmd::Add { magnet: url, reply })
+                .map_err(|_| Self::unavailable())?;
+            return rx.await.map_err(|_| Self::unavailable())?;
+        }
         let tx = self.cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
         let (reply, rx) = oneshot::channel();
         tx.send(Cmd::Add { url, reply })
@@ -137,6 +229,13 @@ impl DownloadService {
     }
 
     pub async fn pause(&self, id: TaskId) -> Result<()> {
+        if is_bt_task_id(&id) {
+            let tx = self.bt_cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
+            let (reply, rx) = oneshot::channel();
+            tx.send(BtCmd::Pause { id, reply })
+                .map_err(|_| Self::unavailable())?;
+            return rx.await.map_err(|_| Self::unavailable())?;
+        }
         let tx = self.cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
         let (reply, rx) = oneshot::channel();
         tx.send(Cmd::Pause { id, reply })
@@ -145,6 +244,13 @@ impl DownloadService {
     }
 
     pub async fn resume(&self, id: TaskId) -> Result<()> {
+        if is_bt_task_id(&id) {
+            let tx = self.bt_cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
+            let (reply, rx) = oneshot::channel();
+            tx.send(BtCmd::Resume { id, reply })
+                .map_err(|_| Self::unavailable())?;
+            return rx.await.map_err(|_| Self::unavailable())?;
+        }
         let tx = self.cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
         let (reply, rx) = oneshot::channel();
         tx.send(Cmd::Resume { id, reply })
@@ -153,6 +259,13 @@ impl DownloadService {
     }
 
     pub async fn cancel(&self, id: TaskId) -> Result<()> {
+        if is_bt_task_id(&id) {
+            let tx = self.bt_cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
+            let (reply, rx) = oneshot::channel();
+            tx.send(BtCmd::Cancel { id, reply })
+                .map_err(|_| Self::unavailable())?;
+            return rx.await.map_err(|_| Self::unavailable())?;
+        }
         let tx = self.cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
         let (reply, rx) = oneshot::channel();
         tx.send(Cmd::Cancel { id, reply })
@@ -160,19 +273,29 @@ impl DownloadService {
         rx.await.map_err(|_| Self::unavailable())?
     }
 
-    /// 按创建时间倒序列出全部下载任务。数据库读取，不经过 actor（列表展示不需要
-    /// 强一致于"引擎当前是否在线"，引擎不可用时仍应能看到历史记录）。
+    /// 按创建时间倒序列出全部下载任务（D1+D2 同一张表，同一个列表——D3「统一
+    /// 任务中心」的目标从数据模型上一开始就成立）。数据库读取，不经过 actor
+    /// （列表展示不需要强一致于"引擎当前是否在线"，引擎不可用时仍应能看到
+    /// 历史记录）。
     pub async fn list(&self) -> Result<Vec<aa4c_types::DownloadTask>> {
         self.store.list_downloads().await
     }
 
-    /// 优雅关闭：`aria2.shutdown`（触发一次 session 保存）→ 宽限期 → 强杀。
-    /// 引擎本就不可用时是no-op。
+    /// 优雅关闭两个引擎（互不影响，一个失败不阻塞另一个）：
+    /// aria2 `aria2.shutdown`（触发一次 session 保存）→ 宽限期 → 强杀；
+    /// Transmission `session-close` → 宽限期 → 强杀。引擎本就不可用时是 no-op。
     pub async fn shutdown(&self) {
-        let Some(tx) = &self.cmd_tx else { return };
-        let (reply, rx) = oneshot::channel();
-        if tx.send(Cmd::Shutdown { reply }).is_ok() {
-            let _ = rx.await;
+        if let Some(tx) = &self.cmd_tx {
+            let (reply, rx) = oneshot::channel();
+            if tx.send(Cmd::Shutdown { reply }).is_ok() {
+                let _ = rx.await;
+            }
+        }
+        if let Some(tx) = &self.bt_cmd_tx {
+            let (reply, rx) = oneshot::channel();
+            if tx.send(BtCmd::Shutdown { reply }).is_ok() {
+                let _ = rx.await;
+            }
         }
     }
 }
@@ -472,6 +595,11 @@ fn broadcast_for_status(events: &EventSender, gid: &str, status: DownloadStatus,
             downloaded_bytes: info.completed,
             total_bytes: info.total,
             speed_bps: info.speed,
+            // aria2（HTTP/HTTPS/FTP）没有做种数/peer 数/分享率这个概念——
+            // Transmission（D2）的等价路径才会填这三个字段。
+            seeders: None,
+            peers: None,
+            ratio: None,
         },
     };
     let _ = events.send(event);
@@ -537,6 +665,9 @@ async fn reconcile(store: &Store, events: &EventSender, client: &Aria2Client) {
                         downloaded_bytes: info.completed,
                         total_bytes: info.total,
                         speed_bps: info.speed,
+                        seeders: None,
+                        peers: None,
+                        ratio: None,
                     });
                 }
             }
@@ -559,4 +690,406 @@ async fn reconcile(store: &Store, events: &EventSender, client: &Aria2Client) {
             });
         }
     }
+}
+
+// ---------------------------------------------------------------------
+// Transmission（BT/Magnet，D2）actor——独立于上面 aria2 那一套，鉴权模型
+// （HTTP Basic + session header）、传输（纯请求-响应，无事件推送）都完全
+// 不同，见 `transmission_rpc.rs` 顶部文档。
+// ---------------------------------------------------------------------
+
+struct BtConnected {
+    proc: TransmissionProcess,
+    client: Arc<TransmissionClient>,
+    port: u16,
+}
+
+async fn spawn_and_connect_bt_with_retries(
+    spawner: &dyn SidecarSpawner,
+    data_dir: &std::path::Path,
+    download_dir: &std::path::Path,
+) -> Result<BtConnected> {
+    let mut last_err = None;
+    for attempt in 0..SPAWN_ATTEMPTS {
+        let proc = match TransmissionProcess::spawn(spawner, data_dir, download_dir).await {
+            Ok(p) => p,
+            Err(e) => {
+                last_err = Some(e);
+                continue;
+            }
+        };
+        let client = Arc::new(TransmissionClient::new(
+            proc.port,
+            &proc.username,
+            &proc.password,
+        ));
+        match bt_health_check(&client).await {
+            Ok(()) => {
+                let port = proc.port;
+                return Ok(BtConnected { proc, client, port });
+            }
+            Err(e) => {
+                let stdio = proc.recent_stdio();
+                proc.kill().await;
+                tracing::warn!(
+                    attempt,
+                    error = %e,
+                    stdio = ?stdio,
+                    "transmission spawn/health-check attempt failed, retrying with a new port"
+                );
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| Aa4cError::Unavailable("transmission spawn failed".into())))
+}
+
+async fn bt_health_check(client: &TransmissionClient) -> Result<()> {
+    let mut delay = HEALTH_CHECK_BASE_DELAY;
+    let mut last_err = None;
+    for _ in 0..HEALTH_CHECK_ATTEMPTS {
+        match client.call("session-get", json!({})).await {
+            Ok(_) => return Ok(()),
+            Err(e) => last_err = Some(e),
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(2));
+    }
+    Err(last_err
+        .unwrap_or_else(|| Aa4cError::Unavailable("transmission health check failed".into())))
+}
+
+async fn bt_actor_loop(
+    store: Store,
+    events: EventSender,
+    connected: BtConnected,
+    mut cmd_rx: mpsc::UnboundedReceiver<BtCmd>,
+) {
+    let mut poll = tokio::time::interval(RECONCILE_INTERVAL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut consecutive_failures = 0u32;
+
+    loop {
+        tokio::select! {
+            _ = poll.tick() => {
+                match bt_reconcile(&store, &events, &connected.client).await {
+                    Ok(()) => consecutive_failures = 0,
+                    Err(e) => {
+                        consecutive_failures += 1;
+                        tracing::warn!(
+                            error = %e,
+                            consecutive_failures,
+                            "transmission rpc poll failed"
+                        );
+                        if consecutive_failures >= BT_FAILURE_THRESHOLD {
+                            tracing::error!(
+                                "transmission rpc unreachable after {BT_FAILURE_THRESHOLD} consecutive attempts; \
+                                 BT capability unavailable for the rest of this session"
+                            );
+                            connected.proc.kill().await;
+                            return;
+                        }
+                    }
+                }
+            }
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(BtCmd::Shutdown { reply }) => {
+                        let _ = connected.client.call("session-close", json!({})).await;
+                        tokio::time::sleep(SHUTDOWN_GRACE).await;
+                        connected.proc.kill().await;
+                        let _ = reply.send(());
+                        return;
+                    }
+                    Some(other) => handle_bt_command(&connected.client, &store, other).await,
+                    None => {
+                        // DownloadService 已销毁：静默清理退出，不是错误路径。
+                        connected.proc.kill().await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn handle_bt_command(client: &TransmissionClient, store: &Store, cmd: BtCmd) {
+    match cmd {
+        BtCmd::Add { magnet, reply } => {
+            let result = add_bt_download(client, store, magnet).await;
+            let _ = reply.send(result);
+        }
+        BtCmd::Pause { id, reply } => {
+            let result = client
+                .call("torrent-stop", json!({ "ids": [id] }))
+                .await
+                .map(|_| ());
+            let _ = reply.send(result);
+        }
+        BtCmd::Resume { id, reply } => {
+            let result = client
+                .call("torrent-start", json!({ "ids": [id] }))
+                .await
+                .map(|_| ());
+            let _ = reply.send(result);
+        }
+        BtCmd::Cancel { id, reply } => {
+            // 同 aria2 侧的取舍：不关心 RPC 调用本身成不成功，落库状态才是
+            // 最终事实来源（引擎可能已经不在了，取消动作也该在本地生效）。
+            let _ = client
+                .call(
+                    "torrent-remove",
+                    json!({ "ids": [id.clone()], "delete-local-data": false }),
+                )
+                .await;
+            let result = store
+                .update_download_status(&id, DownloadStatus::Removed, None, None)
+                .await;
+            let _ = reply.send(result);
+        }
+        BtCmd::Shutdown { .. } => unreachable!("Shutdown handled directly in bt_actor_loop"),
+    }
+}
+
+async fn add_bt_download(
+    client: &TransmissionClient,
+    store: &Store,
+    magnet: String,
+) -> Result<TaskId> {
+    let result = client
+        .call(
+            "torrent-add",
+            json!({ "filename": magnet, "paused": false }),
+        )
+        .await?;
+    // 已经存在的 magnet 会走 `torrent-duplicate` 分支而不是 `torrent-added`——
+    // 两种情况都要接受（用户重复粘贴同一个链接不该报错，同 aria2 侧幂等取舍）。
+    let hash = result["torrent-added"]["hashString"]
+        .as_str()
+        .or_else(|| result["torrent-duplicate"]["hashString"].as_str())
+        .ok_or_else(|| {
+            Aa4cError::Network("transmission torrent-add did not return a hashString".into())
+        })?
+        .to_string();
+    store
+        .insert_download(&hash, DownloadKind::Bt, &magnet)
+        .await?;
+    Ok(hash)
+}
+
+/// 一条 Transmission 任务快照（`torrent-get` 的元素）。字段名沿用 Transmission
+/// RPC 原生命名（camelCase 是它自己的约定，不是我们这边套的）。
+struct BtInfo {
+    status: DownloadStatus,
+    total: u64,
+    completed: u64,
+    speed: u64,
+    error_message: Option<String>,
+    save_path: Option<String>,
+    seeders: u32,
+    peers: u32,
+    ratio: f64,
+}
+
+/// Transmission 数字状态码 → 统一六态（DOWNLOAD_DESIGN.md §3.6.4）：
+/// `percentDone` 到 1.0 就算完成，不管这时候的 `status` 是"停止"还是"做种中"
+/// ——完成后继续做种是 BT 的常规行为，不是"还没下完"。
+fn map_bt_status(status: i64, percent_done: f64, error: i64) -> DownloadStatus {
+    if percent_done >= 1.0 {
+        return DownloadStatus::Complete;
+    }
+    if error != 0 {
+        return DownloadStatus::Error;
+    }
+    match status {
+        4 | 6 => DownloadStatus::Active,          // downloading / seeding
+        1 | 2 | 3 | 5 => DownloadStatus::Waiting, // *-wait / checking
+        0 => DownloadStatus::Paused,              // stopped
+        _ => DownloadStatus::Error,
+    }
+}
+
+const BT_TORRENT_GET_FIELDS: &[&str] = &[
+    "hashString",
+    "name",
+    "status",
+    "percentDone",
+    "sizeWhenDone",
+    "leftUntilDone",
+    "rateDownload",
+    "peersConnected",
+    "peersSendingToUs",
+    "uploadRatio",
+    "error",
+    "errorString",
+    "downloadDir",
+];
+
+/// 拉取全量快照。**故意不吞错误**（不同于 aria2 侧的 `fetch_aria_snapshot`）：
+/// Transmission 没有持久连接可以监听"断开"，这次 RPC 调用本身能不能成功就是
+/// 唯一的存活信号——调用方（`bt_actor_loop`）靠这个 `Result` 数连续失败次数，
+/// 判断 daemon 是不是已经崩了；调用失败时绝不能把"引擎不可达"误判成"引擎
+/// 说现在没有任何任务"，那会把还在运行的任务错误地标成孤儿。
+async fn fetch_bt_snapshot(client: &TransmissionClient) -> Result<HashMap<String, BtInfo>> {
+    let result = client
+        .call("torrent-get", json!({ "fields": BT_TORRENT_GET_FIELDS }))
+        .await?;
+    let mut map = HashMap::new();
+    let Some(torrents) = result["torrents"].as_array() else {
+        return Ok(map);
+    };
+    for item in torrents {
+        let Some(hash) = item["hashString"].as_str() else {
+            continue;
+        };
+        let status_code = item["status"].as_i64().unwrap_or(0);
+        let percent_done = item["percentDone"].as_f64().unwrap_or(0.0);
+        let error_code = item["error"].as_i64().unwrap_or(0);
+        let size_when_done = item["sizeWhenDone"].as_u64().unwrap_or(0);
+        let left_until_done = item["leftUntilDone"].as_u64().unwrap_or(0);
+        let completed = size_when_done.saturating_sub(left_until_done);
+        let error_message = item["errorString"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let save_path = item["downloadDir"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        map.insert(
+            hash.to_string(),
+            BtInfo {
+                status: map_bt_status(status_code, percent_done, error_code),
+                total: size_when_done,
+                completed,
+                speed: item["rateDownload"].as_u64().unwrap_or(0),
+                error_message,
+                save_path,
+                seeders: item["peersSendingToUs"].as_u64().unwrap_or(0) as u32,
+                peers: item["peersConnected"].as_u64().unwrap_or(0) as u32,
+                ratio: item["uploadRatio"].as_f64().unwrap_or(0.0),
+            },
+        );
+    }
+    Ok(map)
+}
+
+fn broadcast_bt_progress(events: &EventSender, hash: &str, status: DownloadStatus, info: &BtInfo) {
+    let event = match status {
+        DownloadStatus::Complete => CoreEvent::DownloadDone {
+            task_id: hash.to_string(),
+            save_path: info.save_path.clone().unwrap_or_default(),
+        },
+        DownloadStatus::Error => CoreEvent::DownloadFailed {
+            task_id: hash.to_string(),
+            error: info
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "unknown error".into()),
+        },
+        _ => CoreEvent::DownloadProgress {
+            task_id: hash.to_string(),
+            downloaded_bytes: info.completed,
+            total_bytes: info.total,
+            speed_bps: info.speed,
+            seeders: Some(info.seeders),
+            peers: Some(info.peers),
+            ratio: Some(info.ratio),
+        },
+    };
+    let _ = events.send(event);
+}
+
+/// 结构完全照抄 aria2 侧的 `reconcile()`（DOWNLOAD_DESIGN.md §3.4 的对账逻辑对
+/// 两个引擎是同一套：启动时/轮询时都跑，两边都有则刷新，表里未完但引擎没有则
+/// 标孤儿失败，引擎有表没有则补插）——**关键差异**是这个函数会把 RPC 调用
+/// 失败原样传播给调用方（见 `fetch_bt_snapshot` 的文档），不像 aria2 那边可以
+/// 依赖 WS 连接断开事件区分"真的没任务"和"RPC 打不通"。
+async fn bt_reconcile(
+    store: &Store,
+    events: &EventSender,
+    client: &TransmissionClient,
+) -> Result<()> {
+    let bt_map = fetch_bt_snapshot(client).await?;
+    let stored = store.list_downloads().await.unwrap_or_default();
+    let mut remaining: HashMap<String, aa4c_types::DownloadTask> = stored
+        .into_iter()
+        .filter(|t| t.kind == DownloadKind::Bt)
+        .map(|t| (t.id.clone(), t))
+        .collect();
+
+    for (hash, info) in &bt_map {
+        match remaining.remove(hash) {
+            None => {
+                // 引擎有、表里没有：补插一行（`add_bt_download` 写库前恰好
+                // 崩溃的窗口，或者用户直接用别的客户端往这个 daemon 加了任务）。
+                // 补不上原始 magnet，退化用 hash 本身占位——不影响任务可操作性。
+                if store
+                    .insert_download(
+                        hash,
+                        DownloadKind::Bt,
+                        &format!("magnet:?xt=urn:btih:{hash}"),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    let _ = store
+                        .update_download_status(
+                            hash,
+                            info.status,
+                            info.error_message.as_deref(),
+                            info.save_path.as_deref(),
+                        )
+                        .await;
+                    let _ = store
+                        .update_download_progress(hash, info.completed, info.total)
+                        .await;
+                    broadcast_bt_progress(events, hash, info.status, info);
+                }
+            }
+            Some(existing) => {
+                let changed = existing.status != info.status
+                    || existing.downloaded_bytes != info.completed
+                    || existing.total_bytes != info.total;
+                if changed {
+                    let _ = store
+                        .update_download_status(
+                            hash,
+                            info.status,
+                            info.error_message.as_deref(),
+                            info.save_path.as_deref(),
+                        )
+                        .await;
+                    let _ = store
+                        .update_download_progress(hash, info.completed, info.total)
+                        .await;
+                }
+                // 状态变了必广播；状态没变但仍在下载中的，进度条的唯一数据源，
+                // 照样广播（同 aria2 侧 `reconcile()` 的取舍）。
+                if existing.status != info.status || info.status == DownloadStatus::Active {
+                    broadcast_bt_progress(events, hash, info.status, info);
+                }
+            }
+        }
+    }
+
+    // Transmission 这次快照里没出现、但表里仍是未完态的 BT 任务：孤儿记录，标失败。
+    for (hash, task) in remaining {
+        if matches!(
+            task.status,
+            DownloadStatus::Active | DownloadStatus::Waiting | DownloadStatus::Paused
+        ) {
+            const MSG: &str = "应用重启后任务已丢失，请重新添加";
+            let _ = store
+                .update_download_status(&hash, DownloadStatus::Error, Some(MSG), None)
+                .await;
+            let _ = events.send(CoreEvent::DownloadFailed {
+                task_id: hash,
+                error: MSG.into(),
+            });
+        }
+    }
+
+    Ok(())
 }

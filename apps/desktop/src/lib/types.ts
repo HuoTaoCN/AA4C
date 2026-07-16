@@ -146,7 +146,7 @@ export interface ShareAccess {
   at: number;
 }
 
-/** 'bt' 留给 D2（qBittorrent）。 */
+/** 'bt' 是 D2（Transmission/Magnet）。 */
 export type DownloadKind = "http" | "bt";
 
 export type DownloadStatus =
@@ -221,6 +221,10 @@ export interface DownloadProgressPayload {
   downloadedBytes: number;
   totalBytes: number;
   speedBps: number;
+  /** D2（BT）专属，HTTP 任务不出现这三个字段（不是 null，是整个 key 不存在）。 */
+  seeders?: number;
+  peers?: number;
+  ratio?: number;
 }
 export interface DownloadDonePayload {
   taskId: string;

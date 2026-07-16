@@ -81,12 +81,23 @@ pub enum CoreEvent {
 
     /// 下载进度（V0.4 里程碑 D1，DOWNLOAD_DESIGN.md §5）：状态迁移必发，进行中按数秒级
     /// 节流（不落库，前端本地维护——同 `TransferProgress` 的既有先例）。
+    /// `seeders`/`peers`/`ratio` 是 D2（Transmission/BT）专属字段，HTTP 任务恒为
+    /// `None` 且不出现在 JSON 里（`skip_serializing_if`）——同 `save_path` 不落库、
+    /// 只进事件的既有先例（DOWNLOAD_DESIGN.md §3.6.4：BT 专属信息只进事件不落库），
+    /// 复用同一个事件变体而不是另开一个 `BtProgress`，让 D1+D2 任务在前端走同一条
+    /// 进度处理路径（对应 D3「统一任务中心」的目标）。
     #[serde(rename_all = "camelCase")]
     DownloadProgress {
         task_id: TaskId,
         downloaded_bytes: u64,
         total_bytes: u64,
         speed_bps: u64,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        seeders: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        peers: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        ratio: Option<f64>,
     },
     #[serde(rename_all = "camelCase")]
     DownloadDone {
@@ -173,6 +184,8 @@ mod tests {
     }
 
     /// 里程碑 D1：下载进度事件的 JSON 形状（camelCase，同 `TransferProgress` 的既有约定）。
+    /// HTTP 任务（D1）没有做种数/peer 数/分享率，三个字段应该整体不出现在 JSON 里
+    /// （不是出现成 `null`）——`skip_serializing_if` 就是为了这一点。
     #[test]
     fn download_progress_json_shape() {
         let event = CoreEvent::DownloadProgress {
@@ -180,12 +193,40 @@ mod tests {
             downloaded_bytes: 500,
             total_bytes: 1000,
             speed_bps: 1_000_000,
+            seeders: None,
+            peers: None,
+            ratio: None,
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "download_progress");
         assert_eq!(json["data"]["taskId"], "gid1");
         assert_eq!(json["data"]["downloadedBytes"], 500);
+        assert!(json["data"].get("seeders").is_none());
+        assert!(json["data"].get("peers").is_none());
+        assert!(json["data"].get("ratio").is_none());
         assert_eq!(event.event_name(), "download_progress");
+
+        let back: CoreEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(back, event);
+    }
+
+    /// D2：BT 任务的做种数/peer 数/分享率只进事件、不落库（DOWNLOAD_DESIGN.md
+    /// §3.6.4），复用同一个 `DownloadProgress` 变体而不是另开一个 BT 专属事件。
+    #[test]
+    fn download_progress_json_shape_with_bt_fields() {
+        let event = CoreEvent::DownloadProgress {
+            task_id: "infohash1".into(),
+            downloaded_bytes: 500,
+            total_bytes: 1000,
+            speed_bps: 1_000_000,
+            seeders: Some(12),
+            peers: Some(3),
+            ratio: Some(1.5),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["data"]["seeders"], 12);
+        assert_eq!(json["data"]["peers"], 3);
+        assert_eq!(json["data"]["ratio"], 1.5);
 
         let back: CoreEvent = serde_json::from_value(json).unwrap();
         assert_eq!(back, event);

@@ -9,9 +9,13 @@ import type {
   DownloadTask,
 } from "../lib/types";
 
-/** 进行中任务：在 DownloadTask 上叠加实时速度（不落库，同 transfer store 先例）。 */
+/** 进行中任务：在 DownloadTask 上叠加实时速度（不落库，同 transfer store 先例）。
+ *  seeders/peers/ratio 是 D2（BT）专属，HTTP 任务恒为 undefined。 */
 export interface LiveDownloadTask extends DownloadTask {
   speedBps: number;
+  seeders?: number;
+  peers?: number;
+  ratio?: number;
 }
 
 interface State {
@@ -69,6 +73,9 @@ export const useDownloadStore = defineStore("download", {
         downloadedBytes: p.downloadedBytes,
         totalBytes: p.totalBytes || base.totalBytes,
         speedBps: p.speedBps,
+        seeders: p.seeders,
+        peers: p.peers,
+        ratio: p.ratio,
       };
     },
 

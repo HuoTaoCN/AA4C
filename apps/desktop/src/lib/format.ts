@@ -122,6 +122,16 @@ export function baseName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+/** 下载任务卡片标题：HTTP 直链走 `baseName`；magnet 链接不是路径，取 `dn=`
+ *  显示名参数，没有的话退化成截短的 infohash（同 D1 baseName 惯例，不出现
+ *  "magnet:"/"xt="/"btih" 这类技术词）。 */
+export function taskTitle(url: string, id: string): string {
+  if (!url.startsWith("magnet:")) return baseName(url);
+  const dn = new URLSearchParams(url.slice(url.indexOf("?") + 1)).get("dn");
+  if (dn) return dn;
+  return `BT 任务 ${id.slice(0, 8)}`;
+}
+
 /** unix 毫秒 → "14:32" 时刻。 */
 export function timeText(createdAtMs: number): string {
   const d = new Date(createdAtMs);
