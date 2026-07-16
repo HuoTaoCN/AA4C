@@ -47,6 +47,7 @@ fn desktop_download_spawner(
 ) -> Option<Arc<dyn aa4c_download::SidecarSpawner>> {
     Some(Arc::new(download_spawner::TauriSidecarSpawner::new(
         app.clone(),
+        "aria2c",
     )))
 }
 

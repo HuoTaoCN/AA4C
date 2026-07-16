@@ -68,12 +68,42 @@ jobs:
           curl -fsSL -o aria2.zip "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
           unzip -j aria2.zip "*/aria2c.exe" -d "$RUNNER_TEMP/aria2"
           echo "$RUNNER_TEMP/aria2" >> "$GITHUB_PATH"
+      # aa4c-download 的 D2 集成测试驱动真实 transmission-daemon（见
+      # crates/aa4c-download/src/transmission_process.rs 的 #[cfg(test)]）。
+      - name: Install transmission-daemon (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y transmission-daemon
+      - name: Install transmission-daemon (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install transmission-cli
+      # 没有 choco 包能给（社区包大多是 GUI），官方也不发布单独的 daemon 二进制——
+      # 官方 Windows 安装包是 MSI，`msiexec /a <msi> /qn TARGETDIR=...` 是"管理员
+      # 镜像解包"，不是安装（不注册服务、不写注册表、不进 PATH、不弹 UI），解出来的
+      # 目录里含 transmission-daemon.exe（同目录还有它依赖的 DLL，一并留在原地，
+      # 不能只挪二进制本身）。DOWNLOAD_DESIGN.md §3.6.5 定的正式打包方案就是这条路，
+      # 这里先在 CI 里验证一遍这个提取方法本身是否可行。
+      - name: Install transmission-daemon (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $msi = "$env:RUNNER_TEMP\transmission.msi"
+          Invoke-WebRequest -Uri "https://github.com/transmission/transmission/releases/download/4.1.3/transmission-4.1.3-x64.msi" -OutFile $msi
+          $extractDir = "$env:RUNNER_TEMP\transmission"
+          Start-Process msiexec.exe -ArgumentList "/a", "`"$msi`"", "/qn", "TARGETDIR=`"$extractDir`"" -Wait -NoNewWindow
+          $exe = Get-ChildItem -Path $extractDir -Filter "transmission-daemon.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "transmission-daemon.exe not found after MSI extraction" }
+          Add-Content -Path $env:GITHUB_PATH -Value $exe.DirectoryName
       - name: Stage aria2c sidecar placeholder
         shell: bash
         run: bash scripts/fetch-engines.sh --from-path
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      # --no-fail-fast：不加的话，任何一个测试二进制（哪怕是众所周知会偶发
+      # flaky 的 quic_resume_after_disconnect 那种）一失败，cargo 直接整体
+      # 中断，后面排在它之后的测试二进制（含这次新增的 aa4c-download D2
+      # 测试）连跑都不跑——实测踩到过：PR #1 的 CI 因为 aa4c-core 里排在前面
+      # 的已知 flaky 用例先炸了，aa4c-download 的新测试根本没机会验证。
+      - run: cargo test --workspace --no-fail-fast
 
   frontend:
     name: Frontend (type-check + build)
