@@ -1,12 +1,14 @@
 name: Build Engines
 
-# 一次性/低频的引擎二进制构建流水线（V0.4 里程碑 D1，DOWNLOAD_DESIGN.md §3.1）：
-# 只手动触发，不随每次应用 release 重新编译。产物 + SHA256SUMS 发到一个专门的
-# `engines/aria2-<version>` release，供 scripts/fetch-engines.sh 下载校验。
+# 一次性/低频的引擎二进制构建流水线（V0.4，DOWNLOAD_DESIGN.md §3.1 aria2 / §3.6.5
+# Transmission）：只手动触发，不随每次应用 release 重新编译。产物 + SHA256SUMS
+# 分别发到 `engines/aria2-<version>` 与 `engines/transmission-<version>` 两个
+# release，供 scripts/fetch-engines.sh 下载校验。两个引擎的 job 用各自的
+# `*_version` 输入独立门控——留空即跳过那一整套 job，可以单独重跑一个引擎。
 #
-# ✅ 已在真实 CI 跑通验证（aria2_version=1.37.0，四条构建腿 + publish 全绿，产物
-# SHA256SUMS 已填进 scripts/fetch-engines.sh）。跑通前踩过的坑，升级 aria2 版本
-# 重跑时如果又炸，先看是不是这几个老问题复发：
+# ✅ aria2 已在真实 CI 跑通验证（aria2_version=1.37.0，四条构建腿 + publish 全绿，
+# 产物 SHA256SUMS 已填进 scripts/fetch-engines.sh）。跑通前踩过的坑，升级 aria2
+# 版本重跑时如果又炸，先看是不是这几个老问题复发：
 #   - macOS x86_64 不能在 arm64 runner 上用 `clang -arch x86_64` 交叉编译——Homebrew
 #     在 arm64 runner 上只装 arm64 单架构依赖库（c-ares/libssh2 等），链接会报
 #     "symbol(s) not found for architecture x86_64"。已改成每个架构用各自的原生
@@ -21,18 +23,49 @@ name: Build Engines
 #     静态 `.a`（报 `ld: cannot find -lcares`），没有单独的静态版可装，直接
 #     `--without-libcares` 放弃这个依赖——代价是 DNS 解析退化成同步阻塞（走系统
 #     resolver），对下载中心 sidecar 用途没有实际影响。
+#
+# ⚠️ Transmission 尚未在真实 CI 跑过（本机 macOS arm64 已验证 CMake 参数与打包
+# 方式，见下方 transmission-macos 的注释；x86_64/Linux 只经过设计推导，未实测）：
+#   - Transmission 的 CMake 配置**不像 aria2 那样能编成不依赖任何外部动态库的
+#     产物**（aria2 靠 AppleTLS/静态链接做到了这一点）——`libevent`/`libpsl`/
+#     `miniupnpc` 这三个依赖即使传 `-DBUILD_SHARED_LIBS=OFF`、`CMAKE_FIND_LIBRARY_
+#     SUFFIXES=".a"` 也仍然被链接成动态库（本机实测确认：CMake 配置阶段接受这些
+#     参数但不报错，链接结果 `otool -L` 照样显示 Homebrew 的 .dylib 路径——大概率
+#     是 Transmission 自己的 CMakeLists.txt 通过 pkg-config 拿 `-levent` 这种裸库名
+#     交给链接器，链接器在同一个搜索路径下默认优先选 .dylib，不是 CMake 参数能
+#     覆盖的行为）。**采用的方案**：动态链接照常构建，事后用 `install_name_tool
+#     -change` 把这三个依赖的绝对 Homebrew 路径重写成 `@executable_path/<name>`，
+#     把对应的 .dylib 文件复制进产物目录一起打包（同 Windows 需要把 DLL 一起带上
+#     是同一个道理，只是 macOS 版）。本机已验证重写后的二进制在完全清空的环境变量
+#     （`env -i`）+ 与原构建目录无关的临时目录下依然能正常启动，证明不依赖 Homebrew
+#     的安装路径。Linux 用同一个思路（`-Wl,-rpath,'$ORIGIN'` 链接参数 + 拷贝 `ldd`
+#     列出的非系统 .so），但这条路径完全没有实测过，大概率要按真实报错调整。
+#   - 构建参数取自真实验证过的 Homebrew `transmission-cli` formula（`brew cat
+#     transmission-cli`），本机构建配置阶段和编译均已实测通过（去掉了不需要给
+#     sidecar 用的 `ENABLE_CLI`/`ENABLE_UTILS`，改成 OFF——本机验证过这个裁剪
+#     组合本身也能正常配置+编译+运行）。
+#   - Windows 沿用 `ci.yml` 已验证过的官方 MSI 静默解包方法，但这里改成把解出来的
+#     整个目录（exe + 依赖 DLL，没有事先核实过完整清单）打成 zip 一起上传，而不是
+#     像 `ci.yml` 那样只挪 exe 本身——`ci.yml` 那样做能让测试跑起来是因为
+#     `$GITHUB_PATH` 加的是整个目录，`cargo test` 找到的还是原来那份带着 DLL 的
+#     完整目录；正式打包成 sidecar 分发就不能只挪一个文件。
 
 on:
   workflow_dispatch:
     inputs:
       aria2_version:
-        description: "aria2 release tag to build (e.g. 1.37.0)"
-        required: true
+        description: "aria2 release tag to build (empty to skip this engine)"
+        required: false
         default: "1.37.0"
+      transmission_version:
+        description: "Transmission release tag to build (empty to skip this engine)"
+        required: false
+        default: "4.1.3"
 
 jobs:
-  windows:
+  aria2-windows:
     name: aria2c (Windows, official prebuilt)
+    if: inputs.aria2_version != ''
     runs-on: ubuntu-latest
     steps:
       - name: Download official Windows build
@@ -45,8 +78,9 @@ jobs:
           name: aria2c-x86_64-pc-windows-msvc
           path: out/aria2c.exe
 
-  macos:
+  aria2-macos:
     name: aria2c (macOS ${{ matrix.target }})
+    if: inputs.aria2_version != ''
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -83,8 +117,9 @@ jobs:
           name: aria2c-${{ matrix.target }}
           path: aria2-${{ inputs.aria2_version }}/src/aria2c
 
-  linux:
+  aria2-linux:
     name: aria2c (Linux x86_64, static)
+    if: inputs.aria2_version != ''
     runs-on: ubuntu-latest
     steps:
       - name: Download source
@@ -118,15 +153,17 @@ jobs:
           name: aria2c-x86_64-unknown-linux-gnu
           path: aria2-${{ inputs.aria2_version }}/src/aria2c
 
-  publish:
-    name: Publish engines release
-    needs: [windows, macos, linux]
+  aria2-publish:
+    name: Publish aria2 engine release
+    needs: [aria2-windows, aria2-macos, aria2-linux]
+    if: inputs.aria2_version != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: aria2c-*
           path: artifacts
       - name: Stage + checksum
         run: |
@@ -148,6 +185,201 @@ jobs:
           body: |
             自建 / 官方转发的 aria2c 二进制，供 AA4C 桌面端 sidecar 打包用
             （见 `scripts/fetch-engines.sh`，按 SHA256SUMS 里的值下载校验）。
+            这不是 AA4C 应用本身的发布，跑完后请把 SHA256SUMS 的值填进
+            `scripts/fetch-engines.sh` 的 `checksum_for()`。
+          draft: false
+          prerelease: false
+          files: dist/*
+
+  transmission-windows:
+    name: transmission-daemon (Windows, official MSI extraction)
+    if: inputs.transmission_version != ''
+    runs-on: windows-latest
+    steps:
+      - name: Download and extract official MSI
+        shell: pwsh
+        run: |
+          $msi = "$env:RUNNER_TEMP\transmission.msi"
+          Invoke-WebRequest -Uri "https://github.com/transmission/transmission/releases/download/${{ inputs.transmission_version }}/transmission-${{ inputs.transmission_version }}-x64.msi" -OutFile $msi
+          $extractDir = "$env:RUNNER_TEMP\extract"
+          Start-Process msiexec.exe -ArgumentList "/a", "`"$msi`"", "/qn", "TARGETDIR=`"$extractDir`"" -Wait -NoNewWindow
+          $exe = Get-ChildItem -Path $extractDir -Filter "transmission-daemon.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "transmission-daemon.exe not found after MSI extraction" }
+          echo "BIN_DIR=$($exe.DirectoryName)" >> $env:GITHUB_ENV
+      - name: List bundle contents (diagnostic — first real run, want this in the log)
+        shell: pwsh
+        run: Get-ChildItem -Path $env:BIN_DIR | Format-Table Name, Length
+      - name: Zip the whole sidecar directory (exe + whatever DLLs sit next to it)
+        shell: pwsh
+        run: Compress-Archive -Path "$env:BIN_DIR\*" -DestinationPath "$env:RUNNER_TEMP\bundle.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transmission-daemon-x86_64-pc-windows-msvc
+          path: ${{ runner.temp }}\bundle.zip
+
+  transmission-macos:
+    name: transmission-daemon (macOS ${{ matrix.target }})
+    if: inputs.transmission_version != ''
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 同 aria2-macos 的既有教训：两个架构必须用各自的原生 runner，不跨架构编译。
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+    steps:
+      - name: Download source
+        run: |
+          curl -fsSL -o transmission.tar.xz \
+            "https://github.com/transmission/transmission/releases/download/${{ inputs.transmission_version }}/transmission-${{ inputs.transmission_version }}.tar.xz"
+          tar xf transmission.tar.xz
+      - name: Install build deps
+        # 参数与依赖列表取自真实验证过的 Homebrew `transmission-cli` formula
+        # （`brew cat transmission-cli`），不是凭官方 README 推断——本机已经用
+        # 这份依赖列表在 arm64 上跑通过完整配置+编译+启动。
+        run: brew install cmake pkgconf libevent libpsl miniupnpc
+      - name: Build (dynamic, native arch)
+        working-directory: transmission-${{ inputs.transmission_version }}
+        run: |
+          cmake -S . -B build \
+            -DENABLE_CLI=OFF \
+            -DENABLE_DAEMON=ON \
+            -DENABLE_MAC=OFF \
+            -DENABLE_NLS=OFF \
+            -DENABLE_QT=OFF \
+            -DENABLE_TESTS=OFF \
+            -DENABLE_UTILS=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(sysctl -n hw.ncpu)"
+      - name: Bundle dependent dylibs (make the binary independent of Homebrew's install paths)
+        working-directory: transmission-${{ inputs.transmission_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p bundle
+          cp build/daemon/transmission-daemon bundle/
+          exe=bundle/transmission-daemon
+          # 只重写 Homebrew 装的依赖（libevent/libpsl/miniupnpc）；系统自带的
+          # libcurl/libSystem/Foundation 等留给目标机器自己解析，不用打包。
+          otool -L "$exe" | tail -n +2 | awk '{print $1}' | grep -E "^(/opt/homebrew|/usr/local)/opt/" > /tmp/dylibs.txt || true
+          cat /tmp/dylibs.txt
+          while IFS= read -r lib; do
+            base=$(basename "$lib")
+            cp "$lib" "bundle/$base"
+            install_name_tool -change "$lib" "@executable_path/$base" "$exe"
+          done < /tmp/dylibs.txt
+          otool -L "$exe"
+      - name: Smoke test in an isolated directory with an empty environment
+        # 本机验证过这个手法能真实证明"不依赖 Homebrew 安装路径"——用完全清空的
+        # 环境变量、和构建目录无关的临时目录跑，能正常打印版本号才算数。
+        working-directory: transmission-${{ inputs.transmission_version }}
+        run: |
+          set -euo pipefail
+          testdir="$(mktemp -d)"
+          cp bundle/* "$testdir/"
+          ( cd "$testdir" && env -i ./transmission-daemon --version )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transmission-daemon-${{ matrix.target }}
+          path: transmission-${{ inputs.transmission_version }}/bundle/
+
+  transmission-linux:
+    name: transmission-daemon (Linux x86_64)
+    if: inputs.transmission_version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download source
+        run: |
+          curl -fsSL -o transmission.tar.xz \
+            "https://github.com/transmission/transmission/releases/download/${{ inputs.transmission_version }}/transmission-${{ inputs.transmission_version }}.tar.xz"
+          tar xf transmission.tar.xz
+      - name: Install build deps
+        # 未实测过的组合——按 Homebrew formula 的 Linux 分支（openssl@3 +
+        # zlib-ng-compat，Linux 上不能像 macOS 那样吃系统自带的 CommonCrypto）
+        # 换算成 Ubuntu 包名推断，第一次跑大概率要按报错调整。
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libevent-dev libpsl-dev \
+            libminiupnpc-dev libssl-dev zlib1g-dev
+      - name: Build (dynamic, $ORIGIN rpath so it doesn't need an install step)
+        working-directory: transmission-${{ inputs.transmission_version }}
+        run: |
+          cmake -S . -B build \
+            -DENABLE_CLI=OFF \
+            -DENABLE_DAEMON=ON \
+            -DENABLE_NLS=OFF \
+            -DENABLE_QT=OFF \
+            -DENABLE_TESTS=OFF \
+            -DENABLE_UTILS=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,\$ORIGIN"
+          cmake --build build -j"$(nproc)"
+      - name: Bundle dependent shared libs (mirrors the macOS dylib-bundling step)
+        working-directory: transmission-${{ inputs.transmission_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p bundle
+          cp build/daemon/transmission-daemon bundle/
+          # 只带走非系统基础库的部分（libc/libm/libpthread 等到处都有，不用带）；
+          # 具体要不要收窄这份清单，等真实运行看 ldd 的输出再定。
+          ldd bundle/transmission-daemon | awk '{print $3}' | grep -E '^/(usr/)?lib' | \
+            grep -vE '/(libc|libm|libpthread|libdl|librt|ld-linux)' > /tmp/libs.txt || true
+          cat /tmp/libs.txt
+          while IFS= read -r lib; do
+            cp "$lib" bundle/ 2>/dev/null || true
+          done < /tmp/libs.txt
+          chmod +x bundle/transmission-daemon
+      - name: Smoke test in an isolated directory
+        working-directory: transmission-${{ inputs.transmission_version }}
+        run: |
+          set -euo pipefail
+          testdir="$(mktemp -d)"
+          cp bundle/* "$testdir/"
+          ( cd "$testdir" && ./transmission-daemon --version )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transmission-daemon-x86_64-unknown-linux-gnu
+          path: transmission-${{ inputs.transmission_version }}/bundle/
+
+  transmission-publish:
+    name: Publish Transmission engine release
+    needs: [transmission-windows, transmission-macos, transmission-linux]
+    if: inputs.transmission_version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: transmission-daemon-*
+          path: artifacts
+      - name: Zip each triple's bundle and checksum
+        # 跟 aria2（单文件）不同：Transmission 每个三元组都是"exe + 若干依赖库"
+        # 一整个目录，release 里发的是每个三元组一个 zip，不是裸二进制。
+        run: |
+          mkdir -p dist
+          for dir in artifacts/*/; do
+            name="$(basename "$dir")"
+            if [[ "$name" == *windows* ]]; then
+              # Windows 那条腿自己已经在 job 里打过 zip 了（bundle.zip 是产物本体）。
+              cp "$dir"/bundle.zip "dist/${name}.zip"
+            else
+              (cd "$dir" && zip -r "../../dist/${name}.zip" .)
+            fi
+          done
+          (cd dist && sha256sum * > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: engines/transmission-${{ inputs.transmission_version }}
+          name: "Transmission engine binaries ${{ inputs.transmission_version }}"
+          body: |
+            自建 / 官方转发的 transmission-daemon 二进制（含依赖库），供 AA4C
+            桌面端 sidecar 打包用（见 `scripts/fetch-engines.sh`，按 SHA256SUMS
+            里的值下载校验）。每个平台三元组一个 zip（exe/可执行文件 + 它依赖的
+            动态库，不是裸二进制——同一个包里的文件要整体解到同一个目录）。
             这不是 AA4C 应用本身的发布，跑完后请把 SHA256SUMS 的值填进
             `scripts/fetch-engines.sh` 的 `checksum_for()`。
           draft: false
