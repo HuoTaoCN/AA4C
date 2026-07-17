@@ -206,12 +206,48 @@ jobs:
           $exe = Get-ChildItem -Path $extractDir -Filter "transmission-daemon.exe" -Recurse | Select-Object -First 1
           if (-not $exe) { throw "transmission-daemon.exe not found after MSI extraction" }
           echo "BIN_DIR=$($exe.DirectoryName)" >> $env:GITHUB_ENV
-      - name: List bundle contents (diagnostic — first real run, want this in the log)
+      - name: List full extracted directory (diagnostic)
         shell: pwsh
         run: Get-ChildItem -Path $env:BIN_DIR | Format-Table Name, Length
-      - name: Zip the whole sidecar directory (exe + whatever DLLs sit next to it)
+      - name: Stage a trimmed bundle (daemon + its actual runtime deps only)
+        # 第一次真实运行发现：`msiexec /a` 解出的是**整个 GUI 应用套件**——Qt6*.dll、
+        # imageformats/platforms/styles/tls 这些 Qt 插件目录、几十种语言的
+        # translations/、其他四个 GUI/CLI 工具（transmission-qt/-remote/-edit/
+        # -show/-create）、甚至内置 WebUI 的 public_html/ 静态资源，全部 135 个
+        # 文件、58MB——但 transmission-daemon.exe 是纯命令行守护进程，不链接 Qt
+        # （Qt 只有 transmission-qt.exe 这个 GUI 客户端才需要），AA4C 也不用它
+        # 内置的 WebUI（走的是 aa4c-download::TransmissionClient 直接调 RPC，
+        # 不经浏览器）。挑出 daemon 实际会用到的几个基础设施 DLL（OpenSSL/curl/
+        # zlib），其余（Qt 全家桶、其他 4 个 exe、翻译、WebUI 静态资源）都是死
+        # 重量，不打进 sidecar。
         shell: pwsh
-        run: Compress-Archive -Path "$env:BIN_DIR\*" -DestinationPath "$env:RUNNER_TEMP\bundle.zip"
+        run: |
+          $bundle = "$env:RUNNER_TEMP\bundle"
+          New-Item -ItemType Directory -Path $bundle | Out-Null
+          Copy-Item "$env:BIN_DIR\transmission-daemon.exe" $bundle
+          $deps = @("libcrypto-3-x64.dll", "libssl-3-x64.dll", "libcurl.dll", "zlib.dll")
+          foreach ($d in $deps) {
+            $src = Join-Path $env:BIN_DIR $d
+            if (Test-Path $src) {
+              Copy-Item $src $bundle
+            } else {
+              Write-Warning "expected dependency $d not found next to transmission-daemon.exe"
+            }
+          }
+          echo "BUNDLE_DIR=$bundle" >> $env:GITHUB_ENV
+      - name: Smoke test in an isolated directory
+        # 之前这一步完全没做——只是把整个目录打包上传，从没验证过这份产物真的能
+        # 独立跑起来。裁掉 Qt 之后尤其要确认没有漏掉 daemon 真正需要的 DLL
+        # （缺哪个 Windows 会报"找不到 xxx.dll"，报错本身很直接，不难诊断）。
+        shell: pwsh
+        run: |
+          $testDir = Join-Path $env:RUNNER_TEMP "smoketest"
+          Copy-Item $env:BUNDLE_DIR -Destination $testDir -Recurse
+          & "$testDir\transmission-daemon.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "transmission-daemon.exe --version failed (exit $LASTEXITCODE)" }
+      - name: Zip the trimmed bundle
+        shell: pwsh
+        run: Compress-Archive -Path "$env:BUNDLE_DIR\*" -DestinationPath "$env:RUNNER_TEMP\bundle.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: transmission-daemon-x86_64-pc-windows-msvc
