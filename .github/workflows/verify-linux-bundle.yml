@@ -34,16 +34,19 @@ jobs:
       - name: Build .deb bundle
         working-directory: apps/desktop
         run: pnpm tauri build --bundles deb
+      # 工作区共享一个仓库根 target/（cargo workspace，不是每个 crate 各自的
+      # target/），tauri build 实际产物落在 <repo-root>/target/release/bundle/，
+      # 不是 apps/desktop/src-tauri/target/ 下——第一次跑漏了这个，find 扑空。
       - name: Locate the built .deb
         id: deb
         run: |
-          deb="$(find src-tauri/target/release/bundle/deb -name '*.deb' | head -n1)"
+          deb="$(find target/release/bundle/deb -name '*.deb' | head -n1)"
           if [[ -z "$deb" ]]; then
             echo "error: no .deb produced" >&2
+            find target/release/bundle -maxdepth 3 2>&1 || echo "(bundle dir doesn't exist either)"
             exit 1
           fi
           echo "path=$deb" >> "$GITHUB_OUTPUT"
-        working-directory: apps/desktop
       - name: Extract .deb and inspect layout
         run: |
           mkdir -p /tmp/debroot
