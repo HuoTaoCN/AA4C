@@ -364,23 +364,24 @@ jobs:
           # 具体要不要收窄这份清单，等真实运行看 ldd 的输出再定。
           #
           # 之前这里 `|| true` 吞掉了 ldd 报 "not found" 的情况——真机验证
-          # （见 D2.7/D2.8 packaging 分支）发现 libminiupnpc.so.17 在发布的
-          # bundle 里根本不存在，而当时的"隔离目录"冒烟测试之所以没测出来，
-          # 是因为它跟 ldd 这步在同一台机器上跑，系统路径里还留着 apt 装的
-          # 那份，ld.so 在 $ORIGIN rpath 之外总还会兜底查系统路径——不是真正
-          # 隔离。现在改成：ldd 阶段就显式检查有没有 "not found"，有就直接
-          # 报错炸掉这个 job，不把不完整的产物悄悄传下去；不再吞 cp 失败。
+          # （见 D2.7/D2.8 packaging 分支）发现 libminiupnpc.so.17、libcurl.so.4
+          # 在发布的 bundle 里根本不存在。根因不是包没装对，是排除清单的
+          # grep 没有锚定边界，`libc`/`libm` 是子串匹配，"lib**c**url.so.4"
+          # 和 "lib**m**iniupnpc.so.17" 都被误判成"系统基础库"排除掉了——
+          # 真实 ldd 输出里 libc.so.6/libm.so.6 才是想排除的那两个。而当时的
+          # "隔离目录"冒烟测试之所以没测出来，是因为它跟 ldd 这步在同一台
+          # 机器上跑，系统路径里还留着 apt 装的那份，ld.so 在 $ORIGIN rpath
+          # 之外总还会兜底查系统路径——不是真正隔离。现在两处都修：排除清单
+          # 锚定到 `.so` 边界；ldd 阶段显式检查还有没有 "not found"，有就
+          # 直接报错炸掉这个 job，不把不完整的产物悄悄传下去；不再吞 cp 失败。
           ldd bundle/transmission-daemon
           if ldd bundle/transmission-daemon | grep -q 'not found'; then
             echo "error: transmission-daemon has unresolved shared library dependencies:" >&2
             ldd bundle/transmission-daemon | grep 'not found' >&2
-            echo "  (a runtime .so this daemon needs isn't on the build runner's search path" >&2
-            echo "   even though the matching -dev package was installed — check whether the" >&2
-            echo "   -dev package's Depends actually pulls in the exact runtime SONAME)" >&2
             exit 1
           fi
           ldd bundle/transmission-daemon | awk '{print $3}' | grep -E '^/(usr/)?lib' | \
-            grep -vE '/(libc|libm|libpthread|libdl|librt|ld-linux)' > /tmp/libs.txt
+            grep -vE '/(libc|libm|libpthread|libdl|librt|ld-linux)\.so' > /tmp/libs.txt
           cat /tmp/libs.txt
           while IFS= read -r lib; do
             cp "$lib" bundle/
