@@ -51,9 +51,9 @@ TRANSMISSION_TAG="engines/transmission-${TRANSMISSION_VERSION}"
 checksum_for() {
   case "$1" in
     x86_64-pc-windows-msvc) echo "be2099c214f63a3cb4954b09a0becd6e2e34660b886d4c898d260febfe9d70c2" ;;
-    aarch64-apple-darwin) echo "6f063c4c0387dd77de3ea413a57aa24d82f5634a772ebd695b8cbd9af387b54c" ;;
-    x86_64-apple-darwin) echo "04a25085febc1144ae85f693ee298c3c543428049fda8348eb7cd9eacf862309" ;;
-    x86_64-unknown-linux-gnu) echo "301cf3868e98583be980920686b5e210d3de455950e528f95026fc73650cd703" ;;
+    aarch64-apple-darwin) echo "34f5dd97cd307d355306d0fbdcd0c14e1b4fdba54f210e94ca4a03bd0c9e965a" ;;
+    x86_64-apple-darwin) echo "2af49a6dc10d696cdc329bbac8f0d6d3948b39322cff0e31f2334012a893bea9" ;;
+    x86_64-unknown-linux-gnu) echo "ca1edb54e583f1e476f3a5084b8458d31821a12948d88217dd842ebbf7daf825" ;;
     *) echo "" ;;
   esac
 }
@@ -63,9 +63,9 @@ checksum_for() {
 checksum_for_transmission() {
   case "$1" in
     x86_64-pc-windows-msvc) echo "1295b252da08e6cc06c388f3e011c540ce8eee96d13c7bf8a388a74f7e80dca7" ;;
-    aarch64-apple-darwin) echo "1d2b5e906acba642feb38622d50afdb891a1a32163470d4642b73e59f932c667" ;;
-    x86_64-apple-darwin) echo "a940ab053d41af6e119228911d28f511a4a50687ec82c0c468ed8ad9124486fd" ;;
-    x86_64-unknown-linux-gnu) echo "8854fa26e640e2a473447d53dcd10a9f69014dff1553b8a555eecdda88eee750" ;;
+    aarch64-apple-darwin) echo "a3086f57fd403fa52e3cf79ebc7ee7db9d6d71cdcd6be5137689d56476dcebec" ;;
+    x86_64-apple-darwin) echo "5b9e208ebf7e87e9327d250351300f5e3413e71c396dcbfb085878aff54ab222" ;;
+    x86_64-unknown-linux-gnu) echo "532ef742820352014d56eee7e9d64249655a59ac590b62f2123a504edb874b32" ;;
     *) echo "" ;;
   esac
 }
