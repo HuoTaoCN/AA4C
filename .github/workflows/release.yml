@@ -104,6 +104,11 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # linuxdeploy（AppImage 打包工具）自己也是个 AppImage，装了 libfuse2 之后
+          # 还是报同样的 "failed to run linuxdeploy"——GitHub Actions 的容器化
+          # runner 即使装了库，也不一定真的暴露 /dev/fuse 给非特权进程挂载。标准
+          # 绕过方式：让它落到"解包后直接跑"这条路径，不走 FUSE 挂载。
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         with:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
