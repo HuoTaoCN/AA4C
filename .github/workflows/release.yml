@@ -17,7 +17,13 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            args: ""
+            # AppImage 目标在 GitHub Actions ubuntu-latest（24.04）上一直报
+            # "failed to run linuxdeploy"（Tauri 侧不透出任何底层 stderr），装
+            # libfuse2、设 APPIMAGE_EXTRACT_AND_RUN=1 两个标准方案都试过仍然
+            # 失败——deb/rpm 每次都能正常打包，问题只在 appimage 这一个 bundle
+            # 目标。用户决定：这次先只出 deb+rpm，AppImage 的 CI 环境问题留到
+            # 以后单独查，不阻塞这次发布（TODO：查清楚后把 appimage 加回来）。
+            args: "--bundles deb,rpm"
           - os: macos-latest
             # engines.yml 已跑通验证（SHA256SUMS 已填进 scripts/fetch-engines.sh），
             # 恢复 universal 双架构构建；v0.4.0-preview/v0.4.0-preview.1 曾因
@@ -113,8 +119,10 @@ jobs:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: "AA4C ${{ github.ref_name }}"
+          # TODO(Linux AppImage CI 环境问题查清楚后恢复 ".AppImage" 措辞)：这次
+          # 发布 Linux 只出 .deb/.rpm，见上方 ubuntu-latest args 的注释。
           releaseBody: |
-            桌面安装包（.dmg / .msi / .AppImage）与 Android APK（arm64，实验版）见下方 Assets。安装与防火墙说明见 README。
+            桌面安装包（.dmg / .msi / .deb / .rpm）与 Android APK（arm64，实验版）见下方 Assets。安装与防火墙说明见 README。
 
             ${{ contains(github.ref_name, '-') && '⚠️ 预览版，详细变更见 CHANGELOG.md。' || '' }}
           releaseDraft: false
