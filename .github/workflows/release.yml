@@ -33,7 +33,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libfuse2
+      # v0.4.0-preview.2 首次真实 tag push 里第一次撞见：AppImage 打包用的
+      # linuxdeploy 是个 AppImage 本身，运行它需要 FUSE——`ubuntu-latest`（现在
+      # 是 24.04/noble）默认只带 FUSE3，libfuse2 兼容层不再预装（`v0.4.0-preview.1`
+      # 那次发布用的还是旧镜像，没踩到这个），不装的话 `failed to run linuxdeploy`
+      # 报错发生在 deb/rpm 都已经成功打包之后，只有 appimage 这一个 bundle 目标炸。
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
