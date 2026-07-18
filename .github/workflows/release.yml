@@ -52,18 +52,46 @@ jobs:
       # SHA256 校验和从 engines/aria2-<version> release 下载自建/官方转发产物——不
       # 再需要系统包管理器（brew/apt/choco）装 aria2，也不需要 aria2 出现在 PATH 上，
       # release 构建只是把校验过的二进制复制进 bundle，不执行它。macOS universal
-      # 需要两个架构的产物都下载好，供 Tauri 自己 lipo 合并进最终的 universal sidecar
-      # （见 scripts/fetch-engines.sh 顶部用法说明）。
+      # 需要两个架构的产物都下载好，再自己 lipo 合并成最终的 universal sidecar——
+      # 首次真实 tag push 里跑 universal 目标才发现：Tauri **不会**替 externalBin
+      # 自动 lipo 合并两个单架构文件，`external_binaries()`（tauri-utils）只是
+      # 简单地找 `<name>-universal-apple-darwin` 这个固定文件名，找不到就直接报
+      # "resource path ... doesn't exist" 报错——这份 lipo 合并工作必须我们自己做
+      # （见 scripts/fetch-engines.sh 顶部用法说明；那份注释此前的假设是错的）。
       - name: Stage aria2c sidecar (Linux)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: bash scripts/fetch-engines.sh x86_64-unknown-linux-gnu
-      - name: Stage aria2c sidecar (macOS, both archs for universal)
+      - name: Stage aria2c + transmission-daemon sidecars (macOS, both archs, lipo into universal)
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
+          set -euo pipefail
           bash scripts/fetch-engines.sh aarch64-apple-darwin
           bash scripts/fetch-engines.sh x86_64-apple-darwin
+
+          BIN_DIR=apps/desktop/src-tauri/binaries
+          lipo -create -output "$BIN_DIR/aria2c-universal-apple-darwin" \
+            "$BIN_DIR/aria2c-aarch64-apple-darwin" "$BIN_DIR/aria2c-x86_64-apple-darwin"
+          lipo -create -output "$BIN_DIR/transmission-daemon-universal-apple-darwin" \
+            "$BIN_DIR/transmission-daemon-aarch64-apple-darwin" "$BIN_DIR/transmission-daemon-x86_64-apple-darwin"
+          chmod +x "$BIN_DIR/aria2c-universal-apple-darwin" "$BIN_DIR/transmission-daemon-universal-apple-darwin"
+
+          # 依赖库同理需要 lipo 成 fat dylib——两个单架构 -libs/ 目录里文件名完全
+          # 相同，如果不合并、直接让 bundle.resources 的 glob 两个目录都扫到，会
+          # 把其中一个架构的 dylib 覆盖另一个（谁在文件系统遍历顺序里靠后谁赢），
+          # universal 二进制里"输"的那个架构切片运行时会加载到架构不匹配的
+          # dylib，dyld 会拒绝加载并崩溃。lipo 合并成一份 fat dylib 后删掉两个
+          # 单架构目录，让 glob 只会唯一匹配到合并后的这一份。
+          mkdir -p "$BIN_DIR/transmission-daemon-universal-apple-darwin-libs"
+          for f in "$BIN_DIR"/transmission-daemon-aarch64-apple-darwin-libs/*; do
+            name="$(basename "$f")"
+            lipo -create -output "$BIN_DIR/transmission-daemon-universal-apple-darwin-libs/$name" \
+              "$BIN_DIR/transmission-daemon-aarch64-apple-darwin-libs/$name" \
+              "$BIN_DIR/transmission-daemon-x86_64-apple-darwin-libs/$name"
+          done
+          rm -rf "$BIN_DIR/transmission-daemon-aarch64-apple-darwin-libs" \
+            "$BIN_DIR/transmission-daemon-x86_64-apple-darwin-libs"
       - name: Stage aria2c sidecar (Windows)
         if: matrix.os == 'windows-latest'
         shell: bash

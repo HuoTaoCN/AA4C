@@ -17,8 +17,12 @@
 #                                          # 校验当前平台对应产物（两个引擎都会取）
 #   scripts/fetch-engines.sh <triple>     # 正式模式，显式指定三元组（macOS
 #                                          # universal 构建需要 aarch64-apple-darwin
-#                                          # 与 x86_64-apple-darwin 都下载好，供
-#                                          # Tauri 自己 lipo 合并，见 release.yml）
+#                                          # 与 x86_64-apple-darwin 都下载好——注意
+#                                          # Tauri **不会**替 externalBin 自动 lipo
+#                                          # 合并两个单架构文件，release.yml 自己
+#                                          # 用 `lipo -create` 拼出
+#                                          # `<name>-universal-apple-darwin`，这份
+#                                          # 脚本只管下载单个三元组）
 #   scripts/fetch-engines.sh --from-path  # 开发模式：复制 PATH 里的系统 aria2c
 #                                          # （brew/apt/choco 装的那个），按当前
 #                                          # 平台 target-triple 改名——不校验，
