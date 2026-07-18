@@ -362,19 +362,54 @@ jobs:
           cp build/daemon/transmission-daemon bundle/
           # 只带走非系统基础库的部分（libc/libm/libpthread 等到处都有，不用带）；
           # 具体要不要收窄这份清单，等真实运行看 ldd 的输出再定。
+          #
+          # 之前这里 `|| true` 吞掉了 ldd 报 "not found" 的情况——真机验证
+          # （见 D2.7/D2.8 packaging 分支）发现 libminiupnpc.so.17、libcurl.so.4
+          # 在发布的 bundle 里根本不存在。根因不是包没装对，是排除清单的
+          # grep 没有锚定边界，`libc`/`libm` 是子串匹配，"lib**c**url.so.4"
+          # 和 "lib**m**iniupnpc.so.17" 都被误判成"系统基础库"排除掉了——
+          # 真实 ldd 输出里 libc.so.6/libm.so.6 才是想排除的那两个。而当时的
+          # "隔离目录"冒烟测试之所以没测出来，是因为它跟 ldd 这步在同一台
+          # 机器上跑，系统路径里还留着 apt 装的那份，ld.so 在 $ORIGIN rpath
+          # 之外总还会兜底查系统路径——不是真正隔离。现在两处都修：排除清单
+          # 锚定到 `.so` 边界；ldd 阶段显式检查还有没有 "not found"，有就
+          # 直接报错炸掉这个 job，不把不完整的产物悄悄传下去；不再吞 cp 失败。
+          ldd bundle/transmission-daemon
+          if ldd bundle/transmission-daemon | grep -q 'not found'; then
+            echo "error: transmission-daemon has unresolved shared library dependencies:" >&2
+            ldd bundle/transmission-daemon | grep 'not found' >&2
+            exit 1
+          fi
           ldd bundle/transmission-daemon | awk '{print $3}' | grep -E '^/(usr/)?lib' | \
-            grep -vE '/(libc|libm|libpthread|libdl|librt|ld-linux)' > /tmp/libs.txt || true
+            grep -vE '/(libc|libm|libpthread|libdl|librt|ld-linux)\.so' > /tmp/libs.txt
           cat /tmp/libs.txt
           while IFS= read -r lib; do
-            cp "$lib" bundle/ 2>/dev/null || true
+            cp "$lib" bundle/
           done < /tmp/libs.txt
           chmod +x bundle/transmission-daemon
-      - name: Smoke test in an isolated directory
+      # 真正隔离的冒烟测试：先把构建期装的运行时依赖包从系统卸掉，逼着动态
+      # 链接器只能靠 bundle/ 目录里实际打包的文件——同 macOS 那边 `env -i`
+      # 测试的严格程度（那边靠 rewrite 过的 @executable_path 天然排除了
+      # Homebrew 路径，Linux 的 $ORIGIN rpath 不会自动排除系统路径，必须
+      # 真的卸载依赖包才能验证"bundle 本身自给自足"，不是靠还留在机器上的
+      # 系统库侥幸跑通）。cmake/pkg-config 不用卸，跟运行时无关。
+      - name: Purge build-time runtime packages (prove the bundle is self-contained)
+        run: |
+          sudo apt-get purge -y libevent-dev libpsl-dev libminiupnpc-dev \
+            libssl-dev zlib1g-dev libcurl4-openssl-dev
+          sudo apt-get autoremove -y
+      - name: Smoke test in an isolated directory with system deps removed
         working-directory: transmission-${{ inputs.transmission_version }}
         run: |
           set -euo pipefail
           testdir="$(mktemp -d)"
           cp bundle/* "$testdir/"
+          echo "--- ldd after purging system deps (everything must resolve inside $testdir) ---"
+          ( cd "$testdir" && ldd ./transmission-daemon )
+          if ( cd "$testdir" && ldd ./transmission-daemon ) | grep -q 'not found'; then
+            echo "error: still unresolved after purging system deps — bundle is not self-contained" >&2
+            exit 1
+          fi
           ( cd "$testdir" && ./transmission-daemon --version )
       - uses: actions/upload-artifact@v4
         with:

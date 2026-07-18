@@ -33,6 +33,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/aria2c"]
+    "externalBin": ["binaries/aria2c", "binaries/transmission-daemon"],
+    "resources": {
+      "binaries/transmission-daemon-*-libs/*": "transmission-libs/"
+    }
   }
 }
