@@ -17,13 +17,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            # AppImage 目标在 GitHub Actions ubuntu-latest（24.04）上一直报
-            # "failed to run linuxdeploy"（Tauri 侧不透出任何底层 stderr），装
-            # libfuse2、设 APPIMAGE_EXTRACT_AND_RUN=1 两个标准方案都试过仍然
-            # 失败——deb/rpm 每次都能正常打包，问题只在 appimage 这一个 bundle
-            # 目标。用户决定：这次先只出 deb+rpm，AppImage 的 CI 环境问题留到
-            # 以后单独查，不阻塞这次发布（TODO：查清楚后把 appimage 加回来）。
-            args: "--bundles deb,rpm"
+            args: ""
           - os: macos-latest
             # engines.yml 已跑通验证（SHA256SUMS 已填进 scripts/fetch-engines.sh），
             # 恢复 universal 双架构构建；v0.4.0-preview/v0.4.0-preview.1 曾因
@@ -39,12 +33,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libfuse2
-      # v0.4.0-preview.2 首次真实 tag push 里第一次撞见：AppImage 打包用的
-      # linuxdeploy 是个 AppImage 本身，运行它需要 FUSE——`ubuntu-latest`（现在
-      # 是 24.04/noble）默认只带 FUSE3，libfuse2 兼容层不再预装（`v0.4.0-preview.1`
-      # 那次发布用的还是旧镜像，没踩到这个），不装的话 `failed to run linuxdeploy`
-      # 报错发生在 deb/rpm 都已经成功打包之后，只有 appimage 这一个 bundle 目标炸。
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 \
+            libevent-dev libpsl-dev libminiupnpc-dev libcurl4-openssl-dev
+      # v0.4.0-preview.2 首次真实 tag push 里 appimage 目标报
+      # "failed to run linuxdeploy"，Tauri 不透出底层 stderr，一开始按 FUSE
+      # 缺失猜（装 libfuse2、设 APPIMAGE_EXTRACT_AND_RUN=1）都没用，最后靠
+      # `pnpm tauri build --verbose` 才看到真正原因：linuxdeploy 打包阶段会
+      # 扫描 usr/bin/ 下每个可执行文件的 ELF 依赖，在**系统路径**上找
+      # transmission-daemon 需要的 libevent/libminiupnpc/libpsl/libcurl——这几
+      # 个库平时只经 `bundle.resources` 打进最终产物、给运行时 `LD_LIBRARY_PATH`
+      # 注入用（见 download_spawner.rs），跟 linuxdeploy 自己在打包阶段做的这次
+      # 依赖扫描是两件事，系统上没装对应的库就直接报
+      # "ERROR: Could not find dependency: libevent-2.1.so.7" 后中断整个打包。
+      # libfuse2（真正需要，只是不是这次的根因）+ 这四个运行时库都装上后
+      # appimage 打包成功（真机验证过，见 verify-appimage.yml 诊断记录）。
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
@@ -110,11 +112,17 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # linuxdeploy（AppImage 打包工具）自己也是个 AppImage，装了 libfuse2 之后
-          # 还是报同样的 "failed to run linuxdeploy"——GitHub Actions 的容器化
-          # runner 即使装了库，也不一定真的暴露 /dev/fuse 给非特权进程挂载。标准
-          # 绕过方式：让它落到"解包后直接跑"这条路径，不走 FUSE 挂载。
+          # 这两个都是 AppImage 打包排障过程中留下的、经真机验证过能一起跑通的
+          # 组合——没有逐个拆开确认是否每个都严格必需（真正根因见上面 apt 那步
+          # 的注释：linuxdeploy 系统路径依赖扫描缺库，不是这两个变量本身要解决
+          # 的问题），但两个都不影响正常构建，留着比之后再猜一遍划算。
+          # APPIMAGE_EXTRACT_AND_RUN：linuxdeploy 自己也是个 AppImage，容器化
+          # runner 不一定真的暴露 /dev/fuse 给非特权进程挂载，这个变量让它落到
+          # "解包后直接跑"，不走 FUSE。NO_STRIP：linuxdeploy 内部会对打包的库跑
+          # strip，较新工具链（常见于 rolling-release 发行版）产出的 `.relr.dyn`
+          # ELF 段会让 strip 失败（上游 tauri-apps/tauri#14796/#15106），跳过它。
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          NO_STRIP: "true"
         with:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
