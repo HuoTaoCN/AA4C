@@ -12,7 +12,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libfuse2
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 \
+            libevent-dev libpsl-dev libminiupnpc-dev libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: pnpm/action-setup@v4
