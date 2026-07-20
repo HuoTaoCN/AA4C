@@ -85,9 +85,9 @@ AA连接（AA4C）是一个**跨平台设备连接平台**——架构遵循"设
 
 负责 HTTP / HTTPS / FTP（D1，Aria2 RPC）与 BT / Magnet（D2，Transmission RPC——v3 从 qBittorrent 换过来，理由见 DOWNLOAD_DESIGN.md §3.6.1）下载；S3 后续评估。两个引擎都作为 AA4C 自动打包/管理的独立子进程运行（GPL 许可证隔离，只通过 RPC/API 调用，不链接源码），与 Core 之间用 `SidecarSpawner` trait 解耦，Core 本身不直接依赖 Tauri 专属的进程拉起 API。站点化长尾需求（私有 Tracker/PT、搜索、自动分类）预留 Lua 插件系统（DOWNLOAD_DESIGN.md §10，V0.4 之后的独立里程碑）。
 
-### AI Service（V0.5+）
+### AI Service（V0.5，设计定稿见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)）
 
-负责文件分类、自动标签、知识库管理、向量索引。基于 llama.cpp 运行本地 GGUF 模型，未来支持 Agent。
+负责文件分类、自动标签、知识库管理、向量索引。基于 llama.cpp（`llama-server` sidecar，MIT，官方预编译产物，OpenAI 兼容 HTTP）运行本地 GGUF 模型，完全本地、零云端调用；懒启动 + 空闲自停。规则式归档引擎住 `aa4c-core::archive`（同 sync 先例），AI 引擎住独立 crate `aa4c-ai`（镜像 `aa4c-download` 形态）；sidecar 公共设施（spawner/孤儿防护）抽到 `aa4c-engine` 供 download/ai 共用。核心原则：**规则自动、AI 建议**——AI 输出永不直接驱动文件操作。未来支持 Agent。
 
 ### Storage Service
 

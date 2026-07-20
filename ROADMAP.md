@@ -93,9 +93,11 @@
 
 功能：
 
-- 自动分类、自动标签、自动归档
+- 自动分类、自动标签、自动归档（规则自动、AI 建议——AI 输出永不直接驱动文件操作）
 - 模型管理（GGUF 识别与归档）
-- 本地知识库（llama.cpp）
+- 本地知识库（llama.cpp，完全本地、零云端调用）
+
+> 设计详见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)（v1 定稿，关键外部事实已真机实证）；实现计划见 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 A1–A5）。V0.5 仅桌面三平台，不含 Android。
 
 ---
 

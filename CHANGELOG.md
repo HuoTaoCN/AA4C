@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- V0.5「AI」设计定稿（纯文档，未实现）：新增 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)（归档与 AI 设计 v1）与 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 A1–A5 实现计划）。核心决策：**规则自动、AI 建议**（确定性规则引擎可自动移动/打标签，AI 输出永远只进"待确认"队列，从不擅自动文件）；AI 引擎用 llama.cpp `llama-server` sidecar（MIT），**完全本地零云端**；规划阶段已真机实证关键外部事实——llama.cpp 官方 release（b10069）对全部目标平台提供预编译二进制（macOS arm64/x64、Ubuntu x64、Windows CPU x64 全有，**不需要像 aria2/Transmission 那样自建源码构建流水线**，对照 D1 教训提前核实），产物为"二进制+动态库"形态（rpath `@loader_path`，D2.8 运行时库注入先例直接适用），`llama-server` 支持全套 `LLAMA_ARG_*` 环境变量配置含 `LLAMA_API_KEY`（密钥不走命令行，满足 rpc-secret 教训）。里程碑拆分：A1 规则式归档（无 AI 即完整可用：类别识别 + 纯 Rust GGUF 头解析 + 规则引擎 + 移动/撤销）→ A2 引擎接入（含 `aa4c-engine` sidecar 设施重构、engines.yml 轻量腿、AppImage 的 `libggml` 系 ELF 扫描预警）→ A3 AI 标签建议 → A4 本地知识库（文本族、SQLite BLOB 暴力余弦、SSE 流式问答）→ A5 发布 `v0.5.0-preview`。同步更新 ROADMAP.md、ARCHITECTURE.md、HANDOFF.md。仅设计，未实现。
+
 ## [0.4.0] - 2026-07-20
 
 > **V0.4「Download」全部完成，正式 GA（非预览版）**：D1（Aria2/HTTP-FTP）+ D2（Transmission/BT-Magnet + 引擎二进制正式打包分发管线）已随 `v0.4.0-preview.2` 打包发布过；这个版本新增 **D3（统一任务中心打磨）**——设置页限速/并发/分享率/做种超时字段、批量操作、下载失败人话转译，V0.4「Download」四个里程碑至此代码与发布双双完整。同时补完 **V0.3 遗留的跨服务器好友寻址 gap**：配对时交换 `server_hint`，两个用户各自搭独立服务器也能互相找到对方（协议版本 `PROTO_VERSION` 4→5，向后兼容，旧客户端配对不受影响）。

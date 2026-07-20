@@ -175,7 +175,7 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 
 **跨服务器好友寻址 gap 已补完并随同一版本发布**（见第一节表格）：配对时交换 `server_hint`，`resolve_addr` 能查对端自己的服务器，不再局限于「自己的多台设备」+「双方恰好用同一服务器」两种场景。**仍未做、明确缩小的范围**：中继的 `RelayDialer`/打洞的 `PunchDialer` 依然只连自己配置的服务器——跨服务器的中继/打洞信令联邦需要服务器间协议，是独立的、更大的项目（CONNECT_DESIGN.md §12「多服务器联邦」），本次不做。
 
-**下一步是决策点**：继续补 V0.3 其余已知缺口（见下），还是开始规划 V0.5 的方向，交给用户决定。
+**V0.5「AI 归档」已完成规划（2026-07-21，纯文档，未实现）**：设计定稿见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)（其 §10 是已确认决策表、§11 是实现期必须补的实证清单），实现计划见 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 **AI1–AI5**——注意这里的"AI"前缀是 V0.5 代号，与本文档下方历史章节「A1 已完成要点（Android 适配）」里的 Android 里程碑编号 A1 无关，起名时刻意避开了撞车）。规划阶段已真机实证的关键事实：llama.cpp 官方 release 三平台预编译产物齐全（不用自建构建流水线）、产物是"二进制+动态库"形态（Transmission 同形，D2.8 先例适用）、`llama-server` 支持环境变量配置含 `LLAMA_API_KEY`。**执行 Agent 从 AI1 开工**，先读 V0.5_IMPLEMENTATION_PLAN.md 头部的「执行纪律」。也可穿插补 V0.3 其余已知缺口（见下）。
 
 **V0.3 范围内其余已知的、有意缩小的缺口**（不阻塞任何已完成里程碑，可随时单独补）：
 - 分享链接：`aa4c://` deep-link 系统级注册（桌面三平台 + Android intent）未做，首版只支持粘贴链接打开；二维码生成未做。
@@ -183,7 +183,7 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - keep-alive 目前用固定 8s 空闲超时+2s 心跳（已验证够用）；按需拉取（fetch）路径暂不支持续传（仅 Offer/send 路径支持）。
 - **可随时补的 V0.2 尾巴**（不阻塞 V0.3）：Inbox 按来源设备+时间分组、`IndexSummary` 摘要优化、冲突版本历史 / 自动合并。
 
-> ⚠️ 版本兼容：proto 现为 4（C6 起，`Message::ShareRequest`）；与更旧对端握手自动协商降级，行为不变（不发送对方不认识的高版本消息）。`v0.2.0-preview.2` 起的构建可与本版本互通同步；与 v0.1.x 仍因 `DeviceInfo.trust_level` 无法配对。
+> ⚠️ 版本兼容：proto 现为 5（`v0.4.0` 起，`Message::PairServerHint`；4 为 C6 的 `ShareRequest`）；与更旧对端握手自动协商降级，行为不变（不发送对方不认识的高版本消息）。`v0.2.0-preview.2` 起的构建可与本版本互通同步；与 v0.1.x 仍因 `DeviceInfo.trust_level` 无法配对。
 >
 > 本机联调服务器：`bash scripts/dev-server.sh`（启动日志会打印 `aa4c://<host>:<port>#<指纹>`，把 `<host>` 换成客户端能连到的地址，填进设置的 `server_url` + 打开 `enable_remote`）。
 
