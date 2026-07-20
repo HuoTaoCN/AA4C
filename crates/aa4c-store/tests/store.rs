@@ -532,3 +532,41 @@ async fn download_crud_roundtrip() {
         .unwrap()
         .is_none());
 }
+
+#[tokio::test]
+async fn delete_completed_downloads_removes_rows() {
+    use aa4c_types::DownloadKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    store
+        .insert_download("gid1", DownloadKind::Http, "https://example.com/a.zip")
+        .await
+        .unwrap();
+    store
+        .insert_download("gid2", DownloadKind::Http, "https://example.com/b.zip")
+        .await
+        .unwrap();
+    store
+        .insert_download("gid3", DownloadKind::Http, "https://example.com/c.zip")
+        .await
+        .unwrap();
+
+    store
+        .delete_completed_downloads(&["gid1".to_string(), "gid2".to_string()])
+        .await
+        .unwrap();
+
+    let remaining = store.list_downloads().await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, "gid3");
+    assert!(store.get_download("gid1").await.unwrap().is_none());
+    assert!(store.get_download("gid2").await.unwrap().is_none());
+
+    // 删不存在的 id 不报错，静默忽略（幂等）
+    store
+        .delete_completed_downloads(&["does-not-exist".to_string()])
+        .await
+        .unwrap();
+}

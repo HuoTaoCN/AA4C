@@ -29,6 +29,15 @@ export const useDownloadStore = defineStore("download", {
   getters: {
     list: (s): LiveDownloadTask[] =>
       Object.values(s.tasks).sort((a, b) => b.createdAt - a.createdAt),
+    /** 批量操作按钮的显隐判断（D3）。 */
+    hasActiveOrWaiting: (s): boolean =>
+      Object.values(s.tasks).some(
+        (t) => t.status === "active" || t.status === "waiting",
+      ),
+    hasPaused: (s): boolean =>
+      Object.values(s.tasks).some((t) => t.status === "paused"),
+    hasCompleted: (s): boolean =>
+      Object.values(s.tasks).some((t) => t.status === "complete"),
   },
 
   actions: {
@@ -62,6 +71,24 @@ export const useDownloadStore = defineStore("download", {
     },
     async cancel(taskId: string) {
       await api.cancelDownload(taskId);
+    },
+
+    /** 批量操作（D3）：返回值是实际生效的数量，调用方决定 toast 文案；三个
+     *  都在操作后刷新列表（同 `add` 的既有惯例）。 */
+    async pauseAll(): Promise<number> {
+      const n = await api.pauseAllDownloads();
+      await this.load();
+      return n;
+    },
+    async resumeAll(): Promise<number> {
+      const n = await api.resumeAllDownloads();
+      await this.load();
+      return n;
+    },
+    async clearCompleted(): Promise<number> {
+      const n = await api.clearCompletedDownloads();
+      await this.load();
+      return n;
     },
 
     onProgress(p: DownloadProgressPayload) {

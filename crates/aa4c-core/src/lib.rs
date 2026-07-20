@@ -245,6 +245,12 @@ impl Core {
                     events.clone(),
                     config.data_dir.clone(),
                     PathBuf::from(&current.download_dir),
+                    aa4c_download::DownloadLimits {
+                        speed_limit_kbps: current.download_speed_limit_kbps,
+                        concurrency: current.download_concurrency,
+                        bt_ratio_limit: current.bt_ratio_limit,
+                        bt_idle_seeding_limit_minutes: current.bt_idle_seeding_limit_minutes,
+                    },
                 )
                 .await,
             ),

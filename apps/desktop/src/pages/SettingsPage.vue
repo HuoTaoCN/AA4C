@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, reactive, watchEffect } from "vue";
+import { computed, onMounted, reactive, ref, watchEffect } from "vue";
 import { useDeviceStore } from "../stores/devices";
 import { useSettingsStore } from "../stores/settings";
 import { useToastStore } from "../stores/toast";
 import { api, asCommandError } from "../lib/api";
 import { platformIcon } from "../lib/format";
-import type { Settings, TrustLevel } from "../lib/types";
+import type { Settings, SyncScope, TrustLevel } from "../lib/types";
 
 const devices = useDeviceStore();
 const settings = useSettingsStore();
@@ -19,9 +19,11 @@ const form = reactive<Settings>({
   listenPort: 42420,
   serverUrl: null,
   enableRemote: false,
-  // 下载目录字段编辑 UI 留给 D3（设置页「下载」区块）；这里只保证保存设置时
-  // 不会把用户已有的 downloadDir 覆盖成空字符串（watchEffect 会用真实值同步）。
   downloadDir: "",
+  downloadSpeedLimitKbps: null,
+  downloadConcurrency: null,
+  btRatioLimit: null,
+  btIdleSeedingLimitMinutes: null,
 });
 // 服务器地址单独用字符串编辑（空字符串 ⇄ null，避免保存一个全是空格的"已配置"假象）
 const serverUrlInput = computed({
@@ -32,6 +34,52 @@ const serverUrlInput = computed({
 });
 watchEffect(() => {
   if (settings.settings) Object.assign(form, settings.settings);
+});
+
+// 限速/并发/分享率/做种超时都是"留空=不限"的数字输入框，用字符串中转，
+// 避免 <input type="number"> 空值时 Vue 把 v-model 强转成 0（0 跟"没设"含义
+// 完全不同——0 会被后端当成"限速为 0"，不是"不限速"）。
+type NullableNumberKey =
+  | "downloadSpeedLimitKbps"
+  | "downloadConcurrency"
+  | "btRatioLimit"
+  | "btIdleSeedingLimitMinutes";
+function numberInput(key: NullableNumberKey) {
+  return computed({
+    get: () => (form[key] === null ? "" : String(form[key])),
+    set: (v: string) => {
+      const trimmed = v.trim();
+      form[key] = trimmed === "" ? null : Number(trimmed);
+    },
+  });
+}
+const speedLimitInput = numberInput("downloadSpeedLimitKbps");
+const concurrencyInput = numberInput("downloadConcurrency");
+const ratioLimitInput = numberInput("btRatioLimit");
+const idleSeedingLimitInput = numberInput("btIdleSeedingLimitMinutes");
+
+// 下载目录同步范围重叠警示（D3，DOWNLOAD_DESIGN.md §5）：纯前端路径前缀比对，
+// 不阻断保存，只是提醒——`list_sync_scopes` 是既有命令（C6 起就有）。
+const scopes = ref<SyncScope[]>([]);
+onMounted(async () => {
+  try {
+    scopes.value = await api.listSyncScopes();
+  } catch {
+    // 拿不到共享范围列表就不显示警示，不影响设置页其余功能。
+  }
+});
+function normalizePath(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+const downloadDirWarningScope = computed<SyncScope | null>(() => {
+  const target = normalizePath(form.downloadDir);
+  if (!target) return null;
+  return (
+    scopes.value.find((s) => {
+      const scopePath = normalizePath(s.localPath);
+      return target === scopePath || target.startsWith(`${scopePath}/`);
+    }) ?? null
+  );
 });
 
 const paired = computed(() => devices.devices.filter((d) => d.trusted));
@@ -58,6 +106,11 @@ async function setTier(id: string, t: TrustLevel) {
 async function changeDir() {
   const picked = await settings.pickSaveDir();
   if (picked) form.saveDir = picked;
+}
+
+async function changeDownloadDir() {
+  const picked = await settings.pickSaveDir();
+  if (picked) form.downloadDir = picked;
 }
 
 async function save() {
@@ -150,6 +203,53 @@ async function unpair(id: string) {
       </div>
     </div>
 
+    <h3>下载</h3>
+    <div class="card form">
+      <div class="field">
+        <label>下载目录</label>
+        <div class="dir">
+          <span class="path">{{ form.downloadDir || "默认下载目录" }}</span>
+          <button class="btn btn-ghost small" @click="changeDownloadDir">更改</button>
+        </div>
+        <p v-if="downloadDirWarningScope" class="hint warn">
+          ⚠️ 这个目录在共享范围「{{
+            downloadDirWarningScope.kind === "inbox" ? "收到的" : downloadDirWarningScope.localPath
+          }}」内，保存到这里的文件会被同步给完全信任设备。
+        </p>
+      </div>
+
+      <div class="field">
+        <label>下载限速（KB/s）</label>
+        <input v-model="speedLimitInput" type="number" min="0" placeholder="不限速" />
+      </div>
+
+      <div class="field">
+        <label>同时下载数</label>
+        <input v-model="concurrencyInput" type="number" min="1" placeholder="使用默认值" />
+      </div>
+
+      <div class="field">
+        <label>BT 分享率上限</label>
+        <input v-model="ratioLimitInput" type="number" min="0" step="0.1" placeholder="不限" />
+      </div>
+
+      <div class="field">
+        <label>BT 空闲做种超时（分钟）</label>
+        <input v-model="idleSeedingLimitInput" type="number" min="1" placeholder="不限" />
+        <p class="hint muted">
+          指没有上传活动多久后自动停止做种，不是"下载完成后固定做种这么久"。
+        </p>
+      </div>
+
+      <p class="hint muted">改动需要重启应用后生效。</p>
+
+      <div class="actions">
+        <button class="btn btn-primary" :disabled="settings.saving" @click="save">
+          {{ settings.saving ? "保存中…" : "保存" }}
+        </button>
+      </div>
+    </div>
+
     <h3>已配对设备</h3>
     <div v-if="paired.length" class="card list">
       <div v-for="d in paired" :key="d.id" class="prow">
@@ -219,7 +319,8 @@ label {
   font-size: 0.88rem;
   font-weight: 600;
 }
-input[type="text"] {
+input[type="text"],
+input[type="number"] {
   padding: 9px 12px;
   border: 1px solid var(--aa-border);
   border-radius: var(--aa-radius-sm);
@@ -315,6 +416,14 @@ input[type="text"] {
   font-size: 0.78rem;
   line-height: 1.6;
   margin: 10px 2px 0;
+}
+.hint.warn {
+  color: #9a6a00;
+}
+@media (prefers-color-scheme: dark) {
+  .hint.warn {
+    color: #ffce80;
+  }
 }
 .empty {
   padding: 24px;

@@ -1020,6 +1020,23 @@ impl Store {
         })
         .await
     }
+
+    /// 硬删指定 id 的下载任务行（不是软标记 `removed`）——调用方（`clear_completed`，
+    /// DOWNLOAD_DESIGN.md §9 批量操作）已经先让引擎"忘记"了这些任务，记录留着
+    /// 没有意义。接收显式 id 列表而不是"删所有 complete 状态"的隐式全表操作，
+    /// 因为调用方要先对每个 id 发引擎侧调用、只删成功的那些，两步不该合并成一步
+    /// 黑盒 SQL。逐条删除而不是拼 `IN (?,?,...)`——批量清除不是热路径，简单优先。
+    pub async fn delete_completed_downloads(&self, ids: &[String]) -> Result<()> {
+        let ids = ids.to_vec();
+        self.call(move |conn| {
+            for id in &ids {
+                conn.execute("DELETE FROM download_tasks WHERE id = ?1", params![id])
+                    .map_err(db_err)?;
+            }
+            Ok(())
+        })
+        .await
+    }
 }
 
 fn open_and_migrate(path: &Path) -> Result<Connection> {

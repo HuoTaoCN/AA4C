@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aa4c_download::{DownloadService, ProcessSpawner};
+use aa4c_download::{DownloadLimits, DownloadService, ProcessSpawner};
 use aa4c_store::Store;
 use aa4c_types::{CoreEvent, DownloadStatus, DownloadTask};
 use tokio::sync::broadcast;
@@ -155,6 +155,7 @@ async fn start_service(
         events,
         data_dir.to_path_buf(),
         download_dir.to_path_buf(),
+        DownloadLimits::default(),
     )
     .await;
     (svc, rx, store, spawner)
@@ -295,6 +296,7 @@ async fn task_resumes_across_service_restart_with_same_gid() {
         events,
         dir.path().to_path_buf(),
         download_dir.clone(),
+        DownloadLimits::default(),
     )
     .await;
     let id = svc.add(format!("http://{addr}/file.bin")).await.unwrap();
@@ -310,6 +312,7 @@ async fn task_resumes_across_service_restart_with_same_gid() {
         events2,
         dir.path().to_path_buf(),
         download_dir,
+        DownloadLimits::default(),
     )
     .await;
 
@@ -348,6 +351,7 @@ async fn missing_session_file_marks_orphaned_task_as_error() {
         events,
         dir.path().to_path_buf(),
         download_dir.clone(),
+        DownloadLimits::default(),
     )
     .await;
     let id = svc.add(format!("http://{addr}/file.bin")).await.unwrap();
@@ -364,6 +368,7 @@ async fn missing_session_file_marks_orphaned_task_as_error() {
         events2,
         dir.path().to_path_buf(),
         download_dir,
+        DownloadLimits::default(),
     )
     .await;
 

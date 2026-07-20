@@ -13,6 +13,10 @@ pub(crate) const KEY_LISTEN_PORT: &str = "listen_port";
 pub(crate) const KEY_SERVER_URL: &str = "server_url";
 pub(crate) const KEY_ENABLE_REMOTE: &str = "enable_remote";
 pub(crate) const KEY_DOWNLOAD_DIR: &str = "download_dir";
+pub(crate) const KEY_DOWNLOAD_SPEED_LIMIT_KBPS: &str = "download_speed_limit_kbps";
+pub(crate) const KEY_DOWNLOAD_CONCURRENCY: &str = "download_concurrency";
+pub(crate) const KEY_BT_RATIO_LIMIT: &str = "bt_ratio_limit";
+pub(crate) const KEY_BT_IDLE_SEEDING_LIMIT_MINUTES: &str = "bt_idle_seeding_limit_minutes";
 
 /// 平台默认接收目录：`~/Downloads/AA4C`（取不到下载目录时退回临时目录）。
 pub(crate) fn default_save_dir() -> PathBuf {
@@ -82,6 +86,10 @@ pub(crate) async fn load(
         download_dir: get_json(store, KEY_DOWNLOAD_DIR)
             .await?
             .unwrap_or_else(|| default_download_dir().to_string_lossy().into_owned()),
+        download_speed_limit_kbps: get_json(store, KEY_DOWNLOAD_SPEED_LIMIT_KBPS).await?,
+        download_concurrency: get_json(store, KEY_DOWNLOAD_CONCURRENCY).await?,
+        bt_ratio_limit: get_json(store, KEY_BT_RATIO_LIMIT).await?,
+        bt_idle_seeding_limit_minutes: get_json(store, KEY_BT_IDLE_SEEDING_LIMIT_MINUTES).await?,
     })
 }
 
@@ -94,6 +102,20 @@ pub(crate) async fn save(store: &Store, s: &Settings) -> Result<()> {
     set_json(store, KEY_SERVER_URL, &s.server_url).await?;
     set_json(store, KEY_ENABLE_REMOTE, &s.enable_remote).await?;
     set_json(store, KEY_DOWNLOAD_DIR, &s.download_dir).await?;
+    set_json(
+        store,
+        KEY_DOWNLOAD_SPEED_LIMIT_KBPS,
+        &s.download_speed_limit_kbps,
+    )
+    .await?;
+    set_json(store, KEY_DOWNLOAD_CONCURRENCY, &s.download_concurrency).await?;
+    set_json(store, KEY_BT_RATIO_LIMIT, &s.bt_ratio_limit).await?;
+    set_json(
+        store,
+        KEY_BT_IDLE_SEEDING_LIMIT_MINUTES,
+        &s.bt_idle_seeding_limit_minutes,
+    )
+    .await?;
     Ok(())
 }
 

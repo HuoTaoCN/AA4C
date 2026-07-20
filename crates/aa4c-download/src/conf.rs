@@ -19,7 +19,15 @@ pub struct AriaConf {
 
 /// 生成本次启动用的 conf 文件（`<data_dir>/aria2.conf`，Unix 上 0600 权限）。
 /// `session_path` 已存在时才写 `input-file`（首次启动没有历史 session）。
-pub(crate) fn write_conf(data_dir: &Path, download_dir: &Path, host_pid: u32) -> Result<AriaConf> {
+/// `speed_limit_kbps`/`concurrency` 是 D3 新增的可选限速/并发设置
+/// （`None`/`0` 不写对应行，走 aria2 自己的默认行为，DOWNLOAD_DESIGN.md §9）。
+pub(crate) fn write_conf(
+    data_dir: &Path,
+    download_dir: &Path,
+    host_pid: u32,
+    speed_limit_kbps: Option<u32>,
+    concurrency: Option<u32>,
+) -> Result<AriaConf> {
     std::fs::create_dir_all(data_dir).map_err(Aa4cError::Io)?;
     let port = probe_free_port()?;
     let secret = generate_secret();
@@ -41,6 +49,12 @@ pub(crate) fn write_conf(data_dir: &Path, download_dir: &Path, host_pid: u32) ->
     }
     body.push_str("save-session-interval=30\n");
     body.push_str("continue=true\n");
+    if let Some(limit) = speed_limit_kbps.filter(|&n| n > 0) {
+        body.push_str(&format!("max-overall-download-limit={limit}K\n"));
+    }
+    if let Some(n) = concurrency.filter(|&n| n > 0) {
+        body.push_str(&format!("max-concurrent-downloads={n}\n"));
+    }
 
     write_file_0600(&conf_path, &body)?;
 
@@ -78,9 +92,9 @@ mod tests {
     #[test]
     fn generates_distinct_ports_and_secrets() {
         let dir = tempfile::tempdir().unwrap();
-        let a = write_conf(dir.path(), dir.path(), 1).unwrap();
+        let a = write_conf(dir.path(), dir.path(), 1, None, None).unwrap();
         std::fs::remove_file(&a.conf_path).unwrap();
-        let b = write_conf(dir.path(), dir.path(), 1).unwrap();
+        let b = write_conf(dir.path(), dir.path(), 1, None, None).unwrap();
         assert_ne!(a.secret, b.secret);
         // 端口理论上可能撞（极小概率），但密钥绝不会撞
         assert!(a.secret.len() >= 32);
@@ -89,22 +103,42 @@ mod tests {
     #[test]
     fn conf_contains_expected_directives_and_no_input_file_on_first_boot() {
         let dir = tempfile::tempdir().unwrap();
-        let conf = write_conf(dir.path(), dir.path(), 42).unwrap();
+        let conf = write_conf(dir.path(), dir.path(), 42, None, None).unwrap();
         let body = std::fs::read_to_string(&conf.conf_path).unwrap();
         assert!(body.contains("enable-rpc=true"));
         assert!(body.contains("rpc-listen-all=false"));
         assert!(body.contains(&format!("rpc-secret={}", conf.secret)));
         assert!(body.contains("stop-with-process=42"));
         assert!(!body.contains("input-file="));
+        // 未设限时不写这两行，走 aria2 自己的默认行为
+        assert!(!body.contains("max-overall-download-limit"));
+        assert!(!body.contains("max-concurrent-downloads"));
     }
 
     #[test]
     fn conf_includes_input_file_when_session_exists() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("aria2.session"), "").unwrap();
-        let conf = write_conf(dir.path(), dir.path(), 1).unwrap();
+        let conf = write_conf(dir.path(), dir.path(), 1, None, None).unwrap();
         let body = std::fs::read_to_string(&conf.conf_path).unwrap();
         assert!(body.contains("input-file="));
+    }
+
+    #[test]
+    fn conf_includes_speed_limit_and_concurrency_when_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf = write_conf(dir.path(), dir.path(), 1, Some(500), Some(3)).unwrap();
+        let body = std::fs::read_to_string(&conf.conf_path).unwrap();
+        assert!(body.contains("max-overall-download-limit=500K"));
+        assert!(body.contains("max-concurrent-downloads=3"));
+    }
+
+    #[test]
+    fn conf_omits_speed_limit_when_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf = write_conf(dir.path(), dir.path(), 1, Some(0), None).unwrap();
+        let body = std::fs::read_to_string(&conf.conf_path).unwrap();
+        assert!(!body.contains("max-overall-download-limit"));
     }
 
     #[cfg(unix)]
@@ -112,7 +146,7 @@ mod tests {
     fn conf_file_is_0600_on_unix() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let conf = write_conf(dir.path(), dir.path(), 1).unwrap();
+        let conf = write_conf(dir.path(), dir.path(), 1, None, None).unwrap();
         let mode = std::fs::metadata(&conf.conf_path)
             .unwrap()
             .permissions()

@@ -223,6 +223,21 @@ pub async fn list_downloads(core: State<'_, Arc<Core>>) -> CmdResult<Vec<Downloa
     Ok(core.list_downloads().await?)
 }
 
+#[tauri::command]
+pub async fn pause_all_downloads(core: State<'_, Arc<Core>>) -> CmdResult<usize> {
+    Ok(core.pause_all_downloads().await?)
+}
+
+#[tauri::command]
+pub async fn resume_all_downloads(core: State<'_, Arc<Core>>) -> CmdResult<usize> {
+    Ok(core.resume_all_downloads().await?)
+}
+
+#[tauri::command]
+pub async fn clear_completed_downloads(core: State<'_, Arc<Core>>) -> CmdResult<usize> {
+    Ok(core.clear_completed_downloads().await?)
+}
+
 /// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。
 pub fn event_payload(event: &CoreEvent) -> Value {
     match event {

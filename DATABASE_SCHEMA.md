@@ -314,6 +314,12 @@ CREATE INDEX idx_share_access_share ON share_access(share_id);
 > `downloaded_bytes`/`updated_at` 写库按数秒级节流（状态迁移必写），不随进度 tick 写。
 > 复用现有 `settings` KV 表新增一个 key：**`download_dir`**（默认取系统下载目录
 > `dirs::download_dir()`，必须在 `save_dir` 子树之外，见 DOWNLOAD_DESIGN.md §5/§7）。
+> D3 起再复用 `settings` KV 追加 4 个 key（均可选，`None` 时不改变引擎默认行为，
+> 写进每次启动重新生成的 aria2 conf / Transmission settings.json，见
+> DOWNLOAD_DESIGN.md §9）：**`download_speed_limit_kbps`**（限速，KB/s）、
+> **`download_concurrency`**（并发下载数）、**`bt_ratio_limit`**（BT 分享率上限）、
+> **`bt_idle_seeding_limit_minutes`**（BT 空闲做种超时，分钟——Transmission 没有
+> "总做种时长"概念，这是"多久没有上传活动就停止做种"）。不新增表/列。
 
 ### 4e.1 download_tasks —— 下载任务
 

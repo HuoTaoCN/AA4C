@@ -1,6 +1,6 @@
 # AA4C 下载中心设计（V0.4）
 
-> 状态：**里程碑 D1、D2 均已实现**（D1 对应 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md) D1 的 10 个步骤全部完成；D2 的孤儿进程防护/子进程管理/RPC 客户端/Core 编排+前端 UI/引擎二进制正式打包分发管线全部落地，engines.yml 的 Transmission 构建腿四个 job 已发布到 `engines/transmission-4.1.3`，`fetch-engines.sh`/`tauri.conf.json` 已接线，见 §3.6.5/§3.6.6）。D3（任务中心打磨）仍是设计稿。实现相对设计的偏差记在 §3.5（D1）/§3.6.6（D2）。
+> 状态：**里程碑 D1、D2、D3 均已实现**（D1 对应 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md) D1 的 10 个步骤全部完成；D2 的孤儿进程防护/子进程管理/RPC 客户端/Core 编排+前端 UI/引擎二进制正式打包分发管线全部落地，engines.yml 的 Transmission 构建腿四个 job 已发布到 `engines/transmission-4.1.3`，`fetch-engines.sh`/`tauri.conf.json` 已接线，见 §3.6.5/§3.6.6；D3 的设置页「下载」区块、批量操作、错误人话转译全部落地，§5/§6/§9 里的具体字段与 Transmission 真实配置键名均为真机验证，不是猜的）。实现相对设计的偏差记在 §3.5（D1）/§3.6.6（D2）；D3 无实现偏差，落地与定稿完全一致。
 > **v2 → v3 修订（D2 动手前）的两个决定**：① **D2 的 BT 引擎从 qBittorrent 换成 Transmission**——按 D1 教训（先逐项核实二进制分发再定方案）实际调查的结果：qBittorrent 的 headless（nox）构建在 Windows 上官方与社区**都不存在**、macOS 官方没有且上游对要不要提供仍有争议，等于两个平台要从零攻坚没有先例的 Boost+libtorrent 构建；而 Transmission 官方 Windows MSI 自带 `transmission_daemon.exe`（已实际拆包核实），macOS/Linux 的 Homebrew core formula 就是按 `-DENABLE_DAEMON=ON` 构建的（双架构 bottle 齐全），源码 CMake 路线可直接进 engines.yml。RPC 也更简单（header token vs cookie session）。详见 §3.6 与 §9。② **预留 Lua 插件系统的设计边界**（§10）：私有 Tracker/PT 站、搜索、自动分类等站点化长尾需求走用户可写的 Lua 插件，适用于全部下载类型而非 BT 专属；V0.4 不实现，但 D2/D3 的接缝现在就要按 §10 的约束留好。
 > **v1 → v2 评审修订的四个实质问题**：① aria2 官方 release 实际上**不提供 macOS / Linux x86_64 预编译二进制**（只有 Windows + Android aarch64 + 源码，已对官方 release 资产逐项核实），v1"直接下载官方产物"对三分之二的目标平台不成立，改为自建引擎构建流水线（§3.1）；② v1 完全没有回答"应用退出再启动，下载任务怎么办"，补任务持久化与启动对账（§3.4）；③ `--rpc-secret` 走命令行参数会被本机任意进程经 `ps`/WMI 看到，直接推翻 v1 §7 自己写的"拿不到密钥就调不了"，改走 data_dir 下 0600 权限的配置文件（§3.1/§7）；④ v1 默认下载目录"save_dir 同级的 Downloads 子目录"表述自相矛盾，且若按"子目录"理解会落进 Inbox 索引根（=整个 save_dir，递归扫描），等于"下载即自动分享给所有完全信任设备"，改为系统下载目录 + 范围警示（§5/§7）。另补孤儿进程防护（`stop-with-process`）、端口竞态重试、进度写库节流等小项。
 > 关联：产品定位见 [PROJECT_VISION.md](PROJECT_VISION.md) §四.4 / §七 / §十三；架构分层见 [ARCHITECTURE.md](ARCHITECTURE.md)；表结构见 [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md) §4e；界面见 [UI_DESIGN_SPEC.md](UI_DESIGN_SPEC.md)。
@@ -67,8 +67,11 @@ aria2c / transmission-daemon 子进程
   input-file=<data_dir>/aria2.session   # 仅当该文件已存在时写入这行
   save-session-interval=30
   continue=true
+  max-overall-download-limit=<Settings.download_speed_limit_kbps>K   # 仅当已设置且非 0 才写这行
+  max-concurrent-downloads=<Settings.download_concurrency>            # 仅当已设置才写这行，不写时用 aria2 自己的默认值 5
   ```
   顺带的收益：sidecar 命令行收敛成固定形状（只有 `--conf-path` 一个参数），Tauri 2 shell capability 的参数放行可以用精确匹配，不必开"允许任意参数"的口子。
+  **D3 定稿**：限速/并发是 `Settings` 新增的两个可选字段（`download_speed_limit_kbps: Option<u32>`、`download_concurrency: Option<u32>`），跟 `download_dir` 一样"写进每次启动重新生成的 conf 文件，下次启动引擎生效"——不做热更新 RPC（`aria2.changeGlobalOption` 存在但没必要引入一条只为这两个字段服务的新调用路径，改动面比"重启生效"大很多，且用户改设置后手动重启一次下载中心的心智负担很低）。
 - **端口占用竞态**："探测到空闲端口"与"aria2c 真正 bind"之间有竞态窗口（aria2 不支持让操作系统自选端口），端口被抢会让 aria2c 启动失败——按"换个端口重拉"处理，有限次重试，与健康检查共用同一套递增退避，不做端口预留。
 - **端口与密钥不跨启动持久化**：每次启动随机生成，写进当次 conf（下次启动即整体覆盖）并在内存里传给 `Aria2Client`——同 aa4c-server 中继 token 的思路一致（短生命周期凭证，用完即弃，缩小被动攻击面）。
 - **关闭**：`Core::shutdown()` 时终止子进程——先礼后兵，`aria2.shutdown` RPC 优雅关闭（会触发一次 session 保存），超时后强制 kill。**没机会跑 shutdown 的场景**（AA4C 崩溃、被强杀）由上面 conf 里的 `stop-with-process` 兜底：aria2c 监测到宿主进程消失就自行退出——从根上消灭孤儿进程，不需要 PID 文件 + 启动时清扫那套簿记（aria2 手册明确这个选项就是为"被父进程 fork 出来"的嵌入场景设计的）。
@@ -124,6 +127,11 @@ v1 选 qBittorrent 时没有核实其 headless 构建的三平台分发情况—
 
 - **前台模式是硬要求**：`transmission-daemon` 默认启动后 fork 到后台、父进程立即退出——`SidecarSpawner` 拿到的句柄会抓错进程（拿到的是即将退出的父进程），`kill()`/退出监测全部失效。必须传 `-f`（`--foreground`）。命令行收敛为固定形状 `transmission-daemon -f --config-dir <data_dir>/transmission`（同 §3.1 只传 `--conf-path` 的思路，Tauri capability 参数放行仍可精确匹配）。
 - **配置**：`<config-dir>/settings.json` 每次启动整体重写（同 aria2 conf 先例）：`rpc-bind-address=127.0.0.1`、`rpc-port=<探测的空闲端口>`、`rpc-authentication-required=true`、`rpc-username`/`rpc-password`（每次启动随机生成；Transmission 启动时会把明文密码替换成加盐哈希写回，无碍——我们下次启动整体覆盖）、`download-dir=<Settings.download_dir>`、DHT/PEX/LPD 开启。凭据不进命令行，同 §3.1 的硬要求。注意 Transmission 退出时会把内存中的设置写回 `settings.json`——"每次启动整体重写"的既有决定天然免疫这一点。
+- **D3 定稿——限速/并发/分享率/做种超时**：对应 `Settings` 的 `download_speed_limit_kbps`/`download_concurrency`/`bt_ratio_limit`/`bt_idle_seeding_limit_minutes`（同 aria2 一样，None 时不写对应键，走 Transmission 自己的默认值），同样是"重启生效"不做热更新。真机跑过 `transmission-daemon 4.1.3` + `transmission-remote --session-info` 核实过的 `settings.json` 真实键名（这些是**配置文件格式**的键名，不一定等同 RPC `session-set` 的参数名，其中一项真的对不上——见下面 `ratio-limit` 那条）：
+  - `speed-limit-down`（整数，kB/s）+ `speed-limit-down-enabled`（布尔）
+  - `ratio-limit`（浮点）+ `ratio-limit-enabled`（布尔）——**官方 RPC spec 文档里 session-set 的参数名是 `seedRatioLimit`/`seedRatioLimited`，但那是 RPC 调用层的参数名，不是 `settings.json` 配置文件的键**；本机真机测试过 `seed-ratio-limit`/`seed-ratio-limited` 这两个凭直觉猜的键名在配置文件里完全不生效（daemon 静默忽略，不报错），核对 daemon 自己首次启动生成的默认 `settings.json` 才确认配置文件用的是 `ratio-limit`/`ratio-limit-enabled`。
+  - `idle-seeding-limit`（整数，分钟）+ `idle-seeding-limit-enabled`（布尔）——**Transmission 没有"总做种时长"这个概念**，只有"距离上次有上传活动多久后自动停止做种"（idle seeding limit）；D3 的"做种时长限制"按这个语义实现，UI 文案要讲清楚这一点，不能让用户以为是"下载完成后固定做种 N 分钟就停"。
+  - `download-queue-size`（整数）+ `download-queue-enabled`（布尔）——并发下载数，与 aria2 的 `max-concurrent-downloads` 对应同一个 `Settings.download_concurrency` 字段，各自独立应用到两个引擎。
 - **孤儿进程防护（与 aria2 的关键差异，✅ 已小样验证）**：Transmission **没有** `stop-with-process` 等价物。正常路径靠 `Core::shutdown()`（RPC `session-close` 优雅关闭 → 超时强杀），与 aria2 一致；异常路径（AA4C 崩溃/被强杀，来不及做任何清理）三平台各自的机制均已用一次性 PoC（父进程 `std::process::abort()` 模拟不可控崩溃，验证子进程是否被自动清理）真实验证通过：
   - **Windows**：`CreateJobObjectW` 建 Job → `SetInformationJobObject` 设 `JOBOBJECT_EXTENDED_LIMIT_INFORMATION.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` → `AssignProcessToJobObject` 把子进程句柄归到这个 Job。宿主进程异常终止时 OS 回收其持有的全部句柄（含 Job 句柄），触发"最后一个句柄关闭"条件，内核自动杀光 Job 里的全部进程——不需要宿主自己活着执行任何清理代码。在真实 `windows-latest` GitHub Actions runner 上用 `windows-sys` crate 验证：子进程（`ping -n 600` 占位）在父进程 abort 后确认自动死亡。
   - **Linux**：子进程 `exec` 前（`std::os::unix::process::CommandExt::pre_exec` 钩子内）调用 `prctl(PR_SET_PDEATHSIG, SIGKILL)`，登记"父线程死亡时内核发 SIGKILL 给我"。在真实 `ubuntu-latest` GitHub Actions runner 上验证：子进程（`sleep 600` 占位）在父进程 abort 后确认自动死亡。
@@ -199,7 +207,7 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 ## 5. Core 集成
 
 - `aa4c_types::CoreEvent` 追加（只追加变体，不改现有）：`DownloadProgress{task_id, downloaded_bytes, total_bytes, speed_bps}` / `DownloadDone{task_id, save_path}` / `DownloadFailed{task_id, error}`——形状照抄 `TransferProgress`/`TransferDone`/`TransferFailed`，前端能直接复用同一套卡片组件与节流写库逻辑（`Progress` 结构体的模式）。
-- `Settings` 追加 `download_dir: Option<String>`：默认取**系统下载目录**（`dirs::download_dir()`，与浏览器落点一致的直觉），**必须在 `save_dir` 子树之外**——这不是风格偏好：Inbox 的索引根就是整个 `save_dir`（`Core::start()` 里 `ensure_inbox_scope(&save_dir)`，扫描器递归遍历），落进去的任何文件都会被自动索引、对所有完全信任设备可见可拉取，等于"下载即分享"（v1 写的"save_dir 同级的 Downloads 子目录"表述自相矛盾，按"子目录"理解恰好踩中这一点，v2 修正）。默认 `save_dir` 是 `~/Downloads/AA4C`，系统下载目录 `~/Downloads` 是它的父目录、不在其子树内，隔离成立。用户手动改 `download_dir` 时，设置页对"目标落在任一同步范围内"的选择给出明确警示（说明会被同步出去，**不硬禁**——用户明白后果后有权把下载目录当同步源用）。
+- `Settings` 追加 `download_dir: Option<String>`：默认取**系统下载目录**（`dirs::download_dir()`，与浏览器落点一致的直觉），**必须在 `save_dir` 子树之外**——这不是风格偏好：Inbox 的索引根就是整个 `save_dir`（`Core::start()` 里 `ensure_inbox_scope(&save_dir)`，扫描器递归遍历），落进去的任何文件都会被自动索引、对所有完全信任设备可见可拉取，等于"下载即分享"（v1 写的"save_dir 同级的 Downloads 子目录"表述自相矛盾，按"子目录"理解恰好踩中这一点，v2 修正）。默认 `save_dir` 是 `~/Downloads/AA4C`，系统下载目录 `~/Downloads` 是它的父目录、不在其子树内，隔离成立。用户手动改 `download_dir` 时，设置页对"目标落在任一同步范围内"的选择给出明确警示（说明会被同步出去，**不硬禁**——用户明白后果后有权把下载目录当同步源用）。**D3 定稿的具体交互**：设置页选完目录后，前端立即用既有 `list_sync_scopes` 命令（`orchestrate.rs`，C6 起就有，不需要新接口）取全部共享范围的 `local_path`，做一次路径前缀比对（选中目录等于或是任一 `local_path` 的子目录）——命中就在目录字段下方显示一条不阻断的黄色提示（"这个目录在共享范围「{scope 名}」内，保存到这里的文件会被同步给完全信任设备"），不影响保存操作本身；纯前端判断，不需要新增后端接口或落库字段。
 - `Core` 新增 `download: Arc<DownloadService>` 字段，与现有 `transfer`/`pairing` 并列；`orchestrate.rs` 新增编排方法：`add_download(url) -> task_id`、`pause_download`/`resume_download`/`cancel_download`、`list_downloads`。D2 起 `add_download` 内部按 scheme 分流到两个引擎（§3.6.4），且任务添加路径改走一个**引擎无关的请求描述**中间结构（URL + 请求头 + 引擎选项 + 保存子路径）而非一根字符串直通引擎——这既是接第二个引擎本来就要做的抽象，也是 §10 插件系统 `on_before_add` 钩子的预留接缝。
 - Tauri 新增对应 Command（`add_download`/`pause_download`/`resume_download`/`cancel_download`/`list_downloads`）+ 事件转发（`event_payload` 加三个新分支）——同 C1–C6 每次新增能力时的既有接线流程，不再赘述。
 
@@ -207,7 +215,10 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 
 - 「下载」页（`nav.ts`/路由已有占位）：顶部一个链接输入框（粘贴 HTTP/HTTPS/FTP 直链；D2 起也接受 magnet）+「开始下载」按钮；下方任务列表复用 `TransferCard.vue` 的视觉语言（进度条、速度、ETA 全部照搬 `humanBytes`/`humanSpeed`/`etaText`）。
 - 每条任务：暂停/继续、取消、完成后「打开所在文件夹」（同现有 toast 的 `openDir` 惯例）。
-- 术语人话：不出现 aria2/RPC/GID 等技术词；错误统一转译（同 `format.ts` 的 `errorText` 惯例）。
+- 术语人话：不出现 aria2/RPC/GID 等技术词；错误统一转译（见下方"错误转译"）。
+- **D3 定稿——批量操作**：任务列表上方按当前任务状态动态显示「全部暂停」（存在 active/waiting 任务时）/「全部继续」（存在 paused 任务时）/「清除已完成记录」（存在 complete 任务时）三个按钮。「清除已完成记录」**不是**简单删 DB 行——BT 任务标记 complete 后仍在做种（§3.6.4，故意不停），只删记录不通知引擎的话，下一次 `bt_reconcile()` 轮询会把"引擎有、表里没有"的它当孤儿记录补插回去（同现有孤儿补插逻辑），清除操作形同虚设；所以要先对每个任务发引擎侧"忘记但不删本地文件"的调用（aria2 `aria2.removeDownloadResult`；BT `torrent-remove` + `delete-local-data:false`，与现有 `cancel_download` 的取消调用同一形状，只是不删文件这点本来就是现状），成功的再删 DB 行。单个任务引擎调用失败只跳过它、不中断整体，返回值是"实际清除掉的数量"。
+- **D3 定稿——设置页「下载」区块**：下载目录（选择器 + 同步范围重叠警示，见 §5）、限速（KB/s，留空=不限速）、并发下载数（留空=引擎默认）、BT 分享率上限（留空=不限）、BT 空闲做种超时（分钟，留空=不限，UI 文案讲清楚"没有上传活动多久后停止做种"而非"总做种时长"）。改动后**下次启动引擎生效**，不做热更新，同 `download_dir` 的既有交互一致，不需要额外的"立即生效"提示之外的机制。
+- **错误转译**：`download_tasks.error` 落库时就是最终人话字符串，不是原始引擎报文直通前端——`errorText()`（`format.ts`）转译的是粗粒度的 `Aa4cError::code()`（如 `unavailable`），跟这里的"每条任务具体失败原因"是两层不同的转译，不要混淆。aria2 侧额外解析 RPC 返回的 `errorCode`（数字，§9 附完整对照表），常见码转中文（404/网络问题/磁盘空间不足/域名解析失败/HTTP 鉴权失败/磁力链接格式错误等），其余码给通用兜底文案 + 附原始码方便排查；转译在 `aa4c-download` 内部完成，不新增数据库列、不传原始 code 到前端。Transmission 的 `errorString` 本身多是 tracker/网络类可读文本，D3 范围内直接透传，不建对照表（除非之后发现有明显需要转译的高频场景）。
 
 ## 7. 安全与合规考量
 
@@ -225,7 +236,7 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 
 1. **D1 ✅ — Aria2 集成（HTTP/HTTPS/FTP）**：sidecar 打包 + 生命周期管理（`SidecarSpawner` 注入点）+ `Aria2Client`（RPC + WebSocket 事件）+ `download_tasks` 表 + Core 集成（`CoreEvent`/Command）+「下载」页基础 UI（链接输入 + 任务列表 + 暂停/取消/打开文件夹）。已实现，见 §3.5 实现偏差。
 2. **D2 ✅ — Transmission 集成（BT/Magnet）**（v3 换引擎，理由见 §3.6.1）：transmission-daemon sidecar（`-f` 前台模式）+ 孤儿进程防护（三平台均真实验证，§3.6.2）+ `TransmissionClient`（HTTP RPC + `X-Transmission-Session-Id` 握手，手写极简 HTTP/1.1 客户端）+ `download_tasks.kind='bt'` 分支（id=infohash）+ Core 编排（`add_download` 按 scheme 分流，两个引擎独立 actor）+ magnet 输入 UI + 做种数/peer 数/分享率展示（只进事件不落库）+ 引擎二进制正式打包分发管线（engines.yml transmission 构建腿 + `fetch-engines.sh` + `tauri.conf.json` externalBin/resources）。全部已实现，见 §3.6.6 实现偏差。
-3. **D3 — 统一任务中心打磨**：设置页新增「下载」区块（下载目录、并发数/限速/分享率透传给 aria2/Transmission 的 options）；D1+D2 任务在同一个列表里按时间统一排序；批量操作（全部暂停/清除已完成记录）。
+3. **D3 ✅ 已实现 — 统一任务中心打磨**：设置页新增「下载」区块（下载目录+同步范围警示、限速、并发数、BT 分享率上限、BT 空闲做种超时——具体字段与 Transmission 真实配置键名见 §9）；D1+D2 任务在同一个列表里按时间统一排序（已实现）；批量操作（全部暂停/全部继续/清除已完成记录，含清除时的引擎侧"忘记任务"调用，见 §9）；下载失败原因人话转译（aria2 `errorCode` 对照表，见 §9）。下载完成系统通知**已在 D1 实现**（`events.ts` 的 `download_done` 监听），不是 D3 新增项。
 4. **D4（预留，不在 V0.4 范围）— Lua 插件系统**：见 §10，动手前出独立设计文档 + 安全评审。
 
 ## 9. 已确认的设计细节
@@ -255,6 +266,27 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 | 插件语言（v3 预留） | **Lua**（mlua vendored 编译进二进制，无系统依赖）：嵌入式脚本事实标准、运行时体量小、可彻底沙箱、非专业用户照模板可写；对比 JS 引擎（体量/复杂度高一个量级）、WASM（写作门槛过高）、Python（需带解释器分发）均不符合"简单 > 复杂" | §10 |
 | 插件适用面（v3 预留） | 适用于**全部下载类型**，不是 BT 专属——HTTP 直链同样需要自定义请求头/鉴权/文件名规则/分类；钩子挂在引擎无关的任务模型层，不挂在具体引擎客户端上 | §10 |
 | 插件权限模型（v3 预留） | 默认零 IO + 能力制宿主 API + manifest 域名白名单用户确认；V0.4 只预留接缝（引擎无关请求描述中间层），实现推迟到独立里程碑 + 独立安全评审 | §10，§7 |
+| 限速/并发/分享率/做种超时的生效方式（D3） | 写进每次启动重新生成的 conf/settings.json，**下次启动引擎生效**，不做热更新 RPC（同 `download_dir` 的既有决定一致，改动面最小） | §3.1，§3.6.2 |
+| Transmission 限速/分享率/做种超时/并发的配置文件键名（D3，✅ 真机验证） | `speed-limit-down(-enabled)`、`ratio-limit(-enabled)`、`idle-seeding-limit(-enabled)`、`download-queue-size`/`download-queue-enabled`——`ratio-limit` 这个键名与官方 RPC spec 文档写的 `seedRatioLimit`（那是 session-set 参数名，不是配置文件键名）不一致，本机真实起 `transmission-daemon 4.1.3` + `transmission-remote --session-info` 核实过 | §3.6.2 |
+| BT"做种时长限制"的真实语义（D3） | Transmission 没有"总做种时长"概念，只有 idle seeding limit（多久没有上传活动就停止做种）；D3 按这个语义实现，UI 文案需明确说明，不能让用户理解成"下载完成后固定做种 N 分钟" | §3.6.2 |
+| 下载目录同步范围警示交互（D3） | 前端用既有 `list_sync_scopes` 命令做路径前缀比对，命中显示不阻断的警示文案；不新增后端接口/落库字段 | §5 |
+| 批量操作"清除已完成记录"（D3） | 先对每个任务发引擎侧"忘记但不删本地文件"调用（aria2 `aria2.removeDownloadResult`；BT `torrent-remove`+`delete-local-data:false`），成功的再删 DB 行——BT 任务完成后仍在做种，只删记录会被下次 `bt_reconcile()` 当孤儿补插回去，必须先让引擎"忘记"这个任务 | §3.6.4，§6 |
+| 错误转译落点（D3） | 在 `aa4c-download` 内部生成 `download_tasks.error` 时就转译成人话，不新增数据库列、不传原始错误码到前端；aria2 侧解析 RPC 的 `errorCode` 数字对照 aria2 官方 EXIT STATUS 表（见下）；Transmission 的 `errorString` 直接透传（本身已较可读，不建对照表） | §6 |
+
+**aria2 `errorCode` → 人话对照**（本机 `man aria2c`，Homebrew 装的真实 1.37.0 版本手册核实，覆盖常见码，其余用通用兜底 + 附原始码）：
+
+| errorCode | 含义（官方 EXIT STATUS） | 转译 |
+|---|---|---|
+| 3 | 资源未找到 | 资源不存在（可能链接已失效） |
+| 6 | 网络问题 | 网络连接出了问题，请检查网络后重试 |
+| 9 | 磁盘空间不足 | 磁盘空间不够了，清理一下磁盘或换个保存位置 |
+| 19 | 域名解析失败 | 域名解析失败，请检查链接或网络 |
+| 22 | HTTP 响应异常 | 服务器返回的响应有问题 |
+| 23 | 重定向次数过多 | 链接跳转次数过多，可能已失效 |
+| 24 | HTTP 鉴权失败 | 需要登录或授权才能下载，暂不支持 |
+| 27 | 磁力链接格式错误 | 磁力链接格式不对，请检查后重新粘贴 |
+| 29 | 服务器暂时无法处理请求 | 服务器暂时繁忙，请稍后重试 |
+| 其余 | — | 下载出错（代码 {N}），请重试 |
 
 ## 10. Lua 插件系统（v3 预留设计——只定边界，不定 API）
 
@@ -280,4 +312,4 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 
 ## 仍待实现 / 后续
 
-限速/并发数/分享率等选项具体要透传 aria2/Transmission 的哪些 option、设置页字段怎么设计；下载失败的自动重试策略；子进程崩溃后的自动重启策略；"下载目录落在同步范围内"警示的具体交互（D3 设置页一起做）；`.torrent` 文件输入（D2 只接 magnet，文件输入留给 D3 或插件阶段）；引擎版本升级的操作流程文档化（engines release 的产出步骤，做进 CONTRIBUTING 或脚本注释）；Lua 插件系统的独立设计文档 + 安全评审（§10，D4）；Android 平台的下载能力方案（很可能是完全不同的技术路径，比如系统 DownloadManager，而不是 bundled 二进制，需要单独评估）；S3 协议支持（PROJECT_VISION.md 提到但未细化，大概率需要凭证管理，单独评估，不在 D1–D3 范围内）。
+下载失败的自动重试策略；子进程崩溃后的自动重启策略；`.torrent` 文件输入（D2 只接 magnet，文件输入留给插件阶段）；引擎版本升级的操作流程文档化（engines release 的产出步骤，做进 CONTRIBUTING 或脚本注释）；Lua 插件系统的独立设计文档 + 安全评审（§10，D4）；Android 平台的下载能力方案（很可能是完全不同的技术路径，比如系统 DownloadManager，而不是 bundled 二进制，需要单独评估）；S3 协议支持（PROJECT_VISION.md 提到但未细化，大概率需要凭证管理，单独评估，不在 D1–D3 范围内）。

@@ -29,6 +29,32 @@ async function add() {
     adding.value = false;
   }
 }
+
+/** 批量操作（D3）：单个任务失败不影响其余任务，这里只报告实际生效的数量。 */
+async function pauseAll() {
+  try {
+    const n = await download.pauseAll();
+    toast.push("info", `已暂停 ${n} 个任务`);
+  } catch (e) {
+    toast.push("error", errorText(asCommandError(e).code));
+  }
+}
+async function resumeAll() {
+  try {
+    const n = await download.resumeAll();
+    toast.push("info", `已继续 ${n} 个任务`);
+  } catch (e) {
+    toast.push("error", errorText(asCommandError(e).code));
+  }
+}
+async function clearCompleted() {
+  try {
+    const n = await download.clearCompleted();
+    toast.push("success", `已清除 ${n} 条记录`);
+  } catch (e) {
+    toast.push("error", errorText(asCommandError(e).code));
+  }
+}
 </script>
 
 <template>
@@ -51,6 +77,21 @@ async function add() {
           {{ adding ? "添加中…" : "开始下载" }}
         </button>
       </div>
+    </div>
+
+    <div
+      v-if="download.hasActiveOrWaiting || download.hasPaused || download.hasCompleted"
+      class="batch"
+    >
+      <button v-if="download.hasActiveOrWaiting" class="btn btn-ghost small" @click="pauseAll">
+        全部暂停
+      </button>
+      <button v-if="download.hasPaused" class="btn btn-ghost small" @click="resumeAll">
+        全部继续
+      </button>
+      <button v-if="download.hasCompleted" class="btn btn-ghost small" @click="clearCompleted">
+        清除已完成
+      </button>
     </div>
 
     <div v-if="download.list.length" class="card list">
@@ -91,6 +132,11 @@ h2 {
   background: var(--aa-bg);
   color: var(--aa-text);
   font-size: 0.9rem;
+}
+.batch {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 .list {
   padding: 4px 0;

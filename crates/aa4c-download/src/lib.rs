@@ -85,6 +85,14 @@ enum Cmd {
         id: TaskId,
         reply: oneshot::Sender<Result<()>>,
     },
+    /// 批量操作"清除已完成记录"（D3）专用——只让引擎忘掉这个已完成任务（不删
+    /// 本地文件），**不碰 DB**：调用方（`clear_completed`）要先确认这个调用成功
+    /// 了才会删对应的 DB 行，跟 `Cancel` 那种"不关心 RPC 成不成功，DB 是唯一
+    /// 事实来源"的取舍刻意不同——原因见 `DownloadService::clear_completed` 文档。
+    ForgetCompleted {
+        id: TaskId,
+        reply: oneshot::Sender<Result<()>>,
+    },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
@@ -105,6 +113,11 @@ enum BtCmd {
         reply: oneshot::Sender<Result<()>>,
     },
     Cancel {
+        id: TaskId,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// 同 `Cmd::ForgetCompleted`：只让引擎忘掉这个任务，不碰 DB。
+    ForgetCompleted {
         id: TaskId,
         reply: oneshot::Sender<Result<()>>,
     },
@@ -132,6 +145,17 @@ pub struct DownloadService {
     bt_cmd_tx: Option<mpsc::UnboundedSender<BtCmd>>,
 }
 
+/// 限速/并发/BT 分享率/BT 空闲做种超时（D3，DOWNLOAD_DESIGN.md §9）——`None`
+/// 表示不设限，用引擎自己的默认行为。打包成一个结构体而不是四个独立 `Option`
+/// 参数，避免 `start()` 调用点因为参数顺序相似而传错位置。
+#[derive(Debug, Clone, Default)]
+pub struct DownloadLimits {
+    pub speed_limit_kbps: Option<u32>,
+    pub concurrency: Option<u32>,
+    pub bt_ratio_limit: Option<f64>,
+    pub bt_idle_seeding_limit_minutes: Option<u32>,
+}
+
 impl DownloadService {
     /// 启动：并行拉起 aria2c 与 transmission-daemon（`bt_spawner` 为 `None`
     /// 时 BT 能力整体不存在，同 `spawner` 为 `None` 时 HTTP 能力不存在——两者
@@ -145,11 +169,14 @@ impl DownloadService {
         events: EventSender,
         data_dir: PathBuf,
         download_dir: PathBuf,
+        limits: DownloadLimits,
     ) -> Arc<Self> {
         let cmd_tx = match spawn_and_connect_with_retries(
             spawner.as_ref(),
             &data_dir,
             &download_dir,
+            limits.speed_limit_kbps,
+            limits.concurrency,
         )
         .await
         {
@@ -176,6 +203,10 @@ impl DownloadService {
                     bt_spawner.as_ref(),
                     &data_dir,
                     &download_dir,
+                    limits.speed_limit_kbps,
+                    limits.concurrency,
+                    limits.bt_ratio_limit,
+                    limits.bt_idle_seeding_limit_minutes,
                 )
                 .await
                 {
@@ -281,6 +312,85 @@ impl DownloadService {
         self.store.list_downloads().await
     }
 
+    /// 批量操作（D3，DOWNLOAD_DESIGN.md §6/§9）：全部暂停/全部继续/清除已完成
+    /// 记录。三个方法都是"尽力而为"——单个任务失败只跳过它，不中断整体、不让
+    /// 一个任务的问题拖累其余任务；返回值是"实际成功的数量"，不是"尝试的数量"。
+    /// 直接复用已有的单任务 `pause`/`resume`（本身就按 id 长度分流到对应引擎），
+    /// 不需要新的 actor 命令。
+    pub async fn pause_all(&self) -> usize {
+        let tasks = self.store.list_downloads().await.unwrap_or_default();
+        let mut ok = 0;
+        for task in tasks {
+            if matches!(
+                task.status,
+                DownloadStatus::Active | DownloadStatus::Waiting
+            ) && self.pause(task.id).await.is_ok()
+            {
+                ok += 1;
+            }
+        }
+        ok
+    }
+
+    pub async fn resume_all(&self) -> usize {
+        let tasks = self.store.list_downloads().await.unwrap_or_default();
+        let mut ok = 0;
+        for task in tasks {
+            if task.status == DownloadStatus::Paused && self.resume(task.id).await.is_ok() {
+                ok += 1;
+            }
+        }
+        ok
+    }
+
+    /// 清除已完成记录——**不是**简单删 DB 行。BT 任务完成后仍在做种（设计
+    /// 故意如此，DOWNLOAD_DESIGN.md §3.6.4），只删记录不通知引擎的话，下一次
+    /// `bt_reconcile()` 轮询会把"引擎有、表里没有"的它当孤儿记录补插回去，
+    /// 清除操作形同虚设。所以要先让引擎"忘记"每个任务（`Cmd`/`BtCmd` 的
+    /// `ForgetCompleted`——不删本地文件，只是让引擎不再持有/汇报这个任务），
+    /// 成功的才删对应的 DB 行；单个任务引擎调用失败就跳过它，不中断整体。
+    pub async fn clear_completed(&self) -> Result<usize> {
+        let tasks = self.store.list_downloads().await?;
+        let mut cleared_ids = Vec::new();
+        for task in tasks {
+            if task.status != DownloadStatus::Complete {
+                continue;
+            }
+            let forgotten = if is_bt_task_id(&task.id) {
+                match &self.bt_cmd_tx {
+                    Some(tx) => {
+                        let (reply, rx) = oneshot::channel();
+                        tx.send(BtCmd::ForgetCompleted {
+                            id: task.id.clone(),
+                            reply,
+                        })
+                        .is_ok()
+                            && matches!(rx.await, Ok(Ok(())))
+                    }
+                    None => false,
+                }
+            } else {
+                match &self.cmd_tx {
+                    Some(tx) => {
+                        let (reply, rx) = oneshot::channel();
+                        tx.send(Cmd::ForgetCompleted {
+                            id: task.id.clone(),
+                            reply,
+                        })
+                        .is_ok()
+                            && matches!(rx.await, Ok(Ok(())))
+                    }
+                    None => false,
+                }
+            };
+            if forgotten {
+                cleared_ids.push(task.id);
+            }
+        }
+        self.store.delete_completed_downloads(&cleared_ids).await?;
+        Ok(cleared_ids.len())
+    }
+
     /// 优雅关闭两个引擎（互不影响，一个失败不阻塞另一个）：
     /// aria2 `aria2.shutdown`（触发一次 session 保存）→ 宽限期 → 强杀；
     /// Transmission `session-close` → 宽限期 → 强杀。引擎本就不可用时是 no-op。
@@ -312,11 +422,19 @@ async fn spawn_and_connect_with_retries(
     spawner: &dyn SidecarSpawner,
     data_dir: &std::path::Path,
     download_dir: &std::path::Path,
+    speed_limit_kbps: Option<u32>,
+    concurrency: Option<u32>,
 ) -> Result<Connected> {
     let host_pid = std::process::id();
     let mut last_err = None;
     for attempt in 0..SPAWN_ATTEMPTS {
-        let aria_conf = match conf::write_conf(data_dir, download_dir, host_pid) {
+        let aria_conf = match conf::write_conf(
+            data_dir,
+            download_dir,
+            host_pid,
+            speed_limit_kbps,
+            concurrency,
+        ) {
             Ok(c) => c,
             Err(e) => {
                 last_err = Some(e);
@@ -492,6 +610,19 @@ async fn handle_command(client: &Aria2Client, store: &Store, cmd: Cmd) {
                 .await;
             let _ = reply.send(result);
         }
+        Cmd::ForgetCompleted { id, reply } => {
+            // 跟 Cancel 不同：这里**要**如实回报 RPC 是否成功——调用方
+            // （`clear_completed`）只在这个调用成功时才会删对应的 DB 行，不然
+            // 引擎那边还认得这个任务，写库删掉记录只会在下次对账时被当孤儿
+            // 补插回去。`aria2.remove`/`forceRemove` 是给活跃/等待态用的，对
+            // 已停止（含 complete）的任务要用 `removeDownloadResult` 才能把它
+            // 从 aria2 自己的 `tellStopped` 历史里摘掉。
+            let result = client
+                .call("aria2.removeDownloadResult", vec![json!(id)])
+                .await
+                .map(|_| ());
+            let _ = reply.send(result);
+        }
         Cmd::Shutdown { .. } => unreachable!("Shutdown handled directly in actor_loop"),
     }
 }
@@ -527,19 +658,46 @@ fn parse_num(v: &Value) -> u64 {
     v.as_str().and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
+/// aria2 `errorCode` → 人话（D3，DOWNLOAD_DESIGN.md §9）。对照表来自本机
+/// `man aria2c`（Homebrew 装的真实 1.37.0 版本手册 EXIT STATUS 一节，不是网上
+/// 抄的），只覆盖常见码，其余给通用兜底 + 附原始码方便排查。转译结果直接存进
+/// `download_tasks.error`，不新增数据库列、不把原始 code 传到前端——错误人话
+/// 化在这一层就做完，前端 `format.ts` 的 `errorText()` 转译的是另一层更粗粒度
+/// 的 `Aa4cError::code()`，两者不是同一件事。
+fn translate_aria_error(code: Option<u32>, raw_message: Option<&str>) -> Option<String> {
+    let code = code.filter(|&c| c != 0)?;
+    let text = match code {
+        3 => "资源不存在（可能链接已失效）".to_string(),
+        6 => "网络连接出了问题，请检查网络后重试".to_string(),
+        9 => "磁盘空间不够了，清理一下磁盘或换个保存位置".to_string(),
+        19 => "域名解析失败，请检查链接或网络".to_string(),
+        22 => "服务器返回的响应有问题".to_string(),
+        23 => "链接跳转次数过多，可能已失效".to_string(),
+        24 => "需要登录或授权才能下载，暂不支持".to_string(),
+        27 => "磁力链接格式不对，请检查后重新粘贴".to_string(),
+        29 => "服务器暂时繁忙，请稍后重试".to_string(),
+        _ => format!("下载出错（代码 {code}）"),
+    };
+    // raw_message 附在后面而不是丢弃——万一转译表覆盖不到具体细节，用户/未来
+    // 排查还能看到 aria2 自己给的原始描述。
+    match raw_message.filter(|s| !s.is_empty()) {
+        Some(raw) => Some(format!("{text}（{raw}）")),
+        None => Some(text),
+    }
+}
+
 fn insert_aria_info(map: &mut HashMap<String, AriaInfo>, item: &Value) {
     let Some(gid) = item["gid"].as_str() else {
         return;
     };
+    let error_code = item["errorCode"].as_str().and_then(|s| s.parse().ok());
+    let raw_message = item["errorMessage"].as_str().filter(|s| !s.is_empty());
     let info = AriaInfo {
         status: item["status"].as_str().unwrap_or("error").to_string(),
         total: parse_num(&item["totalLength"]),
         completed: parse_num(&item["completedLength"]),
         speed: parse_num(&item["downloadSpeed"]),
-        error_message: item["errorMessage"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(str::to_string),
+        error_message: translate_aria_error(error_code, raw_message),
         save_path: item["files"][0]["path"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -708,10 +866,24 @@ async fn spawn_and_connect_bt_with_retries(
     spawner: &dyn SidecarSpawner,
     data_dir: &std::path::Path,
     download_dir: &std::path::Path,
+    speed_limit_kbps: Option<u32>,
+    concurrency: Option<u32>,
+    ratio_limit: Option<f64>,
+    idle_seeding_limit_minutes: Option<u32>,
 ) -> Result<BtConnected> {
     let mut last_err = None;
     for attempt in 0..SPAWN_ATTEMPTS {
-        let proc = match TransmissionProcess::spawn(spawner, data_dir, download_dir).await {
+        let proc = match TransmissionProcess::spawn(
+            spawner,
+            data_dir,
+            download_dir,
+            speed_limit_kbps,
+            concurrency,
+            ratio_limit,
+            idle_seeding_limit_minutes,
+        )
+        .await
+        {
             Ok(p) => p,
             Err(e) => {
                 last_err = Some(e);
@@ -845,6 +1017,20 @@ async fn handle_bt_command(client: &TransmissionClient, store: &Store, cmd: BtCm
             let result = store
                 .update_download_status(&id, DownloadStatus::Removed, None, None)
                 .await;
+            let _ = reply.send(result);
+        }
+        BtCmd::ForgetCompleted { id, reply } => {
+            // 跟 Cancel 不同：这里**要**如实回报是否成功——`torrent-remove` 对
+            // 任意状态的种子都适用（不区分活跃/完成，跟 aria2 需要换一个 RPC
+            // 方法不同），但调用方（`clear_completed`）要靠这个结果决定是否
+            // 删对应的 DB 行，不能像 Cancel 那样"不管成不成功都当作已生效"。
+            let result = client
+                .call(
+                    "torrent-remove",
+                    json!({ "ids": [id], "delete-local-data": false }),
+                )
+                .await
+                .map(|_| ());
             let _ = reply.send(result);
         }
         BtCmd::Shutdown { .. } => unreachable!("Shutdown handled directly in bt_actor_loop"),
@@ -1092,4 +1278,53 @@ async fn bt_reconcile(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn translate_aria_error_covers_common_codes() {
+        assert_eq!(
+            translate_aria_error(Some(3), None).unwrap(),
+            "资源不存在（可能链接已失效）"
+        );
+        assert_eq!(
+            translate_aria_error(Some(9), None).unwrap(),
+            "磁盘空间不够了，清理一下磁盘或换个保存位置"
+        );
+        assert_eq!(
+            translate_aria_error(Some(27), None).unwrap(),
+            "磁力链接格式不对，请检查后重新粘贴"
+        );
+    }
+
+    #[test]
+    fn translate_aria_error_falls_back_for_unknown_codes() {
+        assert_eq!(
+            translate_aria_error(Some(99), None).unwrap(),
+            "下载出错（代码 99）"
+        );
+    }
+
+    #[test]
+    fn translate_aria_error_appends_raw_message_when_present() {
+        let text = translate_aria_error(Some(6), Some("Connection refused")).unwrap();
+        assert!(text.starts_with("网络连接出了问题"));
+        assert!(text.contains("Connection refused"));
+    }
+
+    #[test]
+    fn translate_aria_error_none_when_code_is_zero_or_absent() {
+        assert!(translate_aria_error(Some(0), Some("ignored")).is_none());
+        assert!(translate_aria_error(None, None).is_none());
+    }
+
+    #[test]
+    fn bt_task_id_routes_by_length() {
+        // aria2 GID：16 位十六进制；BT infohash：40 位十六进制（SHA-1）。
+        assert!(!is_bt_task_id("0123456789abcdef"));
+        assert!(is_bt_task_id(&"a".repeat(40)));
+    }
 }

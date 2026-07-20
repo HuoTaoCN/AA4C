@@ -68,6 +68,15 @@ export interface Settings {
   enableRemote: boolean;
   /** 下载目录（默认系统下载目录），必须在 saveDir 子树之外（里程碑 D1）。 */
   downloadDir: string;
+  /** 下载限速（KB/s），null = 不限速。重启引擎生效（里程碑 D3）。 */
+  downloadSpeedLimitKbps: number | null;
+  /** 并发下载数，null = 引擎默认。重启引擎生效（里程碑 D3）。 */
+  downloadConcurrency: number | null;
+  /** BT 分享率上限，null = 不限（里程碑 D3）。 */
+  btRatioLimit: number | null;
+  /** BT 空闲做种超时（分钟），null = 不限——多久没有上传活动就停止做种，
+   * 不是"总做种时长"（里程碑 D3）。 */
+  btIdleSeedingLimitMinutes: number | null;
 }
 
 /** 一次连接实际走的档位（里程碑 C4 连接质量 + C5 打洞，见 CONNECT_DESIGN.md §2）。

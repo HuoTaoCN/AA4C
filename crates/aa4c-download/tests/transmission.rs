@@ -33,9 +33,10 @@ async fn spawn_daemon() -> (TransmissionProcess, tempfile::TempDir) {
     let spawner = ProcessSpawner::new(bin);
     let dir = tempfile::tempdir().unwrap();
     let download_dir = dir.path().join("downloads");
-    let proc = TransmissionProcess::spawn(&spawner, dir.path(), &download_dir)
-        .await
-        .expect("transmission-daemon should spawn");
+    let proc =
+        TransmissionProcess::spawn(&spawner, dir.path(), &download_dir, None, None, None, None)
+            .await
+            .expect("transmission-daemon should spawn");
     // 前台模式启动很快，但 RPC 端口真正开始监听还有一个短窗口——同 D1 aria2
     // 健康检查的思路，这里给个固定的启动缓冲（D2.3 范围内先不做重试轮询，
     // D2.5 接入 Core 编排时应该照 aria2 `connect_and_health_check` 的形状补上）。

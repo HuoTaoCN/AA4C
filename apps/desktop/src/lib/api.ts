@@ -70,6 +70,9 @@ export const api = {
   cancelDownload: (taskId: string) =>
     invoke<void>("cancel_download", { taskId }),
   listDownloads: () => invoke<DownloadTask[]>("list_downloads"),
+  pauseAllDownloads: () => invoke<number>("pause_all_downloads"),
+  resumeAllDownloads: () => invoke<number>("resume_all_downloads"),
+  clearCompletedDownloads: () => invoke<number>("clear_completed_downloads"),
 };
 
 /** 把任意 reject 值收敛为 CommandError（兜底未知错误）。 */

@@ -5,7 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// `Eq` 去掉了：`bt_ratio_limit: Option<f64>` 加进来后整个结构体不能再自动派生
+// `Eq`（`f64` 只有 `PartialEq`，NaN 不满足自反性）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     /// 本机设备名（默认 hostname）。
@@ -25,6 +27,17 @@ pub struct Settings {
     /// 落进 `save_dir` 会被 Inbox 自动索引、分享给全部完全信任设备（DOWNLOAD_DESIGN.md
     /// §5/§7，里程碑 D1）。
     pub download_dir: String,
+    /// 下载限速（KB/s），`None` 或 0 = 不限速。写进每次启动重新生成的引擎配置文件，
+    /// 下次启动生效，不做热更新（DOWNLOAD_DESIGN.md §9，里程碑 D3）。
+    pub download_speed_limit_kbps: Option<u32>,
+    /// 并发下载数，`None` = 用各引擎自己的默认值（aria2 默认 5）。同上，重启生效。
+    pub download_concurrency: Option<u32>,
+    /// BT 分享率上限，`None` = 不限。对应 Transmission `ratio-limit`（配置文件键名，
+    /// 与 RPC session-set 的 `seedRatioLimit` 不是同一个名字，见 DOWNLOAD_DESIGN.md §9）。
+    pub bt_ratio_limit: Option<f64>,
+    /// BT 空闲做种超时（分钟），`None` = 不限。Transmission 没有"总做种时长"概念，
+    /// 这是"多久没有上传活动就停止做种"（`idle-seeding-limit`，DOWNLOAD_DESIGN.md §9）。
+    pub bt_idle_seeding_limit_minutes: Option<u32>,
 }
 
 #[cfg(test)]
@@ -41,6 +54,10 @@ mod tests {
             server_url: Some("aa4c://example.com:42420#abcd1234abcd1234".into()),
             enable_remote: true,
             download_dir: "/Users/huo/Downloads".into(),
+            download_speed_limit_kbps: Some(500),
+            download_concurrency: Some(3),
+            bt_ratio_limit: Some(2.0),
+            bt_idle_seeding_limit_minutes: Some(30),
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["deviceName"], "Huo 的 MacBook");
@@ -52,6 +69,10 @@ mod tests {
         );
         assert_eq!(json["enableRemote"], true);
         assert_eq!(json["downloadDir"], "/Users/huo/Downloads");
+        assert_eq!(json["downloadSpeedLimitKbps"], 500);
+        assert_eq!(json["downloadConcurrency"], 3);
+        assert_eq!(json["btRatioLimit"], 2.0);
+        assert_eq!(json["btIdleSeedingLimitMinutes"], 30);
         let back: Settings = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }

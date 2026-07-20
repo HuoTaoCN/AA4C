@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- V0.4 里程碑 D3：统一任务中心打磨——设置页新增「下载」区块（下载目录选择器+同步范围重叠警示、下载限速 KB/s、并发下载数、BT 分享率上限、BT 空闲做种超时分钟数，均留空即不限/用引擎默认），四个新字段随 `Settings` 落库（`download_speed_limit_kbps`/`download_concurrency`/`bt_ratio_limit`/`bt_idle_seeding_limit_minutes`），改动后下次启动引擎生效（同既有 `download_dir` 的"重启生效"模式一致，不引入热更新 RPC）。Transmission 侧真机核实（`transmission-daemon 4.1.3` + `transmission-remote --session-info`）确认 `settings.json` 配置文件真实键名为 `speed-limit-down(-enabled)`/`ratio-limit(-enabled)`/`idle-seeding-limit(-enabled)`/`download-queue-size`/`download-queue-enabled`——其中 `ratio-limit` 与官方 RPC spec 文档写的 `seedRatioLimit`（`session-set` 参数名，非配置文件键名）不一致；"空闲做种超时"是 Transmission 实际支持的语义（多久没有上传活动就停止做种），并非"总做种时长"，UI 文案已明确区分。任务列表新增批量操作：全部暂停/全部继续/清除已完成记录（按钮依当前任务状态动态显隐）；「清除已完成记录」对每个任务先发引擎侧"忘记但不删本地文件"调用（aria2 `aria2.removeDownloadResult`；BT `torrent-remove`+`delete-local-data:false`）成功后再删 DB 行，避免 BT 任务完成后仍在做种、被下一次 `bt_reconcile()` 当孤儿记录补插回去导致清除形同虚设。下载失败原因人话转译：`aa4c-download` 内部解析 aria2 RPC 的 `errorCode` 数字（对照官方 EXIT STATUS 表，覆盖常见的资源不存在/网络问题/磁盘空间不足/域名解析失败/HTTP 鉴权失败/磁力链接格式错误等码），落库时已是最终中文文案，不传原始 code 到前端；Transmission 的 `errorString` 直接透传。新增 `aa4c-store::delete_completed_downloads`、`aa4c-core::orchestrate` 的 3 个批量编排方法、3 个对应 Tauri Command。
+
 ## [0.4.0-preview.2] - 2026-07-18
 
 > **V0.4「Download」里程碑 D2（Transmission/BT-Magnet）完整落地，含引擎二进制正式打包分发管线**：`v0.4.0-preview.1` 只有 D1（HTTP/HTTPS/FTP）；这个版本起 BT/Magnet 下载在正式打包的安装包里真正可用（此前代码已实现，但打出来的包不含 transmission-daemon 二进制，点击 magnet 链接只会拿到"BT 能力不可用"）。
