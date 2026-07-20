@@ -17,9 +17,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aa4c_proto::{client_hello, read_message, server_hello, unexpected, write_message, Message};
 use aa4c_store::{DeviceRecord, Store};
-use aa4c_types::{Aa4cError, CoreEvent, DeviceId, DeviceInfo, Result, TrustLevel};
+use aa4c_types::{
+    Aa4cError, CoreEvent, DeviceId, DeviceInfo, Result, TrustLevel, SERVER_HINT_PROTO_VERSION,
+};
 use rustls::pki_types::ServerName;
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::timeout;
@@ -100,21 +102,30 @@ impl PairingManager {
     /// 接收方：处理由统一传输监听器分流过来的配对连接（M6 接线）。
     ///
     /// 监听器已完成 TLS 握手、Hello 校验并读出首条 `PairRequest`，此处从
-    /// "用户决策"环节继续。`cert_id` 为对端证书指纹（与声明公钥比对）。
+    /// "用户决策"环节继续。`cert_id` 为对端证书指纹（与声明公钥比对）；`proto` 为
+    /// 监听器 Hello 握手已协商出的版本（`PairServerHint` 交换的 gate 判断用）。
     pub fn handle_dispatched(
         &self,
         stream: IncomingStream,
         cert_id: DeviceId,
         peer_device: DeviceInfo,
         peer_key: [u8; 32],
+        proto: u16,
     ) -> Result<String> {
         let (session_id, decisions) = self.new_session();
         let ctx = self.session_ctx(&session_id, decisions);
         tokio::spawn(async move {
             let peer_addr = stream.get_ref().0.peer_addr().ok();
-            let result =
-                responder_after_request(&ctx, stream, &cert_id, peer_device, peer_key, peer_addr)
-                    .await;
+            let result = responder_after_request(
+                &ctx,
+                stream,
+                &cert_id,
+                peer_device,
+                peer_key,
+                peer_addr,
+                proto,
+            )
+            .await;
             ctx.finish(result, None);
         });
         Ok(session_id)
@@ -225,22 +236,30 @@ impl SessionCtx {
     }
 
     /// 配对成功：写入对端设备（trusted = 1）。
+    ///
+    /// `fresh_hint`：本次会话协商到的 `server_hint`（见 `PairServerHint` 交换，
+    /// PROTOCOL.md §17）。`None` = 协商未发生（对端 proto 太旧，不认识这条消息）——
+    /// 沿用已存的旧值；`Some(inner)` = 协商发生了，直接覆盖成 `inner`（`inner` 本身
+    /// 也可能是 `None`，代表对端明确没配置远程服务器，同样要如实覆盖，不能因为
+    /// "协商到了但值是 None"就误当成"没协商"）。
     async fn persist_peer(
         &self,
         device: &DeviceInfo,
         public_key: [u8; 32],
         addr: Option<SocketAddr>,
+        fresh_hint: Option<Option<String>>,
     ) -> Result<()> {
         let now = now_ms();
         // 配对默认「朋友」；若该设备此前已被标记为「完全信任」，重新配对时保留，不降级。
-        // server_hint（对端 home server）同理保留旧值——配对协议本身暂不交换这个字段
-        // （里程碑 C2 只落地了 schema/查询，线路层交换留待后续里程碑，见 HANDOFF.md）。
         let existing = self.store.get_device(&device.id).await?;
         let trust_level = existing
             .as_ref()
             .map(|r| r.trust_level)
             .unwrap_or(TrustLevel::Friend);
-        let server_hint = existing.and_then(|r| r.server_hint);
+        let server_hint = match fresh_hint {
+            Some(inner) => inner,
+            None => existing.and_then(|r| r.server_hint),
+        };
         self.store
             .upsert_device(&DeviceRecord {
                 id: device.id.clone(),
@@ -257,6 +276,32 @@ impl SessionCtx {
                 updated_at: 0,
             })
             .await
+    }
+}
+
+/// PROTOCOL.md §17：`PairConfirm`/`PairConfirm` 互相确认之后、写库之前，proto ≥
+/// `SERVER_HINT_PROTO_VERSION` 时双方确定性交换 `PairServerHint`。返回本次协商到的
+/// 对端 hint（`Some(_)`，供 `persist_peer` 覆盖）；proto 不够时两端都不发送、返回
+/// `None`（`persist_peer` 沿用旧值，行为与旧版完全一致）。
+async fn exchange_server_hint<S: AsyncRead + AsyncWrite + Unpin>(
+    ctx: &SessionCtx,
+    stream: &mut S,
+    proto: u16,
+) -> Result<Option<Option<String>>> {
+    if proto < SERVER_HINT_PROTO_VERSION {
+        return Ok(None);
+    }
+    let my_hint = my_server_hint(&ctx.store).await;
+    write_message(
+        stream,
+        &Message::PairServerHint {
+            server_hint: my_hint,
+        },
+    )
+    .await?;
+    match ctx.recv(stream).await? {
+        Message::PairServerHint { server_hint } => Ok(Some(server_hint)),
+        other => Err(unexpected(&other)),
     }
 }
 
@@ -286,7 +331,7 @@ async fn initiator_session(ctx: &SessionCtx, addr: SocketAddr) -> Result<DeviceI
         .await?;
     let cert_id = peer_cert_id(stream.get_ref().1)?;
 
-    let (hello_id, _proto) = client_hello(&mut stream, ctx.identity.device_id()).await?;
+    let (hello_id, proto) = client_hello(&mut stream, ctx.identity.device_id()).await?;
     if hello_id != cert_id {
         return Err(Aa4cError::Protocol("hello id != certificate id".into()));
     }
@@ -326,7 +371,9 @@ async fn initiator_session(ctx: &SessionCtx, addr: SocketAddr) -> Result<DeviceI
         other => return Err(unexpected(&other)),
     }
 
-    ctx.persist_peer(&peer_device, peer_key, Some(addr)).await?;
+    let fresh_hint = exchange_server_hint(ctx, &mut stream, proto).await?;
+    ctx.persist_peer(&peer_device, peer_key, Some(addr), fresh_hint)
+        .await?;
     Ok(peer_device.id)
 }
 
@@ -336,7 +383,7 @@ async fn responder_session(ctx: &SessionCtx, mut stream: IncomingStream) -> Resu
     let peer_addr = stream.get_ref().0.peer_addr().ok();
     let cert_id = peer_cert_id(stream.get_ref().1)?;
 
-    let (hello_id, _proto) = server_hello(&mut stream, ctx.identity.device_id()).await?;
+    let (hello_id, proto) = server_hello(&mut stream, ctx.identity.device_id()).await?;
     if hello_id != cert_id {
         return Err(Aa4cError::Protocol("hello id != certificate id".into()));
     }
@@ -345,11 +392,22 @@ async fn responder_session(ctx: &SessionCtx, mut stream: IncomingStream) -> Resu
         Message::PairRequest { device, public_key } => (device, public_key),
         other => return Err(unexpected(&other)),
     };
-    responder_after_request(ctx, stream, &cert_id, peer_device, peer_key, peer_addr).await
+    responder_after_request(
+        ctx,
+        stream,
+        &cert_id,
+        peer_device,
+        peer_key,
+        peer_addr,
+        proto,
+    )
+    .await
 }
 
 /// 接收方会话的用户决策段（PROTOCOL.md §6 右列后半）：声明公钥校验、双向
-/// 确认、写库。Hello 与首条 `PairRequest` 已由调用方读出。
+/// 确认、写库。Hello 与首条 `PairRequest` 已由调用方读出；`proto` 为 Hello 已协商出的
+/// 版本（`PairServerHint` 交换的 gate 判断用）。
+#[allow(clippy::too_many_arguments)]
 async fn responder_after_request(
     ctx: &SessionCtx,
     mut stream: IncomingStream,
@@ -357,6 +415,7 @@ async fn responder_after_request(
     peer_device: DeviceInfo,
     peer_key: [u8; 32],
     peer_addr: Option<SocketAddr>,
+    proto: u16,
 ) -> Result<DeviceId> {
     verify_claimed_key(cert_id, &peer_device, &peer_key)?;
 
@@ -398,7 +457,9 @@ async fn responder_after_request(
         other => return Err(unexpected(&other)),
     }
 
-    ctx.persist_peer(&peer_device, peer_key, peer_addr).await?;
+    let fresh_hint = exchange_server_hint(ctx, &mut stream, proto).await?;
+    ctx.persist_peer(&peer_device, peer_key, peer_addr, fresh_hint)
+        .await?;
     Ok(peer_device.id)
 }
 
@@ -406,6 +467,33 @@ fn reject(reason: &str) -> Message {
     Message::PairReject {
         reason: reason.into(),
     }
+}
+
+/// 读自己当前配置的 home server 地址，供 `PairServerHint` 交换时声明给对端
+/// （PROTOCOL.md §17）。直接读 `settings` 表的两个 KV（不经 `aa4c-core::settings`
+/// 整个结构体——`aa4c-identity` 不依赖 `aa4c-core`，依赖方向是反过来的），值是
+/// `serde_json` 编码过的（同 `aa4c-core::settings` 的 `get_json`/`set_json` 惯例）；
+/// key 名字必须与 `aa4c-core::settings::{KEY_SERVER_URL, KEY_ENABLE_REMOTE}` 的字面值
+/// （`"server_url"`/`"enable_remote"`）保持一致。未配置 / 未开启远程 / 解析失败都当
+/// `None`，与 `settings::load` 的默认语义一致。
+async fn my_server_hint(store: &Store) -> Option<String> {
+    let enable_remote: bool = store
+        .get_setting("enable_remote")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or(false);
+    if !enable_remote {
+        return None;
+    }
+    store
+        .get_setting("server_url")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Option<String>>(&raw).ok())
+        .flatten()
 }
 
 /// 从 rustls 连接中取对端证书指纹。

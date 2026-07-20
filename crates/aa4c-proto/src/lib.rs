@@ -125,6 +125,19 @@ pub enum Message {
     ShareRequest {
         token: String,
     },
+
+    // —— 配对时交换 server_hint（PROTOCOL.md §17，proto ≥ SERVER_HINT_PROTO_VERSION，
+    //    V0.3 遗留 gap 补完）——
+    // 同 `ResumeReport`：**不修改既有 `PairRequest`/`PairAccept`**（它们携带的 `DeviceInfo`
+    // 是 bincode 位置编码的既有结构体，追加字段会破坏所有旧版本客户端的解码），改为追加
+    // 变体，双方在 `PairConfirm`/`PairConfirm` 互相确认之后、写库之前确定性交换。
+    /// 各自声明自己当前配置的 home server 地址（`enable_remote` 关闭或未配置时为
+    /// `None`），供对端以后跨服务器好友寻址时去查自己（见 `aa4c-core::orchestrate::
+    /// resolve_addr`）。proto < `SERVER_HINT_PROTO_VERSION` 时两端都不发送，不认识
+    /// 这条消息，行为与旧版完全一致。
+    PairServerHint {
+        server_hint: Option<String>,
+    },
 }
 
 /// 断点续传进度条目（`ResumeReport` 载荷，PROTOCOL.md §13）。
@@ -248,6 +261,7 @@ pub fn unexpected(msg: &Message) -> Aa4cError {
         Message::FetchRequest { .. } => "FetchRequest",
         Message::ResumeReport { .. } => "ResumeReport",
         Message::ShareRequest { .. } => "ShareRequest",
+        Message::PairServerHint { .. } => "PairServerHint",
     };
     Aa4cError::Protocol(format!("unexpected message: {variant}"))
 }

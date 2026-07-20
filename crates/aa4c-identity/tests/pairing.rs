@@ -137,6 +137,97 @@ async fn full_pairing_succeeds_and_persists_both_sides() {
     assert_eq!(paired_b[0].id, a.device.id);
 }
 
+/// PROTOCOL.md §17：配对时双向交换 `server_hint`（proto 5 起，两端都是新版本时的正常
+/// 路径）。两节点各自在 store 里配好不同的 `server_url`/`enable_remote`，配对完成后断言
+/// 双方 `devices.server_hint` 都拿到了对方声明的地址（对称验证两个方向）。
+#[tokio::test]
+async fn pairing_exchanges_server_hint_both_directions() {
+    let a = spawn_node("发起方A", Duration::from_secs(10)).await;
+    let b = spawn_node("接收方B", Duration::from_secs(10)).await;
+
+    let server_a = "aa4c://server-a.example:42420#fpA";
+    let server_b = "aa4c://server-b.example:42420#fpB";
+    a.store
+        .set_setting("server_url", &serde_json::to_string(server_a).unwrap())
+        .await
+        .unwrap();
+    a.store
+        .set_setting("enable_remote", &serde_json::to_string(&true).unwrap())
+        .await
+        .unwrap();
+    b.store
+        .set_setting("server_url", &serde_json::to_string(server_b).unwrap())
+        .await
+        .unwrap();
+    b.store
+        .set_setting("enable_remote", &serde_json::to_string(&true).unwrap())
+        .await
+        .unwrap();
+
+    let mut peer_b = b.device.clone();
+    peer_b.addr = Some(b.addr);
+    a.manager.start_pairing(&peer_b).await.unwrap();
+
+    let (res_a, res_b) = tokio::join!(
+        timeout(
+            Duration::from_secs(10),
+            drive(a.manager.clone(), a.events, true, true)
+        ),
+        timeout(
+            Duration::from_secs(10),
+            drive(b.manager.clone(), b.events, true, true)
+        ),
+    );
+    assert!(
+        res_a.unwrap().1 && res_b.unwrap().1,
+        "both sides should succeed"
+    );
+
+    let hint_a_about_b = a.store.get_device(&b.device.id).await.unwrap().unwrap();
+    let hint_b_about_a = b.store.get_device(&a.device.id).await.unwrap().unwrap();
+    assert_eq!(hint_a_about_b.server_hint.as_deref(), Some(server_b));
+    assert_eq!(hint_b_about_a.server_hint.as_deref(), Some(server_a));
+}
+
+/// `enable_remote=false` 时对端不该声明 `server_hint`（即便 `server_url` 恰好写了值）——
+/// 同 `orchestrate::share_link`/`remote_lookup` 的既有语义：`enable_remote` 才是总开关。
+#[tokio::test]
+async fn pairing_omits_server_hint_when_remote_disabled() {
+    let a = spawn_node("发起方A", Duration::from_secs(10)).await;
+    let b = spawn_node("接收方B", Duration::from_secs(10)).await;
+
+    a.store
+        .set_setting(
+            "server_url",
+            &serde_json::to_string("aa4c://server-a.example:42420#fpA").unwrap(),
+        )
+        .await
+        .unwrap();
+    // enable_remote 留空（未设置）——等同 false，同 settings::load 的默认语义。
+
+    let mut peer_b = b.device.clone();
+    peer_b.addr = Some(b.addr);
+    a.manager.start_pairing(&peer_b).await.unwrap();
+
+    let (res_a, res_b) = tokio::join!(
+        timeout(
+            Duration::from_secs(10),
+            drive(a.manager.clone(), a.events, true, true)
+        ),
+        timeout(
+            Duration::from_secs(10),
+            drive(b.manager.clone(), b.events, true, true)
+        ),
+    );
+    assert!(
+        res_a.unwrap().1 && res_b.unwrap().1,
+        "both sides should succeed"
+    );
+
+    let hint_b_about_a = b.store.get_device(&a.device.id).await.unwrap().unwrap();
+    assert_eq!(hint_b_about_a.server_hint, None);
+}
+
 #[tokio::test]
 async fn responder_rejecting_request_fails_both_sides() {
     let a = spawn_node("发起方A", Duration::from_secs(10)).await;

@@ -55,13 +55,16 @@ pub type SharedStream = Box<dyn AsyncDuplex>;
 /// （AGENTS.md：服务间低耦合，编排归 Core）。实现内部应自行 spawn 处理。
 pub trait IncomingPairDispatch: Send + Sync + 'static {
     /// 接管一条已读出 Hello + `PairRequest` 的入站连接。
-    /// `cert_id` 为对端证书指纹，`device`/`public_key` 取自 `PairRequest`。
+    /// `cert_id` 为对端证书指纹，`device`/`public_key` 取自 `PairRequest`，`proto` 为
+    /// Hello 握手已经协商出的 `min(双方)` 版本（`server_hello` 的返回值，供
+    /// `PairServerHint` 交换的 gate 判断用，PROTOCOL.md §17）。
     fn dispatch(
         &self,
         stream: IncomingTlsStream,
         cert_id: DeviceId,
         device: DeviceInfo,
         public_key: [u8; 32],
+        proto: u16,
     );
 }
 
@@ -460,7 +463,7 @@ impl TransferService {
                     if self.punch_dialer.get().is_none() && self.relay_dialer.get().is_none() {
                         return Err(e);
                     }
-                    tracing::debug!(peer = %peer_id, error = %e, "direct dial failed, falling back to punch/relay");
+                    tracing::debug!(peer = %peer_id, %addr, error = %e, "direct dial failed, falling back to punch/relay");
                 }
             }
         }

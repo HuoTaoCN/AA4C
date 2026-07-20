@@ -90,6 +90,7 @@ dependencies = [
  "blake3",
  "rcgen",
  "rustls",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-rustls",

@@ -456,12 +456,8 @@ impl Core {
     }
 
     /// 把 device_id 解析为可发送的 DeviceInfo：mDNS 在线快照（含实时地址）→ 落库最后
-    /// 地址 → 向自己配置的服务器查一次（CONNECT_DESIGN.md §3.4，里程碑 C2）。
-    ///
-    /// 远程兜底目前只查**自己配置的服务器**，覆盖「自己的多台设备」这一主场景（它们
-    /// 天然共用同一服务器）；跨服务器的好友寻址需要在配对时交换 `devices.server_hint`
-    /// 并据此选择服务器去查——这部分线路层交换尚未实现，是已知的、有意缩小的范围
-    /// （见 HANDOFF.md），留待后续里程碑随连接阶梯一起补齐。
+    /// 地址 → 查对端自己的服务器（`server_hint`）→ 查自己配置的服务器（详见
+    /// [`resolve_addr`] 文档，CONNECT_DESIGN.md §3.4，里程碑 C2/后续 gap 补完）。
     async fn resolve_peer(&self, device_id: &DeviceId) -> Result<DeviceInfo> {
         if let Some(dev) = self
             .discovery
@@ -529,14 +525,41 @@ impl Core {
     pub async fn list_downloads(&self) -> Result<Vec<aa4c_types::DownloadTask>> {
         self.download_service()?.list().await
     }
+
+    /// 批量操作（D3，DOWNLOAD_DESIGN.md §6/§9）：全部暂停/全部继续/清除已完成
+    /// 记录。返回值是"实际生效的数量"，薄薄一层转发到 `DownloadService`，具体
+    /// 的"单个任务失败只跳过、不中断整体"取舍在那边实现。
+    pub async fn pause_all_downloads(&self) -> Result<usize> {
+        Ok(self.download_service()?.pause_all().await)
+    }
+
+    pub async fn resume_all_downloads(&self) -> Result<usize> {
+        Ok(self.download_service()?.resume_all().await)
+    }
+
+    pub async fn clear_completed_downloads(&self) -> Result<usize> {
+        self.download_service()?.clear_completed().await
+    }
 }
 
-/// 综合 mDNS 在线快照 → 落库最后地址 → 向自己配置的服务器 Lookup 解析出一个可尝试连接
-/// 的地址（CONNECT_DESIGN.md §3.4/§6）。里程碑 C4：抽成自由函数，`resolve_peer`（发送/
-/// 按需拉取文件）与 `sync_exchange`（远程索引同步）共用同一套阶梯，不再各自维护一份、
-/// 容易跑偏（此前 `fetch_file`/`sync_exchange` 都只查 mDNS，是本里程碑要补的缺口）。
-/// 三档都没解析出来时返回 `None`——调用方仍可能靠中继兜底（见
+/// 综合 mDNS 在线快照 → 落库最后地址 → 查对端自己的服务器（`server_hint`，配对时交换，
+/// PROTOCOL.md §17）→ 查本机自己配置的服务器 解析出一个可尝试连接的地址
+/// （CONNECT_DESIGN.md §3.4/§6）。里程碑 C4：抽成自由函数，`resolve_peer`（发送/按需
+/// 拉取文件）与 `sync_exchange`（远程索引同步）共用同一套阶梯，不再各自维护一份、容易
+/// 跑偏（此前 `fetch_file`/`sync_exchange` 都只查 mDNS，是该里程碑要补的缺口）。四档都
+/// 没解析出来时返回 `None`——调用方仍可能靠中继兜底（见
 /// `aa4c_transfer::TransferService::dial`），不是「设备不可达」的终审。
+///
+/// `server_hint` 这一档解决的是**跨服务器好友的地址解析**：两个用户各自搭了独立的
+/// `aa4c-server`、互为朋友后，只要对端在自己的服务器上注册过且把本机加入了允许名单
+/// （配对即互相加入，见 `server_link::run_persistent_session` 的 `allow_list` 构造），
+/// 本机凭自己的身份证书直接查对端的服务器就能拿到端点，服务器端不需要额外协作。
+/// **仍是已知缩小范围**：这只解决"查到地址"，中继/打洞信令目前仍只会打向本机自己配置的
+/// 服务器（`RelayDialer`/`PunchDialer`/`SignalChannel` 未变）——两台互不知情的独立服务器
+/// 之间没有公共撮合点，真正的跨服务器中继/打洞需要服务器间联邦协议，是单独的、后置的
+/// 项目（CONNECT_DESIGN.md §12"多服务器联邦"）。查到的地址如果是可直连的（对端有公网 IP，
+/// 或双方恰好同局域网只是还没被 mDNS 发现），直连依然会成功；对端在 NAT 后不可直连时，
+/// 这一档查到的地址会直连失败，仍旧落到中继/打洞兜底（同现状）。
 pub(crate) async fn resolve_addr(
     store: &Store,
     discovery: &DiscoveryService,
@@ -553,9 +576,19 @@ pub(crate) async fn resolve_addr(
     {
         return Some(addr);
     }
-    if let Some(rec) = store.get_device(device_id).await.ok().flatten() {
-        if let Some(addr) = rec.last_addr.as_deref().and_then(|s| s.parse().ok()) {
-            return Some(addr);
+    let rec = store.get_device(device_id).await.ok().flatten();
+    if let Some(addr) = rec
+        .as_ref()
+        .and_then(|r| r.last_addr.as_deref())
+        .and_then(|s| s.parse().ok())
+    {
+        return Some(addr);
+    }
+    if let Some(hint) = rec.as_ref().and_then(|r| r.server_hint.as_deref()) {
+        if let Ok(endpoints) = server_link::lookup_once(identity, hint, device_id).await {
+            if let Some(addr) = endpoints.into_iter().next() {
+                return Some(addr);
+            }
         }
     }
     remote_lookup(store, identity, fallback_name, fallback_save_dir, device_id).await

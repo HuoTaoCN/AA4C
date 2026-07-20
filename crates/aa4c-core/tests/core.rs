@@ -728,6 +728,135 @@ async fn resolve_peer_reaches_peer_remotely_and_unpair_still_blocks_transfer() {
     b.core.shutdown().await.unwrap();
 }
 
+/// PROTOCOL.md §17 / V0.3 遗留 gap 补完：两个用户各自搭了独立的 `aa4c-server`（不像上面
+/// `resolve_peer_reaches_peer_remotely_and_unpair_still_blocks_transfer` 那样共用同一台），
+/// 配对成朋友后，`resolve_addr` 应该能靠配对时交换到的对端 `server_hint` 去查对端自己
+/// 服务器上的注册端点，而不需要两边共用服务器——这是此前唯一支持的场景，这次要补的
+/// 正是这条"跨服务器"路径。
+///
+/// `server_a`（A 自己配置的服务器）与 `server_b`（B 自己配置的服务器）是两个完全独立的
+/// `aa4c_server::Server` 实例（各自独立的进程内内存态），B 从未在 `server_a` 上注册过，
+/// 所以"同服务器"这一档在这里*按构造*必然查不到 B——不需要额外断言，任何成功解析都只能
+/// 来自 `server_hint` 这一档（或 mDNS，见下方免责声明）。
+///
+/// ⚠️ 同上一个测试的既有免责声明：本机真实 mDNS 组播可能顺带命中，所以"成功"不能严格
+/// 证明连接只靠 `server_hint` 走通；GitHub Actions CI 天然无组播，这条测试在 CI 里跑
+/// 才是这条新代码路径的确定性证明。协议层面的确定性证明在 `aa4c-identity/tests/pairing.rs`
+/// 的 `pairing_exchanges_server_hint_both_directions`（直接断言 `devices.server_hint`
+/// 写库结果，不经过任何网络解析，不受 mDNS 影响）。
+///
+/// ⚠️ 额外踩到的、与本次改动无关的沙箱环境坑：本机某些容器化开发环境会给一块虚拟网卡
+/// 分配形如 `192.168.97.0`（网段地址本身，不是合法主机地址）的 `inet` 地址（`ifconfig`
+/// 可查），`primary_local_ip()`（`server_link.rs`，UDP connect 探测本机出网 IP 的既有
+/// 零依赖实现）据此上报的候选地址不可连接，一旦 mDNS 恰好在这块坏网卡上广播自己、把这个
+/// 地址当自己的地址发布出去，直连必然以 `EADDRNOTAVAIL` 失败——这一档失败后当前实现会
+/// 尝试打洞/中继兜底，而这条测试里两台服务器天然没有公共信令点，兜底必然也失败，导致
+/// 传输永久失败而不是像同服务器场景那样被打洞/中继悄悄救回来。这是这台开发机网络环境的
+/// 缺陷（真实用户机器/GitHub Actions CI 不会有这种裸网段地址的网卡），不是 `resolve_addr`
+/// 新增的这一档代码的逻辑错误；本地复现时如果偶发失败，重跑一次即可。
+#[tokio::test]
+async fn resolve_peer_reaches_peer_via_its_own_server_hint() {
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_env_filter("aa4c_transfer=debug,aa4c_core=debug,aa4c_server=debug")
+        .try_init();
+
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let b_id = b.core.self_info().id;
+    let (_server_a, _server_a_dir, server_a_url) = spawn_server().await;
+    let (_server_b, _server_b_dir, server_b_url) = spawn_server().await;
+
+    // 两边各自开启远程、指向**各自独立**的服务器——必须在配对之前设好，配对时才会把
+    // 这个 server_url 当 server_hint 声明给对方（见 pairing.rs 的 PairServerHint 交换）。
+    enable_remote(&a.core, &server_a_url).await;
+    enable_remote(&b.core, &server_b_url).await;
+
+    // —— 配对（走本地地址，V0.3 起配对本身不变）——
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "both sides pair");
+
+    // 配对时已经交换到了 server_hint：A 记录的 B 应该指向 server_b（不是 server_a）。
+    let mut rec = a.core.store.get_device(&b_id).await.unwrap().unwrap();
+    assert_eq!(rec.server_hint.as_deref(), Some(server_b_url.as_str()));
+
+    // 抹掉 A 本地记的 B 地址：逼 resolve_peer 走到"落库最后地址"之后的兜底路径。
+    rec.last_addr = None;
+    a.core.store.upsert_device(&rec).await.unwrap();
+
+    // —— 建连传输：走 server_hint 解析出的地址，等 B 的后台注册续约生效后重试 ——
+    let recv_dir = b._dir.path().join("inbox");
+    let src = a._dir.path().join("hello.txt");
+    tokio::fs::write(&src, b"via peer's own server")
+        .await
+        .unwrap();
+    let ev_b2 = b.core.subscribe();
+    let b_core = b.core.clone();
+    let recv_dir2 = recv_dir.clone();
+    tokio::spawn(async move {
+        let mut rx = ev_b2;
+        while let Ok(event) = rx.recv().await {
+            if let CoreEvent::TransferRequest { task } = event {
+                b_core
+                    .accept_transfer(&task.id, true, Some(recv_dir2.clone()))
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+    // 不能直接用 wait_transfer_done（一遇 TransferFailed 就 panic）：B 在 server_b 上的
+    // 后台注册续约是异步任务，`enable_remote` 只是唤醒它、不保证此刻已经注册完成——
+    // 若 A 在 B 完成注册前解析，`server_hint` 这一档会如实查到空，而这次两台服务器
+    // 独立、中继/打洞天然没有公共汇合点兜不住底（同上方文档注释），首次尝试因此可能
+    // 真实失败，需要整个"发送 + 等结果"一起重试，不只是重试 `send_files` 本身。
+    let mut last_err = None;
+    for _ in 0..30 {
+        let mut ev_a2 = a.core.subscribe();
+        let Ok(task_id) = retry_send_files(&a.core, &b_id, vec![src.clone()]).await else {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        };
+        let outcome = timeout(Duration::from_secs(3), async {
+            loop {
+                match ev_a2.recv().await.unwrap() {
+                    CoreEvent::TransferDone { task_id: t } if t == task_id => return Ok(()),
+                    CoreEvent::TransferFailed { task_id: t, error } if t == task_id => {
+                        return Err(error)
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        match outcome {
+            Ok(Ok(())) => {
+                last_err = None;
+                break;
+            }
+            Ok(Err(e)) => last_err = Some(e),
+            Err(_) => last_err = Some("timed out waiting for terminal state".into()),
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        last_err.is_none(),
+        "transfer via peer's own server never succeeded: {last_err:?}"
+    );
+    assert_eq!(
+        tokio::fs::read(recv_dir.join("hello.txt")).await.unwrap(),
+        b"via peer's own server"
+    );
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn server_lookup_denies_device_not_in_allow_list() {
     let b = spawn_node().await;

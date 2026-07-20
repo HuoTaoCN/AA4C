@@ -37,10 +37,11 @@ impl IncomingPairDispatch for PairDispatch {
         cert_id: DeviceId,
         device: DeviceInfo,
         public_key: [u8; 32],
+        proto: u16,
     ) {
         if let Err(e) = self
             .pairing
-            .handle_dispatched(stream, cert_id, device, public_key)
+            .handle_dispatched(stream, cert_id, device, public_key, proto)
         {
             tracing::warn!(error = %e, "failed to dispatch incoming pairing");
         }

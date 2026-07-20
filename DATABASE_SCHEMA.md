@@ -231,27 +231,30 @@ CREATE INDEX idx_sync_conflicts_path ON sync_conflicts(rel_path);
 ## 4c. V0.3 表结构（远程连接 + 分享）
 
 > 对应 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（AA Connect）。§4c.0（`devices.server_hint`
-> 列 + `settings` KV）**已实现**（迁移 `006_server_hint.sql`，user_version=6，里程碑 C2）；
+> 列 + `settings` KV）**已实现**（迁移 `006_server_hint.sql`，user_version=6，里程碑 C2；
+> 配对时线路层交换后补完，见 PROTOCOL.md §17）；
 > §4c.1/4c.2（`shares`/`share_access`）**已实现**（迁移 `007_shares.sql`，user_version=7，
 > 里程碑 C6）。
 > 连接配置复用现有 `settings` KV 表（不新增表）：**`server_url`**（自建 `aa4c-server` 地址，
 > 格式 `aa4c://host:port#<证书指纹前16位hex>`，中继端点由服务器下发、不单独配置）、
 > **`enable_remote`**（远程总开关，**默认 `false`**）。
 
-### 4c.0 devices 增列 —— 对端 home server（CONNECT_DESIGN §3.4，已实现列，里程碑 C2）
+### 4c.0 devices 增列 —— 对端 home server（CONNECT_DESIGN §3.4，列+查询里程碑 C2，配对时线路层交换 V0.3 遗留 gap 补完）
 
 ```sql
 ALTER TABLE devices ADD COLUMN server_hint TEXT;  -- 对端自建服务器地址（含指纹），可空
 ```
 
-- **列已建、查询逻辑已接（`resolve_peer` 的 Lookup 兜底）；但配对协议尚未交换这个字段**——
-  `PairRequest`/`PairAccept`/`DeviceInfo` 是既有 bincode 结构体变体，追加字段会破坏 v1/v2
-  解码，需要一条新的追加消息才能安全传递，目前恒为 `NULL`（里程碑 C2 有意缩小的范围，见
-  PROTOCOL.md §11、HANDOFF.md）。
-- 现状：`resolve_peer` 的远程兜底只向**自己配置的服务器**查询（`aa4c-core::server_link`），
-  覆盖「自己的多台设备共用同一服务器」这一主场景；跨服务器的好友寻址（真正用到
-  `server_hint` 挑选对端服务器）留待 `server_hint` 的线路层交换实现后才生效。
-- 纯局域网设备（对端未配置服务器）为 NULL，行为退化为 V0.2。
+- **配对时线路层交换已实现**（`Message::PairServerHint` 追加变体，proto ≥ 5，PROTOCOL.md
+  §17，V0.3 遗留 gap 补完）：`PairRequest`/`PairAccept`/`DeviceInfo` 是既有 bincode 结构体
+  变体，直接加字段会破坏 v1/v2 解码，改走一条新增的追加消息，双方在配对成功前的最后一步
+  互相声明自己当前配置的 `server_url`（`enable_remote=false` 时为 `NULL`）。proto < 5 的
+  旧对端不认识这条消息，两端都不发送，`server_hint` 保持配对前的旧值（通常仍是 `NULL`）。
+- 现状：`resolve_addr`（`resolve_peer`/`sync_exchange` 共用的解析阶梯）新增一档查询对端
+  自己的 `server_hint` 服务器，不再局限于「自己的多台设备共用同一服务器」这一种场景——
+  两个用户各自搭独立 `aa4c-server` 互为朋友后也能查到对方地址。新鲜度同 `last_addr`：只在
+  配对时写一次，不做持续刷新，需要更新时重新配对即可。
+- 纯局域网设备（对端未配置服务器，或对端 proto < 5）为 NULL，行为退化为 V0.2。
 
 ### 4c.1 shares —— 分享记录（CONNECT_DESIGN §7，已实现，里程碑 C6）
 

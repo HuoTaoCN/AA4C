@@ -336,12 +336,13 @@ enum ServerMessage {
   发生**——覆盖式 `Register` 本身就是吊销机制，不需要任何显式吊销协议，下一次注册的名单
   里没有对方，查询立刻查不到。未注册 / 已过期 / 不在名单内**一律回空列表、不区分原因**，
   防止藉此探测 DeviceId 是否存在。
-- **寻址规则**（C2 缩小范围）：`resolve_peer` 目前只向**自己配置的服务器**查询，覆盖
-  「自己的多台设备天然共用同一服务器」这一主场景；`devices.server_hint`
-  （对端 home server 地址）列已建表，但**配对协议尚未交换这个字段**——`PairRequest`/
-  `PairAccept`/`DeviceInfo` 是既有 bincode 结构体变体，追加字段会破坏 v1/v2 解码，需要
-  一条新的追加消息才能安全传递，留给后续里程碑（随连接阶梯/打洞一起补齐）。跨服务器的
-  好友寻址在此之前不可用，是已知、有意缩小的范围（见 HANDOFF.md）。
+- **寻址规则**：`resolve_addr`（`resolve_peer`/`sync_exchange` 共用的解析阶梯）除了向
+  **自己配置的服务器**查询（覆盖「自己的多台设备天然共用同一服务器」这一场景）之外，
+  还会查对端自己的 `server_hint` 服务器（`devices.server_hint` 列，配对时经 `PairServerHint`
+  交换，proto ≥ 5，详见 §17）——两个用户各自搭独立服务器互为朋友时也能查到对方地址，
+  这是对 C2 当初有意缩小范围的补完（见 HANDOFF.md）。**仍缩小的范围**：打洞/中继信令
+  目前仍只会打向本机自己配置的服务器，跨服务器的信令联邦需要服务器间协议，是独立的、
+  后置的项目（CONNECT_DESIGN.md §12「多服务器联邦」）。
 
 ## 12. 连接建立顺序（ICE-like）
 
@@ -443,3 +444,53 @@ ShareRequest { token: String }   // C→S，打开分享链接的一方发
   连接异常关闭，看不到真正原因）。修法：两处都先查一次 `store.get_device(peer_id)`，
   已知设备才落库；未知设备跳过任务记录，只走 `share_access` 审计（协议本身不受影响）。
   详见 DATABASE_SCHEMA.md §4c.1、CONNECT_DESIGN.md §7.3/§12。
+
+## 17. 配对时交换 server_hint（`PairServerHint`，proto ≥ 5，已实现，V0.3 遗留 gap 补完）
+
+```
+A（发起方）                          B（接收方）
+   │── Hello / HelloAck ─────────────│  proto = min(A, B)
+   │── PairRequest ──────────────────▶│
+   │◀───── PairAccept ────────────────│
+   │── PairConfirm ──────────────────▶│  （PIN 确认后，同 §6）
+   │◀───────────────── PairConfirm ───│
+   │                                  │  proto ≥ 5 时才继续，否则直接写库、流程结束
+   │── PairServerHint{可选,自己的} ───▶│
+   │◀──── PairServerHint{可选,对方} ───│
+   │        双方写库 devices.server_hint，配对完成
+```
+
+**不修改既有 `PairRequest`/`PairAccept`**（同 §13 `ResumeReport` 的既有原则）：它们携带的
+`DeviceInfo` 是 bincode 位置编码的既有结构体，直接加字段会让所有已配对过的旧版本客户端
+解码失败（bincode 不是自描述格式，不能像 protobuf 那样跳过未知字段）。改为追加一个新变体：
+
+```rust
+PairServerHint {
+    server_hint: Option<String>,
+}
+```
+
+- **确定性交换**（不是尝试性的）：双方协商 `proto ≥ 5`（`SERVER_HINT_PROTO_VERSION`）时，
+  在 §6 状态机的双向 `PairConfirm` 互相确认**之后**、写库**之前**，两端都**必定**发送这条
+  消息（哪怕 `server_hint` 为空）并等待读取对方那条；proto < 5 的一方根本不认识这个变体，
+  两端都不发送，行为与旧版完全一致（同 §13 的 gate 惯例）。
+- **`server_hint` 的值**：发送方自己当前配置的 home server 地址（`Settings.server_url`），
+  仅当 `Settings.enable_remote = true` 时才非空——语义与 `orchestrate::share_link()` 生成
+  分享链接时决定要不要带 `host_server` 完全一致（未开启远程时不暗示一个没在实际生效的
+  服务器）。
+- **写库时机与覆盖规则**：收到的 `server_hint`（可能是 `None`）直接覆盖
+  `devices.server_hint`，不做「保留旧值」的特殊处理——这次协商到的值就是最新事实。
+  proto < 5（未协商）时才保留已存的旧值，行为等价于该字段从未被这次配对触碰过。
+- **用途**：`aa4c-core::orchestrate::resolve_addr`（`resolve_peer`/`sync_exchange` 共用的
+  地址解析阶梯，见 §12 表格「对端解析收口」条目）新增一档——查对端自己的 `server_hint`
+  服务器，不要求本机也在那台服务器上注册过（`Lookup` 鉴权只看目标设备自己的允许名单，
+  详见 §11/§15「DeviceId 枚举扫描」一行）。这条能解决「两个用户各自搭了独立
+  `aa4c-server`」场景下互相找不到对方的问题（此前只覆盖「自己的多台设备共用同一服务器」
+  这一种场景）。**仍是已知缩小范围**：这只解决「查到对方地址」，中继/打洞信令目前仍只会
+  打向本机自己配置的服务器（两台互不知情的独立服务器之间没有公共撮合点，真正的跨服务器
+  中继/打洞信令联邦需要服务器间协议，是独立的、后置的项目，见 CONNECT_DESIGN.md §12
+  「多服务器联邦」）。
+- **新鲜度承诺同 `last_addr`**：只在配对成功那一刻交换一次，之后不做持续刷新（配对之后
+  一方改了 `server_url`，已配对的朋友不会自动收到通知）——`last_addr` 字段本来就是这个
+  精度基准（`upsert_device` 只在配对时调用一次），`server_hint` 沿用同一惯例，不新增一条
+  专门的刷新通道；需要更新时重新走一次配对流程即可。

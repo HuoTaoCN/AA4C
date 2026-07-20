@@ -62,7 +62,7 @@ pub(crate) async fn run_incoming(
     if let Message::PairRequest { device, public_key } = first {
         return match svc.pair_dispatch.get() {
             Some(dispatch) => {
-                dispatch.dispatch(stream, cert_id, device, public_key);
+                dispatch.dispatch(stream, cert_id, device, public_key, proto);
                 Ok(())
             }
             None => {
