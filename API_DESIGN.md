@@ -449,7 +449,8 @@ pub struct CoreConfig {
 所有 Command 失败时返回 `{ code: string, message: string }`，`code` 取 `Aa4cError` 的变体名（如 `not_paired`）。
 
 > 本表未逐一列出 V0.2/V0.3 陆续新增的全部 Command（如 `set_trust_level`、同步/统一视图相关的
-> 几个 Command）——它们与上面列出的同构（Core 方法 1:1 映射），签名以 `apps/desktop/src/lib/api.ts`
+> 几个 Command），也未追加 V0.4（下载中心批量操作等）与 V0.5（归档/AI，见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)）
+> 新增的 Command——它们与上面列出的同构（Core 方法 1:1 映射），签名以 `apps/desktop/src/lib/api.ts`
 > 为准；本表只保证覆盖 V0.1 基线 + 里程碑 C6（分享链接）新增部分。
 
 ### 9.2 Events（前端 `listen`）

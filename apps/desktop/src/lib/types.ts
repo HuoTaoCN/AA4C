@@ -77,6 +77,11 @@ export interface Settings {
   /** BT 空闲做种超时（分钟），null = 不限——多久没有上传活动就停止做种，
    * 不是"总做种时长"（里程碑 D3）。 */
   btIdleSeedingLimitMinutes: number | null;
+  /** 归档根目录，必须在 saveDir/downloadDir 子树之外（里程碑 AI1）。 */
+  archiveRoot: string;
+  /** 自动归档总闸（下载完成后跑规则引擎），默认开启；真正的保守闸门在每条规则
+   * 各自的 enabled（默认停用），见 ARCHIVE_DESIGN.md §2.3（里程碑 AI1）。 */
+  archiveAutoEnabled: boolean;
 }
 
 /** 一次连接实际走的档位（里程碑 C4 连接质量 + C5 打洞，见 CONNECT_DESIGN.md §2）。
@@ -180,6 +185,83 @@ export interface DownloadTask {
   createdAt: number;
 }
 
+/** 内置类别（不可增删，标签才是用户的自由维度，见 ARCHIVE_DESIGN.md §2.1）。 */
+export type ArchiveCategory =
+  | "model"
+  | "image"
+  | "video"
+  | "audio"
+  | "document"
+  | "ebook"
+  | "archive"
+  | "installer"
+  | "code"
+  | "subtitle"
+  | "other";
+
+/** 规则匹配条件；categories 为空数组视为"任意类别都匹配"（里程碑 AI1）。 */
+export interface ArchiveMatch {
+  categories: ArchiveCategory[];
+  extensions: string[] | null;
+  glob: string | null;
+  minSize: number | null;
+  maxSize: number | null;
+}
+
+/** 目标目录模板占位符：{类别} {年} {月} {扩展名} {模型.架构} {模型.名称} {模型.量化}，
+ * 缺值时用"未知"，绝不失败中断（ARCHIVE_DESIGN.md §2.3）。 */
+export interface ArchiveAction {
+  targetTemplate: string;
+  tags: string[];
+}
+
+/** 一条归档规则（里程碑 AI1，ARCHIVE_DESIGN.md §2.3）。新建时 id 传空串，
+ * 后端会生成 uuid 再返回完整规则。 */
+export interface ArchiveRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  position: number;
+  matcher: ArchiveMatch;
+  action: ArchiveAction;
+  /** unix 毫秒。 */
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** GGUF 头解析出的模型元数据，仅"模型"类别的 ArchiveEntry 非 null
+ * （ARCHIVE_DESIGN.md §2.2）。 */
+export interface ModelMeta {
+  architecture: string | null;
+  name: string | null;
+  sizeLabel: string | null;
+  fileType: string | null;
+  contextLength: number | null;
+}
+
+/** 一条被归档引擎移动/纳管的文件记录。 */
+export interface ArchiveEntry {
+  id: string;
+  currentPath: string;
+  category: ArchiveCategory;
+  size: number;
+  modelMeta: ModelMeta | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 一条移动历史（撤销要靠 id，ARCHIVE_DESIGN.md §2.4）。ruleId 为 null 代表手动归档。 */
+export interface ArchiveLogEntry {
+  id: number;
+  entryId: string;
+  fromPath: string;
+  toPath: string;
+  ruleId: string | null;
+  /** unix 毫秒。 */
+  at: number;
+  undone: boolean;
+}
+
 /** Command 失败时后端返回的形状（API_DESIGN §9.1）。 */
 export interface CommandError {
   code: string;
@@ -242,4 +324,11 @@ export interface DownloadDonePayload {
 export interface DownloadFailedPayload {
   taskId: string;
   error: string;
+}
+/** ruleId 为 null 代表手动归档（里程碑 AI1）。 */
+export interface ArchiveAppliedPayload {
+  entryId: string;
+  fromPath: string;
+  toPath: string;
+  ruleId?: string;
 }

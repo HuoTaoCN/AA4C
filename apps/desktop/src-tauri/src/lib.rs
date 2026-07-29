@@ -148,6 +148,13 @@ pub fn run() {
             commands::pause_all_downloads,
             commands::resume_all_downloads,
             commands::clear_completed_downloads,
+            commands::list_archive_rules,
+            commands::save_archive_rule,
+            commands::delete_archive_rule,
+            commands::list_archive_entries,
+            commands::archive_files,
+            commands::undo_archive,
+            commands::list_archive_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

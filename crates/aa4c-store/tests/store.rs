@@ -2,8 +2,9 @@
 
 use aa4c_store::{DeviceRecord, Store};
 use aa4c_types::{
-    Direction, FileStatus, Platform, RemoteIndexEntry, ScopeKind, SyncFileEntry, TransferFile,
-    TransferStatus, TransferTask, TrustLevel,
+    ArchiveAction, ArchiveCategory, ArchiveMatch, ArchiveRule, Direction, FileStatus, ModelMeta,
+    Platform, RemoteIndexEntry, ScopeKind, SyncFileEntry, TagSource, TransferFile, TransferStatus,
+    TransferTask, TrustLevel,
 };
 
 fn sample_device(id: &str, trusted: bool) -> DeviceRecord {
@@ -64,7 +65,7 @@ async fn migration_is_idempotent_across_reopens() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 8); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares + 008_downloads
+    assert_eq!(version, 9); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares + 008_downloads + 009_archive
 }
 
 #[tokio::test]
@@ -569,4 +570,228 @@ async fn delete_completed_downloads_removes_rows() {
         .delete_completed_downloads(&["does-not-exist".to_string()])
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn update_download_save_path_rewrites_path() {
+    use aa4c_types::DownloadKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    store
+        .insert_download("gid1", DownloadKind::Http, "https://example.com/a.zip")
+        .await
+        .unwrap();
+    store
+        .update_download_status(
+            "gid1",
+            aa4c_types::DownloadStatus::Complete,
+            None,
+            Some("/downloads/a.zip"),
+        )
+        .await
+        .unwrap();
+
+    // 归档把文件挪走后回填新路径（ARCHIVE_DESIGN.md §2.4）
+    store
+        .update_download_save_path("gid1", "/archive/model/a.zip")
+        .await
+        .unwrap();
+    let fetched = store.get_download("gid1").await.unwrap().unwrap();
+    assert_eq!(fetched.save_path.as_deref(), Some("/archive/model/a.zip"));
+
+    // 任务不存在时静默跳过，不报错
+    store
+        .update_download_save_path("does-not-exist", "/whatever")
+        .await
+        .unwrap();
+}
+
+fn sample_archive_rule(id: &str, position: i64, enabled: bool) -> ArchiveRule {
+    ArchiveRule {
+        id: id.into(),
+        name: format!("规则-{id}"),
+        enabled,
+        position,
+        matcher: ArchiveMatch {
+            categories: vec![ArchiveCategory::Model],
+            extensions: Some(vec!["gguf".into()]),
+            glob: None,
+            min_size: None,
+            max_size: None,
+        },
+        action: ArchiveAction {
+            target_template: "{类别}/{模型.架构}".into(),
+            tags: vec!["模型".into()],
+        },
+        created_at: 0, // 由 Store 维护
+        updated_at: 0,
+    }
+}
+
+#[tokio::test]
+async fn archive_rule_crud_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    store
+        .upsert_archive_rule(&sample_archive_rule("r2", 2, false))
+        .await
+        .unwrap();
+    store
+        .upsert_archive_rule(&sample_archive_rule("r1", 1, true))
+        .await
+        .unwrap();
+
+    // 按 position 升序返回（不是插入顺序）
+    let rules = store.list_archive_rules().await.unwrap();
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0].id, "r1");
+    assert!(rules[0].enabled);
+    assert_eq!(rules[0].matcher.categories, vec![ArchiveCategory::Model]);
+    assert_eq!(rules[0].action.target_template, "{类别}/{模型.架构}");
+    assert_eq!(rules[1].id, "r2");
+    assert!(rules[0].created_at > 0, "created_at 由 Store 写入");
+
+    // upsert 同 id：覆盖内容，created_at 不重置
+    let created_at_before = rules[0].created_at;
+    let mut updated = sample_archive_rule("r1", 5, false);
+    updated.name = "改名后".into();
+    store.upsert_archive_rule(&updated).await.unwrap();
+    let after = store.list_archive_rules().await.unwrap();
+    let r1 = after.iter().find(|r| r.id == "r1").unwrap();
+    assert_eq!(r1.name, "改名后");
+    assert_eq!(r1.position, 5);
+    assert!(!r1.enabled);
+    assert!(
+        r1.created_at <= created_at_before + 5,
+        "created_at 未被重置为很久之后的值"
+    );
+
+    store.delete_archive_rule("r1").await.unwrap();
+    assert_eq!(store.list_archive_rules().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn archive_entry_tags_and_log_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    let meta = ModelMeta {
+        architecture: Some("qwen3".into()),
+        name: Some("Qwen3-4B".into()),
+        size_label: Some("4B".into()),
+        file_type: Some("Q4_K_M".into()),
+        context_length: Some(8192),
+    };
+    let entry = store
+        .insert_archive_entry(
+            "e1",
+            "/archive/model/qwen3/Qwen3-4B-Q4_K_M.gguf",
+            ArchiveCategory::Model,
+            2_000_000_000,
+            Some(&meta),
+        )
+        .await
+        .unwrap();
+    assert_eq!(entry.id, "e1");
+    assert_eq!(
+        entry.model_meta.as_ref().unwrap().architecture.as_deref(),
+        Some("qwen3")
+    );
+
+    let fetched = store.get_archive_entry("e1").await.unwrap().unwrap();
+    assert_eq!(fetched.category, ArchiveCategory::Model);
+    assert_eq!(fetched.size, 2_000_000_000);
+    assert_eq!(fetched.model_meta, Some(meta));
+
+    let listed = store.list_archive_entries().await.unwrap();
+    assert_eq!(listed.len(), 1);
+
+    // 非模型类别 model_meta 应为 None（不是空对象）
+    store
+        .insert_archive_entry(
+            "e2",
+            "/archive/image/x.png",
+            ArchiveCategory::Image,
+            100,
+            None,
+        )
+        .await
+        .unwrap();
+    let e2 = store.get_archive_entry("e2").await.unwrap().unwrap();
+    assert_eq!(e2.model_meta, None);
+
+    // 标签：追加、列出、重复追加幂等、撤销时摘掉
+    store
+        .add_archive_tags(
+            "e1",
+            &[
+                ("模型".to_string(), TagSource::Rule),
+                ("qwen".to_string(), TagSource::User),
+            ],
+        )
+        .await
+        .unwrap();
+    store
+        .add_archive_tags("e1", &[("模型".to_string(), TagSource::Rule)])
+        .await
+        .unwrap(); // 重复不报错
+    let tags = store.list_archive_tags("e1").await.unwrap();
+    assert_eq!(tags.len(), 2);
+    store.remove_archive_tag("e1", "qwen").await.unwrap();
+    assert_eq!(store.list_archive_tags("e1").await.unwrap().len(), 1);
+
+    // 移动历史：追加、按 id 查、列表、标记撤销
+    let log = store
+        .append_archive_log(
+            "e1",
+            "/downloads/a.gguf",
+            "/archive/model/qwen3/a.gguf",
+            Some("r1"),
+        )
+        .await
+        .unwrap();
+    assert!(log.id > 0);
+    assert!(!log.undone);
+    let fetched_log = store.get_archive_log_entry(log.id).await.unwrap().unwrap();
+    assert_eq!(fetched_log.rule_id.as_deref(), Some("r1"));
+    assert_eq!(store.list_archive_log().await.unwrap().len(), 1);
+    store.mark_archive_log_undone(log.id).await.unwrap();
+    assert!(
+        store
+            .get_archive_log_entry(log.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .undone
+    );
+
+    // 手动归档（无规则）：rule_id 为 None
+    let manual_log = store
+        .append_archive_log("e2", "/downloads/x.png", "/archive/image/x.png", None)
+        .await
+        .unwrap();
+    assert_eq!(manual_log.rule_id, None);
+
+    // 路径更新（撤销时把 current_path 改回去）
+    store
+        .update_archive_entry_path("e1", "/downloads/a.gguf")
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_archive_entry("e1")
+            .await
+            .unwrap()
+            .unwrap()
+            .current_path,
+        "/downloads/a.gguf"
+    );
+
+    // 级联：删除 entry 时 tags 一并清掉（外键 ON DELETE CASCADE）
+    store.delete_archive_entry("e1").await.unwrap();
+    assert!(store.get_archive_entry("e1").await.unwrap().is_none());
+    assert_eq!(store.list_archive_tags("e1").await.unwrap().len(), 0);
 }

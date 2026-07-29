@@ -1,8 +1,10 @@
 # AA4C 归档与 AI 设计（V0.5「AI」）
 
-> 状态：**设计定稿 v1（2026-07-21），未实现**。对应 [ROADMAP.md](ROADMAP.md) V0.5（AI 归档：自动分类 / 标签 / 模型管理 / 本地知识库）；实现拆解见 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 AI1–AI5）。
+> 状态：**里程碑 AI1（规则式归档，无 AI）已实现**；AI2–AI5（AI 引擎/建议/知识库/发布）仍是设计稿。对应 [ROADMAP.md](ROADMAP.md) V0.5（AI 归档：自动分类 / 标签 / 模型管理 / 本地知识库）；实现拆解见 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 AI1–AI5）。
 >
-> **本文档的关键外部事实已在规划阶段真机实证（不是从网页/文档抄的），标注在 §3.1**：llama.cpp 官方 release 对我们全部目标平台提供预编译二进制（这一点直接决定了引擎分发方案——对照 V0.4 D1 的教训：aria2 官方"有二进制"的说法对 2/3 平台不成立，被迫自建整条构建流水线）；`llama-server` 的环境变量配置与 `LLAMA_API_KEY` 已在本机真实二进制上验证。实现期仍需补验证的项集中列在 §11。
+> **本文档的关键外部事实已在规划阶段真机实证（不是从网页/文档抄的），标注在 §3.1**：llama.cpp 官方 release 对我们全部目标平台提供预编译二进制（这一点直接决定了引擎分发方案——对照 V0.4 D1 的教训：aria2 官方"有二进制"的说法对 2/3 平台不成立，被迫自建整条构建流水线）；`llama-server` 的环境变量配置与 `LLAMA_API_KEY` 已在本机真实二进制上验证。实现期仍需补验证的项集中列在 §11。AI1 落地时又补了一处实证：`general.file_type` 的量化枚举/名称表直接抓取 llama.cpp `master` 分支的 `include/llama.h`（`enum llama_ftype`）与 `src/llama-model-loader.cpp`（`llama_ftype_name()`），不是凭记忆猜的，见 §2.2 与 `crates/aa4c-core/src/archive/gguf.rs` 模块文档。
+>
+> **AI1 实现偏差**（相对本文档 v1 定稿的小出入，均为实现期发现的必要补充，不是推翻设计）：① `list_archive_log` 补成第 7 个 Command——§9/V0.5_IMPLEMENTATION_PLAN 原列的 6 个 Command 里漏了这条，但归档页"最近动作"要展示每条历史并挂"撤销"按钮，前端必须能拿到 `log_id`，`aa4c-store::list_archive_log` 早就有、只是没接 Tauri 层；② 新增 `apply_selected_rule`（引擎内部函数，不是新 Command）——手动归档的"应用某条规则"路径需要**跳过**该规则自己的匹配条件强制执行（用户主动选了就是要覆盖自动匹配结果），复用 `apply_rules`/`apply_manual` 共用的落库尾段（`record_move`/`finish_move`），细节见引擎源码注释；③ 公历年/月不引入 `chrono`，手写 Howard Hinnant 的 `civil_from_days` 算法（已用 5 个真实日期交叉验证，含世纪闰年边界与纪元本身），维持"不为小需求加依赖"的一贯克制。
 >
 > 给执行 Agent：本文 §10 是已确认决策，**不要重开已定案的讨论**；发现实现与设计冲突时，参照 DOWNLOAD_DESIGN.md v1→v2→v3 的先例——先把冲突事实核实清楚，把修订写进本文档（记入"实现偏差"），再改代码。
 
@@ -184,7 +186,7 @@ AI 建议（AI3）**不落库**——待确认建议是易失的内存态（应�
 
 | 里程碑 | 内容 | 交付判定（真实环境，不是单测绿了就算） |
 |--------|------|------|
-| AI1 | 文档先行 + 规则式归档（识别/GGUF/规则/移动/撤销/UI）| 真实下载一个小 .gguf → 自动移入模型目录、记录可撤销；同步范围警示可见 |
+| AI1 ✅ 已实现 | 文档先行 + 规则式归档（识别/GGUF/规则/移动/撤销/UI）| 真实下载一个小 .gguf → 自动移入模型目录、记录可撤销；同步范围警示可见 |
 | AI2 | `aa4c-engine` 重构 + llama-server 接入 + 打包腿 + 模型库 | 真机加载真实模型 `/health` 就绪；三平台安装包含引擎且 AppImage 验证通过 |
 | AI3 | AI 标签/分类建议（批量队列 + 待确认流） | 真实模型对一批真实文件出建议，采纳后标签/移动生效 |
 | AI4 | 知识库（摄入/检索/流式问答） | 对自己的笔记目录问一个问题得到带引用的回答 |

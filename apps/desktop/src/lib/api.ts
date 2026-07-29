@@ -3,6 +3,9 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  ArchiveEntry,
+  ArchiveLogEntry,
+  ArchiveRule,
   CommandError,
   DeviceInfo,
   DownloadTask,
@@ -73,6 +76,21 @@ export const api = {
   pauseAllDownloads: () => invoke<number>("pause_all_downloads"),
   resumeAllDownloads: () => invoke<number>("resume_all_downloads"),
   clearCompletedDownloads: () => invoke<number>("clear_completed_downloads"),
+
+  listArchiveRules: () => invoke<ArchiveRule[]>("list_archive_rules"),
+  saveArchiveRule: (rule: ArchiveRule) =>
+    invoke<ArchiveRule>("save_archive_rule", { rule }),
+  deleteArchiveRule: (id: string) =>
+    invoke<void>("delete_archive_rule", { id }),
+  listArchiveEntries: () => invoke<ArchiveEntry[]>("list_archive_entries"),
+  archiveFiles: (paths: string[], ruleId?: string, targetDir?: string) =>
+    invoke<string[]>("archive_files", {
+      paths,
+      ruleId: ruleId ?? null,
+      targetDir: targetDir ?? null,
+    }),
+  undoArchive: (logId: number) => invoke<void>("undo_archive", { logId }),
+  listArchiveLog: () => invoke<ArchiveLogEntry[]>("list_archive_log"),
 };
 
 /** 把任意 reject 值收敛为 CommandError（兜底未知错误）。 */

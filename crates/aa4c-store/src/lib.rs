@@ -15,8 +15,9 @@ use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aa4c_types::{
-    Aa4cError, DeviceId, DownloadKind, DownloadStatus, DownloadTask, RemoteIndexEntry, Result,
-    ScopeKind, Share, ShareAccess, SyncConflict, SyncFileEntry, SyncScope, TaskId, TransferFile,
+    Aa4cError, ArchiveCategory, ArchiveEntry, ArchiveLogEntry, ArchiveRule, ArchiveTag, DeviceId,
+    DownloadKind, DownloadStatus, DownloadTask, ModelMeta, RemoteIndexEntry, Result, ScopeKind,
+    Share, ShareAccess, SyncConflict, SyncFileEntry, SyncScope, TagSource, TaskId, TransferFile,
     TransferStatus, TransferTask, TrustLevel,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1037,6 +1038,328 @@ impl Store {
         })
         .await
     }
+
+    /// 归档把文件挪走后回填新路径——不更新的话「打开所在文件夹」会指向空位
+    /// （ARCHIVE_DESIGN.md §2.4）。任务不存在（已被批量清除等）时静默跳过，同
+    /// `update_download_status` 一贯的"不强行要求调用方先查存在性"风格。
+    pub async fn update_download_save_path(&self, id: &str, new_path: &str) -> Result<()> {
+        let id = id.to_string();
+        let new_path = new_path.to_string();
+        self.call(move |conn| {
+            conn.execute(
+                "UPDATE download_tasks SET save_path = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, new_path, now_ms()],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    // —— 归档（ARCHIVE_DESIGN.md §2/§4，里程碑 AI1）——
+
+    /// 插入或更新一条归档规则（`upsert`：`id` 由调用方生成，新建走 core 侧 uuid）。
+    /// `created_at` 仅首次插入写入，`updated_at` 总是刷新为当前时间（同 `upsert_device`
+    /// 的既有模式），不信调用方传入的时间戳，避免误传旧值。
+    pub async fn upsert_archive_rule(&self, rule: &ArchiveRule) -> Result<()> {
+        let id = rule.id.clone();
+        let name = rule.name.clone();
+        let enabled = rule.enabled;
+        let position = rule.position;
+        let match_json =
+            serde_json::to_string(&rule.matcher).map_err(|e| Aa4cError::Db(e.to_string()))?;
+        let action_json =
+            serde_json::to_string(&rule.action).map_err(|e| Aa4cError::Db(e.to_string()))?;
+        self.call(move |conn| {
+            let now = now_ms();
+            conn.execute(
+                "INSERT INTO archive_rules
+                   (id, name, enabled, position, match_json, action_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                   name = excluded.name,
+                   enabled = excluded.enabled,
+                   position = excluded.position,
+                   match_json = excluded.match_json,
+                   action_json = excluded.action_json,
+                   updated_at = excluded.updated_at",
+                params![id, name, enabled, position, match_json, action_json, now],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn delete_archive_rule(&self, id: &str) -> Result<()> {
+        let id = id.to_string();
+        self.call(move |conn| {
+            conn.execute("DELETE FROM archive_rules WHERE id = ?1", params![id])
+                .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 按 `position` 升序列出全部规则（匹配时取第一条命中的，见 ARCHIVE_DESIGN §2.3）。
+    pub async fn list_archive_rules(&self) -> Result<Vec<ArchiveRule>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, name, enabled, position, match_json, action_json,
+                            created_at, updated_at
+                     FROM archive_rules ORDER BY position ASC",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], row_to_archive_rule)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 新建一条归档记录（文件被规则或手动归档移动之后）。`id` 由调用方生成
+    /// （core 侧 uuid，同 `insert_download` 的"id 由调用方决定"惯例，只是这里没有
+    /// 引擎原生 id 可复用）。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_archive_entry(
+        &self,
+        id: &str,
+        current_path: &str,
+        category: ArchiveCategory,
+        size: u64,
+        model_meta: Option<&ModelMeta>,
+    ) -> Result<ArchiveEntry> {
+        let id = id.to_string();
+        let current_path = current_path.to_string();
+        let model_meta_json = model_meta
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| Aa4cError::Db(e.to_string()))?;
+        let model_meta_owned = model_meta.cloned();
+        self.call(move |conn| {
+            let now = now_ms();
+            conn.execute(
+                "INSERT INTO archive_entries
+                   (id, current_path, category, size, model_meta_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                params![
+                    id,
+                    current_path,
+                    category.as_str(),
+                    i64::try_from(size).unwrap_or(i64::MAX),
+                    model_meta_json,
+                    now,
+                ],
+            )
+            .map_err(db_err)?;
+            Ok(ArchiveEntry {
+                id,
+                current_path,
+                category,
+                size,
+                model_meta: model_meta_owned,
+                created_at: now,
+                updated_at: now,
+            })
+        })
+        .await
+    }
+
+    pub async fn get_archive_entry(&self, id: &str) -> Result<Option<ArchiveEntry>> {
+        let id = id.to_string();
+        self.call(move |conn| {
+            conn.query_row(
+                "SELECT id, current_path, category, size, model_meta_json,
+                        created_at, updated_at
+                 FROM archive_entries WHERE id = ?1",
+                params![id],
+                row_to_archive_entry,
+            )
+            .optional()
+            .map_err(db_err)
+        })
+        .await
+    }
+
+    /// 按创建时间倒序列出全部归档记录（同 `list_downloads` 的既有排序惯例）。
+    pub async fn list_archive_entries(&self) -> Result<Vec<ArchiveEntry>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, current_path, category, size, model_meta_json,
+                            created_at, updated_at
+                     FROM archive_entries ORDER BY created_at DESC",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], row_to_archive_entry)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 撤销把记录的路径改回去时用（正向移动已经在 `insert_archive_entry` 里写过一次）。
+    pub async fn update_archive_entry_path(&self, id: &str, new_path: &str) -> Result<()> {
+        let id = id.to_string();
+        let new_path = new_path.to_string();
+        self.call(move |conn| {
+            conn.execute(
+                "UPDATE archive_entries SET current_path = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, new_path, now_ms()],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn delete_archive_entry(&self, id: &str) -> Result<()> {
+        let id = id.to_string();
+        self.call(move |conn| {
+            conn.execute("DELETE FROM archive_entries WHERE id = ?1", params![id])
+                .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 追加标签（`INSERT OR IGNORE`——同一 entry 重复打同一个 tag 不报错，幂等）。
+    pub async fn add_archive_tags(
+        &self,
+        entry_id: &str,
+        tags: &[(String, TagSource)],
+    ) -> Result<()> {
+        let entry_id = entry_id.to_string();
+        let tags = tags.to_vec();
+        self.call(move |conn| {
+            for (tag, source) in &tags {
+                conn.execute(
+                    "INSERT OR IGNORE INTO archive_tags (entry_id, tag, source) VALUES (?1, ?2, ?3)",
+                    params![entry_id, tag, source.as_str()],
+                )
+                .map_err(db_err)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// 撤销时摘掉本次归档追加的标签（ARCHIVE_DESIGN §2.4）。
+    pub async fn remove_archive_tag(&self, entry_id: &str, tag: &str) -> Result<()> {
+        let entry_id = entry_id.to_string();
+        let tag = tag.to_string();
+        self.call(move |conn| {
+            conn.execute(
+                "DELETE FROM archive_tags WHERE entry_id = ?1 AND tag = ?2",
+                params![entry_id, tag],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn list_archive_tags(&self, entry_id: &str) -> Result<Vec<ArchiveTag>> {
+        let entry_id = entry_id.to_string();
+        self.call(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT entry_id, tag, source FROM archive_tags WHERE entry_id = ?1")
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map(params![entry_id], row_to_archive_tag)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 记一条移动历史，返回带自增 id 的完整记录（撤销要靠这个 id 定位）。
+    pub async fn append_archive_log(
+        &self,
+        entry_id: &str,
+        from_path: &str,
+        to_path: &str,
+        rule_id: Option<&str>,
+    ) -> Result<ArchiveLogEntry> {
+        let entry_id = entry_id.to_string();
+        let from_path = from_path.to_string();
+        let to_path = to_path.to_string();
+        let rule_id = rule_id.map(str::to_owned);
+        self.call(move |conn| {
+            let now = now_ms();
+            conn.execute(
+                "INSERT INTO archive_log (entry_id, from_path, to_path, rule_id, at, undone)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                params![entry_id, from_path, to_path, rule_id, now],
+            )
+            .map_err(db_err)?;
+            let id = conn.last_insert_rowid();
+            Ok(ArchiveLogEntry {
+                id,
+                entry_id,
+                from_path,
+                to_path,
+                rule_id,
+                at: now,
+                undone: false,
+            })
+        })
+        .await
+    }
+
+    pub async fn get_archive_log_entry(&self, id: i64) -> Result<Option<ArchiveLogEntry>> {
+        self.call(move |conn| {
+            conn.query_row(
+                "SELECT id, entry_id, from_path, to_path, rule_id, at, undone
+                 FROM archive_log WHERE id = ?1",
+                params![id],
+                row_to_archive_log,
+            )
+            .optional()
+            .map_err(db_err)
+        })
+        .await
+    }
+
+    /// 按时间倒序列出全部移动历史（归档页「最近归档动作」用）。
+    pub async fn list_archive_log(&self) -> Result<Vec<ArchiveLogEntry>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, entry_id, from_path, to_path, rule_id, at, undone
+                     FROM archive_log ORDER BY at DESC",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], row_to_archive_log)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    pub async fn mark_archive_log_undone(&self, id: i64) -> Result<()> {
+        self.call(move |conn| {
+            conn.execute(
+                "UPDATE archive_log SET undone = 1 WHERE id = ?1",
+                params![id],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 fn open_and_migrate(path: &Path) -> Result<Connection> {
@@ -1166,6 +1489,69 @@ fn row_to_download(row: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadTask> {
         downloaded_bytes: get_u64(row, 6)?,
         error: row.get(7)?,
         created_at: row.get(8)?,
+    })
+}
+
+fn row_to_archive_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArchiveRule> {
+    let match_json: String = row.get(4)?;
+    let action_json: String = row.get(5)?;
+    Ok(ArchiveRule {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        enabled: row.get(2)?,
+        position: row.get(3)?,
+        matcher: parse_json_col(4, &match_json)?,
+        action: parse_json_col(5, &action_json)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+fn row_to_archive_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArchiveEntry> {
+    let model_meta_json: Option<String> = row.get(4)?;
+    let model_meta = model_meta_json
+        .map(|raw| parse_json_col::<ModelMeta>(4, &raw))
+        .transpose()?;
+    Ok(ArchiveEntry {
+        id: row.get(0)?,
+        current_path: row.get(1)?,
+        category: parse_col(row, 2)?,
+        size: get_u64(row, 3)?,
+        model_meta,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+    })
+}
+
+fn row_to_archive_tag(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArchiveTag> {
+    Ok(ArchiveTag {
+        entry_id: row.get(0)?,
+        tag: row.get(1)?,
+        source: parse_col(row, 2)?,
+    })
+}
+
+fn row_to_archive_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArchiveLogEntry> {
+    Ok(ArchiveLogEntry {
+        id: row.get(0)?,
+        entry_id: row.get(1)?,
+        from_path: row.get(2)?,
+        to_path: row.get(3)?,
+        rule_id: row.get(4)?,
+        at: row.get(5)?,
+        undone: row.get(6)?,
+    })
+}
+
+/// 解析存成 TEXT 的 JSON 列（`match_json`/`action_json`/`model_meta_json`）；解析失败
+/// 视为列类型错误，同 `parse_col` 对非法枚举值的既有处理方式。
+fn parse_json_col<T: serde::de::DeserializeOwned>(idx: usize, raw: &str) -> rusqlite::Result<T> {
+    serde_json::from_str(raw).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            idx,
+            rusqlite::types::Type::Text,
+            format!("invalid json: {e}").into(),
+        )
     })
 }
 

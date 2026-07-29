@@ -540,6 +540,110 @@ impl Core {
     pub async fn clear_completed_downloads(&self) -> Result<usize> {
         self.download_service()?.clear_completed().await
     }
+
+    // —— 归档（ARCHIVE_DESIGN.md，里程碑 AI1）——
+
+    pub async fn list_archive_rules(&self) -> Result<Vec<aa4c_types::ArchiveRule>> {
+        self.store.list_archive_rules().await
+    }
+
+    /// 新建或更新一条规则：`rule.id` 为空串代表新建（core 侧生成 uuid），非空则更新
+    /// 同 id 的既有规则（`upsert_archive_rule` 本身就是 upsert 语义）。返回写库后的
+    /// 完整规则（含服务器生成的 `created_at`/`updated_at`）。
+    pub async fn save_archive_rule(
+        &self,
+        mut rule: aa4c_types::ArchiveRule,
+    ) -> Result<aa4c_types::ArchiveRule> {
+        if rule.id.is_empty() {
+            rule.id = uuid::Uuid::new_v4().to_string();
+        }
+        self.store.upsert_archive_rule(&rule).await?;
+        self.store
+            .list_archive_rules()
+            .await?
+            .into_iter()
+            .find(|r| r.id == rule.id)
+            .ok_or_else(|| Aa4cError::Protocol("rule not found immediately after upsert".into()))
+    }
+
+    pub async fn delete_archive_rule(&self, id: String) -> Result<()> {
+        self.store.delete_archive_rule(&id).await
+    }
+
+    pub async fn list_archive_entries(&self) -> Result<Vec<aa4c_types::ArchiveEntry>> {
+        self.store.list_archive_entries().await
+    }
+
+    /// 批量归档指定路径（归档页/统一文件视图的手动路径，ARCHIVE_DESIGN §2.4）。
+    /// `rule_id`：手选某条规则强制应用（不检查该规则的匹配条件）；`target_dir`：
+    /// 完全自定义目标目录（不经任何规则，不追加标签）；两者都不给时退回自动匹配
+    /// （同下载完成钩子一样的 `apply_rules`，允许对任意文件"现在就跑一遍规则"）。
+    /// 单个文件失败只跳过、记录原因，不中断整批（同 D3 批量操作的既有取舍）；
+    /// 返回值是"实际归档成功的路径列表"。
+    pub async fn archive_files(
+        &self,
+        paths: Vec<String>,
+        rule_id: Option<String>,
+        target_dir: Option<String>,
+    ) -> Result<Vec<String>> {
+        let archive_root = PathBuf::from(self.get_settings().await?.archive_root);
+        let mut succeeded = Vec::new();
+        for path in paths {
+            let source = PathBuf::from(&path);
+            let result: Result<Option<PathBuf>> = if let Some(rule_id) = &rule_id {
+                crate::archive::engine::apply_selected_rule(
+                    &self.store,
+                    &self.events,
+                    &archive_root,
+                    &source,
+                    rule_id,
+                )
+                .await
+                .map(|(_, to)| Some(to))
+            } else if let Some(target_dir) = &target_dir {
+                crate::archive::engine::apply_manual(
+                    &self.store,
+                    &self.events,
+                    &source,
+                    &PathBuf::from(target_dir),
+                )
+                .await
+                .map(|(_, to)| Some(to))
+            } else {
+                crate::archive::engine::apply_rules(
+                    &self.store,
+                    &self.events,
+                    &archive_root,
+                    &source,
+                )
+                .await
+                .map(|outcome| match outcome {
+                    crate::archive::engine::ApplyOutcome::Applied { to_path, .. } => Some(to_path),
+                    crate::archive::engine::ApplyOutcome::NoRuleMatched => None,
+                })
+            };
+            match result {
+                Ok(Some(to_path)) => succeeded.push(to_path.to_string_lossy().into_owned()),
+                Ok(None) => {
+                    tracing::debug!(path = %path, "archive_files: no rule matched, skipped")
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path, error = %e, "archive_files: failed, skipped")
+                }
+            }
+        }
+        Ok(succeeded)
+    }
+
+    pub async fn undo_archive(&self, log_id: i64) -> Result<()> {
+        crate::archive::engine::undo(&self.store, log_id).await
+    }
+
+    /// 按时间倒序列出全部移动历史（归档页「最近归档动作」分区用，每条配一个撤销按钮，
+    /// 需要 `log_id` 才能调用 `undo_archive`）。
+    pub async fn list_archive_log(&self) -> Result<Vec<aa4c_types::ArchiveLogEntry>> {
+        self.store.list_archive_log().await
+    }
 }
 
 /// 综合 mDNS 在线快照 → 落库最后地址 → 查对端自己的服务器（`server_hint`，配对时交换，

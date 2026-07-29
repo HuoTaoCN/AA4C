@@ -1565,3 +1565,80 @@ async fn bt_download_routes_through_core_orchestration() {
 
     core.shutdown().await.unwrap();
 }
+
+/// 归档全链路（V0.5 里程碑 AI1，ARCHIVE_DESIGN.md）：走 `Core` 公开方法（不是绕过编排层
+/// 直接测内部模块），验证 `Core::start` 已经如实装配好了归档能力——预设规则真的写进去了、
+/// 手动归档 Command 真的移动了真实文件、`list_archive_log`/`undo_archive` 真的能把它挪回去。
+#[tokio::test]
+async fn archive_lifecycle_through_core_orchestration() {
+    let a = spawn_node().await;
+
+    // Core::start 应该已经写入 5 条默认停用的预设规则（AI1.5 的 ensure_default_rules）。
+    let presets = a.core.list_archive_rules().await.unwrap();
+    assert_eq!(presets.len(), 5);
+    assert!(presets.iter().all(|r| !r.enabled));
+
+    // 新建一条自定义规则并启用（走 Command 层的 save_archive_rule，id 传空串触发新建）。
+    let saved = a
+        .core
+        .save_archive_rule(aa4c_types::ArchiveRule {
+            id: String::new(),
+            name: "测试文档规则".into(),
+            enabled: true,
+            position: 99,
+            matcher: aa4c_types::ArchiveMatch {
+                categories: vec![aa4c_types::ArchiveCategory::Document],
+                extensions: None,
+                glob: None,
+                min_size: None,
+                max_size: None,
+            },
+            action: aa4c_types::ArchiveAction {
+                target_template: "文档测试".into(),
+                tags: vec!["测试".into()],
+            },
+            created_at: 0,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+    assert!(
+        !saved.id.is_empty(),
+        "core should generate a uuid for the new rule"
+    );
+
+    // 手动归档（target_dir 覆写，不经规则匹配）：真实文件、真实移动。
+    let src = a._dir.path().join("note.txt");
+    tokio::fs::write(&src, b"hello archive").await.unwrap();
+    let target_dir = a._dir.path().join("manual-target");
+    let done = a
+        .core
+        .archive_files(
+            vec![src.to_string_lossy().into_owned()],
+            None,
+            Some(target_dir.to_string_lossy().into_owned()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(done.len(), 1);
+    let to_path = std::path::PathBuf::from(&done[0]);
+    assert!(!src.exists());
+    assert!(to_path.exists());
+
+    let entries = a.core.list_archive_entries().await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].current_path, to_path.to_string_lossy());
+
+    // 撤销：从 list_archive_log 拿到 log id，undo 之后文件应该回到原位。
+    let log = a.core.list_archive_log().await.unwrap();
+    assert_eq!(log.len(), 1);
+    assert!(log[0].rule_id.is_none(), "manual archive has no rule_id");
+    a.core.undo_archive(log[0].id).await.unwrap();
+    assert!(src.exists(), "file should be back at its original path");
+    assert!(!to_path.exists());
+
+    a.core.delete_archive_rule(saved.id).await.unwrap();
+    assert_eq!(a.core.list_archive_rules().await.unwrap().len(), 5);
+
+    a.core.shutdown().await.unwrap();
+}

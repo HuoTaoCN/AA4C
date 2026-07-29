@@ -17,6 +17,8 @@ pub(crate) const KEY_DOWNLOAD_SPEED_LIMIT_KBPS: &str = "download_speed_limit_kbp
 pub(crate) const KEY_DOWNLOAD_CONCURRENCY: &str = "download_concurrency";
 pub(crate) const KEY_BT_RATIO_LIMIT: &str = "bt_ratio_limit";
 pub(crate) const KEY_BT_IDLE_SEEDING_LIMIT_MINUTES: &str = "bt_idle_seeding_limit_minutes";
+pub(crate) const KEY_ARCHIVE_ROOT: &str = "archive_root";
+pub(crate) const KEY_ARCHIVE_AUTO_ENABLED: &str = "archive_auto_enabled";
 
 /// 平台默认接收目录：`~/Downloads/AA4C`（取不到下载目录时退回临时目录）。
 pub(crate) fn default_save_dir() -> PathBuf {
@@ -31,6 +33,16 @@ pub(crate) fn default_save_dir() -> PathBuf {
 /// 内容自动索引、分享给全部完全信任设备（DOWNLOAD_DESIGN.md §5/§7，里程碑 D1）。
 pub(crate) fn default_download_dir() -> PathBuf {
     dirs::download_dir().unwrap_or_else(std::env::temp_dir)
+}
+
+/// 平台默认归档根目录：系统文档目录下的 `AA4C归档`（ARCHIVE_DESIGN.md §2.5，
+/// 里程碑 AI1）。同 `default_save_dir` 的取舍——落在文档目录而不是下载目录，
+/// 避免和 `download_dir` 产生嵌套歧义。
+pub(crate) fn default_archive_root() -> PathBuf {
+    dirs::document_dir()
+        .or_else(dirs::data_dir)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("AA4C归档")
 }
 
 /// 本机默认设备名：取 hostname 并去掉 mDNS 风格的 `.local` 等后缀；
@@ -90,6 +102,12 @@ pub(crate) async fn load(
         download_concurrency: get_json(store, KEY_DOWNLOAD_CONCURRENCY).await?,
         bt_ratio_limit: get_json(store, KEY_BT_RATIO_LIMIT).await?,
         bt_idle_seeding_limit_minutes: get_json(store, KEY_BT_IDLE_SEEDING_LIMIT_MINUTES).await?,
+        archive_root: get_json(store, KEY_ARCHIVE_ROOT)
+            .await?
+            .unwrap_or_else(|| default_archive_root().to_string_lossy().into_owned()),
+        archive_auto_enabled: get_json(store, KEY_ARCHIVE_AUTO_ENABLED)
+            .await?
+            .unwrap_or(true),
     })
 }
 
@@ -116,6 +134,8 @@ pub(crate) async fn save(store: &Store, s: &Settings) -> Result<()> {
         &s.bt_idle_seeding_limit_minutes,
     )
     .await?;
+    set_json(store, KEY_ARCHIVE_ROOT, &s.archive_root).await?;
+    set_json(store, KEY_ARCHIVE_AUTO_ENABLED, &s.archive_auto_enabled).await?;
     Ok(())
 }
 

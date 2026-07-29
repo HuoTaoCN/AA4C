@@ -63,9 +63,9 @@ export const CAPABILITIES: NavItem[] = [
     path: "/archive",
     name: "归档",
     icon: "🗂️",
-    built: false,
+    built: true,
     version: "V0.5",
-    desc: "手动或 AI 自动分类、打标签、归档到知识库 / 模型库",
+    desc: "按规则自动分类、打标签、归档到指定目录；AI 建议与知识库随后续版本上线",
   },
 ];
 

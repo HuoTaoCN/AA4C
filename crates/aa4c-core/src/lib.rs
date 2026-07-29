@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod archive;
 mod dispatch;
 mod orchestrate;
 mod server_link;
@@ -256,6 +257,18 @@ impl Core {
             ),
             None => None,
         };
+
+        // 12. 归档（ARCHIVE_DESIGN.md，里程碑 AI1）：首次启动写入五条停用的预设规则，
+        //     再起下载完成钩子（DownloadDone → 跑规则引擎，见 archive 模块文档）。
+        if let Err(e) = archive::engine::ensure_default_rules(&store).await {
+            tracing::warn!(error = %e, "ensure default archive rules failed");
+        }
+        archive::spawn_download_hook(
+            store.clone(),
+            events.clone(),
+            fallback_name.clone(),
+            save_dir_fallback.clone(),
+        );
 
         tracing::info!(
             device = %self_info.name,

@@ -109,6 +109,17 @@ pub enum CoreEvent {
         task_id: TaskId,
         error: String,
     },
+
+    /// 一次归档移动生效（V0.5 里程碑 AI1，ARCHIVE_DESIGN.md §2.4）：自动（下载完成钩子）
+    /// 或手动归档都会发这条，UI 据此刷新归档列表；`rule_id` 为 `None` 代表手动归档。
+    #[serde(rename_all = "camelCase")]
+    ArchiveApplied {
+        entry_id: String,
+        from_path: String,
+        to_path: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        rule_id: Option<String>,
+    },
 }
 
 impl CoreEvent {
@@ -130,6 +141,7 @@ impl CoreEvent {
             Self::DownloadProgress { .. } => "download_progress",
             Self::DownloadDone { .. } => "download_done",
             Self::DownloadFailed { .. } => "download_failed",
+            Self::ArchiveApplied { .. } => "archive_applied",
         }
     }
 }

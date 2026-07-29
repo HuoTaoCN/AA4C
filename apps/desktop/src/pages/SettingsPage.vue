@@ -24,6 +24,8 @@ const form = reactive<Settings>({
   downloadConcurrency: null,
   btRatioLimit: null,
   btIdleSeedingLimitMinutes: null,
+  archiveRoot: "",
+  archiveAutoEnabled: true,
 });
 // 服务器地址单独用字符串编辑（空字符串 ⇄ null，避免保存一个全是空格的"已配置"假象）
 const serverUrlInput = computed({
@@ -71,8 +73,8 @@ onMounted(async () => {
 function normalizePath(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
 }
-const downloadDirWarningScope = computed<SyncScope | null>(() => {
-  const target = normalizePath(form.downloadDir);
+function findOverlappingScope(path: string): SyncScope | null {
+  const target = normalizePath(path);
   if (!target) return null;
   return (
     scopes.value.find((s) => {
@@ -80,7 +82,14 @@ const downloadDirWarningScope = computed<SyncScope | null>(() => {
       return target === scopePath || target.startsWith(`${scopePath}/`);
     }) ?? null
   );
-});
+}
+const downloadDirWarningScope = computed<SyncScope | null>(() =>
+  findOverlappingScope(form.downloadDir),
+);
+// 归档根目录同样可能落在共享范围内（同下载目录一样的既有隔离原则，ARCHIVE_DESIGN §2.5）。
+const archiveRootWarningScope = computed<SyncScope | null>(() =>
+  findOverlappingScope(form.archiveRoot),
+);
 
 const paired = computed(() => devices.devices.filter((d) => d.trusted));
 
@@ -111,6 +120,11 @@ async function changeDir() {
 async function changeDownloadDir() {
   const picked = await settings.pickSaveDir();
   if (picked) form.downloadDir = picked;
+}
+
+async function changeArchiveRoot() {
+  const picked = await settings.pickSaveDir();
+  if (picked) form.archiveRoot = picked;
 }
 
 async function save() {
@@ -242,6 +256,41 @@ async function unpair(id: string) {
       </div>
 
       <p class="hint muted">改动需要重启应用后生效。</p>
+
+      <div class="actions">
+        <button class="btn btn-primary" :disabled="settings.saving" @click="save">
+          {{ settings.saving ? "保存中…" : "保存" }}
+        </button>
+      </div>
+    </div>
+
+    <h3>归档</h3>
+    <div class="card form">
+      <div class="field">
+        <label>归档根目录</label>
+        <div class="dir">
+          <span class="path">{{ form.archiveRoot || "默认归档目录" }}</span>
+          <button class="btn btn-ghost small" @click="changeArchiveRoot">更改</button>
+        </div>
+        <p v-if="archiveRootWarningScope" class="hint warn">
+          ⚠️ 这个目录在共享范围「{{
+            archiveRootWarningScope.kind === "inbox"
+              ? "收到的"
+              : archiveRootWarningScope.localPath
+          }}」内，归档到这里的文件会被同步给完全信任设备。
+        </p>
+      </div>
+
+      <div class="field row">
+        <label>下载完成后自动归档</label>
+        <label class="switch">
+          <input type="checkbox" v-model="form.archiveAutoEnabled" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="hint muted">
+        总开关；具体归到哪、要不要打标签由「归档」页里逐条规则决定，新规则默认停用。
+      </p>
 
       <div class="actions">
         <button class="btn btn-primary" :disabled="settings.saving" @click="save">

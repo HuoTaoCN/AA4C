@@ -351,14 +351,98 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
   C6 教训——不共用这张表就不会重蹈覆辙）。
 - 速度/ETA 不落库，只在事件里带、前端本地维护（同 `transfer_tasks` 的既有先例）。
 
-## 4f. 更远期预留（设计预告）
+## 4g. V0.5 表结构（归档，里程碑 AI1，设计定稿未实现）
 
-| 版本 | 表 | 用途 |
-|------|----|------|
-| V0.5 | `tags` / `file_tags` | AI 标签 |
-| V0.5 | `archive_rules` | 归档规则（匹配条件 → 目标目录） |
+> 对应 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md) §4、[V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)。
+> 迁移文件 `009_archive.sql`（user_version=9）。复用现有 `settings` KV 表新增两个 key：
+> **`archive_root`**（归档根目录，默认 `<系统文档目录>/AA4C归档`，必须与 `save_dir`/`download_dir`
+> 子树互不嵌套，同 `download_dir` 的既有隔离原则）、**`archive_auto_enabled`**（自动归档总闸，
+> 默认 `true`——真正的保守闸门在 `archive_rules.enabled` 逐条默认 `false`，见 ARCHIVE_DESIGN §2.3）。
 
-> 若 V0.5 文件索引规模超出 SQLite 舒适区（千万级行），再评估迁移 RocksDB；元数据表保留在 SQLite。
+```sql
+CREATE TABLE archive_rules (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    enabled      INTEGER NOT NULL DEFAULT 0,   -- 预设规则随迁移写入但默认停用
+    position     INTEGER NOT NULL,             -- 匹配顺序，取第一条命中的
+    match_json   TEXT NOT NULL,                -- {categories, extensions?, glob?, min_size?, max_size?}
+    action_json  TEXT NOT NULL,                -- {target_template, tags}
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+
+CREATE TABLE archive_entries (        -- 一条被归档引擎移动过的文件记录
+    id               TEXT PRIMARY KEY,
+    current_path     TEXT NOT NULL,
+    category         TEXT NOT NULL,
+    size             INTEGER NOT NULL,
+    model_meta_json  TEXT,            -- GGUF 元数据，仅「模型」类别非空
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+);
+
+CREATE TABLE archive_tags (
+    entry_id  TEXT NOT NULL REFERENCES archive_entries(id) ON DELETE CASCADE,
+    tag       TEXT NOT NULL,
+    source    TEXT NOT NULL CHECK (source IN ('rule','ai','user')),
+    PRIMARY KEY (entry_id, tag)
+);
+
+CREATE TABLE archive_log (            -- 移动历史，供撤销（ARCHIVE_DESIGN §2.4）
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id   TEXT NOT NULL,
+    from_path  TEXT NOT NULL,
+    to_path    TEXT NOT NULL,
+    rule_id    TEXT,                  -- NULL = 手动归档
+    at         INTEGER NOT NULL,
+    undone     INTEGER NOT NULL DEFAULT 0
+);
+```
+
+- `archive_entries` 与 `download_tasks`/`transfer_files` 等既有表**没有外键关联**——归档管理的是
+  "当前在归档根下的文件"这个事实本身，不关心它最初是怎么进来的（下载/传输/手动都一样处理），
+  同 §4e.1 devise 不复用 `transfer_tasks` 外键假设的既有教训一致；文件从下载任务移走后，
+  `download_tasks.save_path` 会被同步更新（`aa4c-store` 新方法，避免「打开所在文件夹」指向空位）。
+- `match_json`/`action_json` 用 JSON 存而不是拆列——匹配条件的字段组合随规则类型变化（是否有
+  扩展名集合/glob/大小范围），同 `settings` KV 的一贯做法，避免大量可空列。
+
+## 4h. V0.5 表结构（本地知识库，里程碑 AI4，设计定稿未实现）
+
+> 对应 ARCHIVE_DESIGN.md §6。迁移文件 `010_knowledge.sql`（user_version=10，AI1 之后独立一次迁移，
+> 不与 `009_archive.sql` 合并——两个里程碑之间隔着 AI2/AI3，先做的表不该等后做的表一起才落地）。
+
+```sql
+CREATE TABLE kb_sources (
+    id          TEXT PRIMARY KEY,
+    path        TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE kb_documents (
+    id          TEXT PRIMARY KEY,
+    source_id   TEXT NOT NULL REFERENCES kb_sources(id) ON DELETE CASCADE,
+    rel_path    TEXT NOT NULL,
+    mtime       INTEGER NOT NULL,
+    hash        TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE kb_chunks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_id     TEXT NOT NULL REFERENCES kb_documents(id) ON DELETE CASCADE,
+    seq        INTEGER NOT NULL,
+    text       TEXT NOT NULL,
+    embedding  BLOB NOT NULL,          -- f32 LE 拼接，暴力余弦检索，见 ARCHIVE_DESIGN §6
+    dims       INTEGER NOT NULL
+);
+```
+
+`Settings` 另新增 4 个 KV key（AI2 起）：`ai_models_dir`、`ai_chat_model`、`ai_embedding_model`、
+`ai_idle_timeout_minutes`——均可选，语义见 ARCHIVE_DESIGN §3.5/§3.3。
+
+> 若知识库规模超出 SQLite 暴力检索的舒适区（约 5 万 chunk，ARCHIVE_DESIGN §6 已给出 UI 警告线），
+> 再评估专用向量索引；个人场景目前不需要。
 
 ## 5. 迁移策略
 

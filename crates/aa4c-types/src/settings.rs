@@ -38,6 +38,12 @@ pub struct Settings {
     /// BT 空闲做种超时（分钟），`None` = 不限。Transmission 没有"总做种时长"概念，
     /// 这是"多久没有上传活动就停止做种"（`idle-seeding-limit`，DOWNLOAD_DESIGN.md §9）。
     pub bt_idle_seeding_limit_minutes: Option<u32>,
+    /// 归档根目录（默认系统文档目录下的 `AA4C归档`），必须与 `save_dir`/`download_dir`
+    /// 子树互不嵌套（同 `download_dir` 的既有隔离原则，ARCHIVE_DESIGN.md §2.5）。
+    pub archive_root: String,
+    /// 自动归档总闸（下载完成后是否跑规则引擎），默认开启——真正的保守闸门在每条
+    /// 规则各自的 `enabled`（默认停用），见 ARCHIVE_DESIGN.md §2.3。
+    pub archive_auto_enabled: bool,
 }
 
 #[cfg(test)]
@@ -58,6 +64,8 @@ mod tests {
             download_concurrency: Some(3),
             bt_ratio_limit: Some(2.0),
             bt_idle_seeding_limit_minutes: Some(30),
+            archive_root: "/Users/huo/Documents/AA4C归档".into(),
+            archive_auto_enabled: true,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["deviceName"], "Huo 的 MacBook");
@@ -73,6 +81,8 @@ mod tests {
         assert_eq!(json["downloadConcurrency"], 3);
         assert_eq!(json["btRatioLimit"], 2.0);
         assert_eq!(json["btIdleSeedingLimitMinutes"], 30);
+        assert_eq!(json["archiveRoot"], "/Users/huo/Documents/AA4C归档");
+        assert_eq!(json["archiveAutoEnabled"], true);
         let back: Settings = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }

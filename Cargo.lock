@@ -132,6 +132,8 @@ version = "0.4.0"
 dependencies = [
  "aa4c-types",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

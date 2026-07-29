@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+mod archive;
 mod device;
 mod download;
 mod error;
@@ -15,6 +16,10 @@ mod share;
 mod sync;
 mod transfer;
 
+pub use archive::{
+    ArchiveAction, ArchiveCategory, ArchiveEntry, ArchiveLogEntry, ArchiveMatch, ArchiveRule,
+    ArchiveTag, ModelMeta, TagSource,
+};
 pub use device::{DeviceId, DeviceInfo, Platform, TrustLevel};
 pub use download::{DownloadKind, DownloadStatus, DownloadTask};
 pub use error::{Aa4cError, Result};

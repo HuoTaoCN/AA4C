@@ -7,8 +7,9 @@ use std::sync::Arc;
 
 use aa4c_core::Core;
 use aa4c_types::{
-    Aa4cError, CoreEvent, DeviceInfo, DownloadTask, Settings, Share, ShareAccess, SyncConflict,
-    SyncFileEntry, SyncScope, TransferTask, TrustLevel, UnifiedFile,
+    Aa4cError, ArchiveEntry, ArchiveLogEntry, ArchiveRule, CoreEvent, DeviceInfo, DownloadTask,
+    Settings, Share, ShareAccess, SyncConflict, SyncFileEntry, SyncScope, TransferTask, TrustLevel,
+    UnifiedFile,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -238,6 +239,51 @@ pub async fn clear_completed_downloads(core: State<'_, Arc<Core>>) -> CmdResult<
     Ok(core.clear_completed_downloads().await?)
 }
 
+#[tauri::command]
+pub async fn list_archive_rules(core: State<'_, Arc<Core>>) -> CmdResult<Vec<ArchiveRule>> {
+    Ok(core.list_archive_rules().await?)
+}
+
+#[tauri::command]
+pub async fn save_archive_rule(
+    core: State<'_, Arc<Core>>,
+    rule: ArchiveRule,
+) -> CmdResult<ArchiveRule> {
+    Ok(core.save_archive_rule(rule).await?)
+}
+
+#[tauri::command]
+pub async fn delete_archive_rule(core: State<'_, Arc<Core>>, id: String) -> CmdResult<()> {
+    Ok(core.delete_archive_rule(id).await?)
+}
+
+#[tauri::command]
+pub async fn list_archive_entries(core: State<'_, Arc<Core>>) -> CmdResult<Vec<ArchiveEntry>> {
+    Ok(core.list_archive_entries().await?)
+}
+
+/// 手动归档（ARCHIVE_DESIGN §2.4）：`ruleId` 手选某条规则强制应用；`targetDir` 完全
+/// 自定义目标目录；两者都不给时退回自动匹配全部启用规则。返回实际归档成功的路径。
+#[tauri::command]
+pub async fn archive_files(
+    core: State<'_, Arc<Core>>,
+    paths: Vec<String>,
+    rule_id: Option<String>,
+    target_dir: Option<String>,
+) -> CmdResult<Vec<String>> {
+    Ok(core.archive_files(paths, rule_id, target_dir).await?)
+}
+
+#[tauri::command]
+pub async fn undo_archive(core: State<'_, Arc<Core>>, log_id: i64) -> CmdResult<()> {
+    Ok(core.undo_archive(log_id).await?)
+}
+
+#[tauri::command]
+pub async fn list_archive_log(core: State<'_, Arc<Core>>) -> CmdResult<Vec<ArchiveLogEntry>> {
+    Ok(core.list_archive_log().await?)
+}
+
 /// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。
 pub fn event_payload(event: &CoreEvent) -> Value {
     match event {
@@ -314,6 +360,22 @@ pub fn event_payload(event: &CoreEvent) -> Value {
         }
         CoreEvent::DownloadFailed { task_id, error } => {
             json!({ "taskId": task_id, "error": error })
+        }
+        CoreEvent::ArchiveApplied {
+            entry_id,
+            from_path,
+            to_path,
+            rule_id,
+        } => {
+            let mut payload = json!({
+                "entryId": entry_id,
+                "fromPath": from_path,
+                "toPath": to_path,
+            });
+            if let (Value::Object(map), Some(rule_id)) = (&mut payload, rule_id) {
+                map.insert("ruleId".to_string(), json!(rule_id));
+            }
+            payload
         }
     }
 }

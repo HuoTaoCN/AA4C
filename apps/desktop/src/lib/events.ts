@@ -8,6 +8,7 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 
+import { useArchiveStore } from "../stores/archive";
 import { useDeviceStore } from "../stores/devices";
 import { useDownloadStore } from "../stores/download";
 import { usePairingStore } from "../stores/pairing";
@@ -16,6 +17,7 @@ import { useSyncStore } from "../stores/sync";
 import { useToastStore } from "../stores/toast";
 import { useTransferStore } from "../stores/transfer";
 import type {
+  ArchiveAppliedPayload,
   DeviceInfo,
   DeviceLostPayload,
   DownloadDonePayload,
@@ -54,6 +56,7 @@ export async function startEventBridge(): Promise<UnlistenFn> {
   const sync = useSyncStore();
   const toast = useToastStore();
   const download = useDownloadStore();
+  const archive = useArchiveStore();
 
   const unlisten = await Promise.all([
     listen<DeviceInfo>("aa4c://device_found", (e) => devices.upsert(e.payload)),
@@ -119,6 +122,14 @@ export async function startEventBridge(): Promise<UnlistenFn> {
     listen<DownloadFailedPayload>("aa4c://download_failed", (e) => {
       download.onFailed(e.payload);
       toast.push("error", e.payload.error || "下载失败，请重试");
+    }),
+
+    // 归档（里程碑 AI1）：自动（下载完成钩子）或手动归档都会发这条。刷新下载列表
+    // 是因为归档会改写 download_tasks.save_path——不刷新的话"打开所在文件夹"
+    // 会指向文件挪走前的旧位置（ARCHIVE_DESIGN.md §2.4 明确点出的这个坑）。
+    listen<ArchiveAppliedPayload>("aa4c://archive_applied", () => {
+      archive.onApplied();
+      void download.load();
     }),
   ]);
 
