@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+mod ai;
 mod archive;
 mod device;
 mod download;
@@ -16,6 +17,7 @@ mod share;
 mod sync;
 mod transfer;
 
+pub use ai::{AiSlotStatus, AiStatus, LocalModel};
 pub use archive::{
     ArchiveAction, ArchiveCategory, ArchiveEntry, ArchiveLogEntry, ArchiveMatch, ArchiveRule,
     ArchiveTag, ModelMeta, TagSource,

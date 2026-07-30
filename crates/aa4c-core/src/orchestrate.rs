@@ -172,6 +172,25 @@ impl Core {
         {
             self.nudge_register();
         }
+        // 换了模型文件：让 AiService 知道新路径，正在跑的旧进程顺手停掉
+        // （ARCHIVE_DESIGN.md §3.3，见 AiService::set_model 文档）——不需要
+        // 重启应用，下一次 AI 请求就会用新模型懒启动。
+        if let Some(ai) = &self.ai {
+            if new.ai_chat_model != old.ai_chat_model {
+                ai.set_model(
+                    aa4c_ai::SlotKind::Chat,
+                    new.ai_chat_model.map(PathBuf::from),
+                )
+                .await;
+            }
+            if new.ai_embedding_model != old.ai_embedding_model {
+                ai.set_model(
+                    aa4c_ai::SlotKind::Embedding,
+                    new.ai_embedding_model.map(PathBuf::from),
+                )
+                .await;
+            }
+        }
         Ok(())
     }
 
@@ -643,6 +662,57 @@ impl Core {
     /// 需要 `log_id` 才能调用 `undo_archive`）。
     pub async fn list_archive_log(&self) -> Result<Vec<aa4c_types::ArchiveLogEntry>> {
         self.store.list_archive_log().await
+    }
+
+    // —— AI 模型库（ARCHIVE_DESIGN.md §3.5，里程碑 AI2.4）——
+
+    /// `self.ai` 为 `None` 时统一报 `Unavailable`——同 `download_service` 的既有先例。
+    fn ai_service(&self) -> Result<&Arc<aa4c_ai::AiService>> {
+        self.ai.as_ref().ok_or_else(|| {
+            Aa4cError::Unavailable("AI capability not available on this build".into())
+        })
+    }
+
+    /// 扫描 `ai_models_dir` 下的 `.gguf` 文件（递归一层：目录本身 + 各直接子目录，
+    /// 不深入更深层——ARCHIVE_DESIGN.md §3.5），逐个读头。单个文件解析失败（损坏/
+    /// 非 GGUF）直接跳过，不中断整批扫描（同批量操作"单个失败只跳过"的既有取舍）；
+    /// 目录本身不存在时返回空列表，不是错误（首次使用、还没下载任何模型时的
+    /// 正常状态）。
+    pub async fn list_local_models(&self) -> Result<Vec<aa4c_types::LocalModel>> {
+        let root = PathBuf::from(self.get_settings().await?.ai_models_dir);
+        let mut dirs_to_scan = vec![root.clone()];
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            dirs_to_scan.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+        }
+
+        let mut models = Vec::new();
+        for dir in dirs_to_scan {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("gguf") {
+                    continue;
+                }
+                if let Ok(meta) = crate::archive::gguf::parse_model_meta(&path) {
+                    models.push(aa4c_types::LocalModel {
+                        path: path.to_string_lossy().into_owned(),
+                        meta,
+                    });
+                }
+            }
+        }
+        Ok(models)
+    }
+
+    /// 两个槽位（对话/嵌入）各自的当前状态快照。
+    pub async fn get_ai_status(&self) -> Result<aa4c_types::AiStatus> {
+        let ai = self.ai_service()?;
+        Ok(aa4c_types::AiStatus {
+            chat: ai.status(aa4c_ai::SlotKind::Chat).await,
+            embedding: ai.status(aa4c_ai::SlotKind::Embedding).await,
+        })
     }
 }
 

@@ -19,6 +19,13 @@ pub(crate) const KEY_BT_RATIO_LIMIT: &str = "bt_ratio_limit";
 pub(crate) const KEY_BT_IDLE_SEEDING_LIMIT_MINUTES: &str = "bt_idle_seeding_limit_minutes";
 pub(crate) const KEY_ARCHIVE_ROOT: &str = "archive_root";
 pub(crate) const KEY_ARCHIVE_AUTO_ENABLED: &str = "archive_auto_enabled";
+pub(crate) const KEY_AI_MODELS_DIR: &str = "ai_models_dir";
+pub(crate) const KEY_AI_CHAT_MODEL: &str = "ai_chat_model";
+pub(crate) const KEY_AI_EMBEDDING_MODEL: &str = "ai_embedding_model";
+pub(crate) const KEY_AI_IDLE_TIMEOUT_MINUTES: &str = "ai_idle_timeout_minutes";
+
+/// 默认空闲超时（分钟）：ARCHIVE_DESIGN.md §3.3。
+pub(crate) const DEFAULT_AI_IDLE_TIMEOUT_MINUTES: u32 = 10;
 
 /// 平台默认接收目录：`~/Downloads/AA4C`（取不到下载目录时退回临时目录）。
 pub(crate) fn default_save_dir() -> PathBuf {
@@ -43,6 +50,13 @@ pub(crate) fn default_archive_root() -> PathBuf {
         .or_else(dirs::data_dir)
         .unwrap_or_else(std::env::temp_dir)
         .join("AA4C归档")
+}
+
+/// 默认模型目录：`<归档根>/模型`——与内置"模型"归档规则的目标目录故意同址
+/// （ARCHIVE_DESIGN.md §3.5：下载 GGUF → 自动归档进模型目录 → 模型库立即可见）。
+/// 依赖 `archive_root` 而不是独立算一个平台路径，所以是个函数不是常量。
+pub(crate) fn default_ai_models_dir(archive_root: &str) -> PathBuf {
+    PathBuf::from(archive_root).join("模型")
 }
 
 /// 本机默认设备名：取 hostname 并去掉 mDNS 风格的 `.local` 等后缀；
@@ -82,6 +96,13 @@ pub(crate) async fn load(
     fallback_name: &str,
     fallback_save_dir: &str,
 ) -> Result<Settings> {
+    // `ai_models_dir` 的默认值依赖 `archive_root`，提前算出来，struct 字面量里
+    // 才能直接引用（Rust struct 字面量按写出的顺序求值，但不能跨字段互相借用
+    // "正在构造中"的另一个字段）。
+    let archive_root = get_json(store, KEY_ARCHIVE_ROOT)
+        .await?
+        .unwrap_or_else(|| default_archive_root().to_string_lossy().into_owned());
+
     Ok(Settings {
         device_name: get_json(store, KEY_DEVICE_NAME)
             .await?
@@ -102,12 +123,22 @@ pub(crate) async fn load(
         download_concurrency: get_json(store, KEY_DOWNLOAD_CONCURRENCY).await?,
         bt_ratio_limit: get_json(store, KEY_BT_RATIO_LIMIT).await?,
         bt_idle_seeding_limit_minutes: get_json(store, KEY_BT_IDLE_SEEDING_LIMIT_MINUTES).await?,
-        archive_root: get_json(store, KEY_ARCHIVE_ROOT)
+        ai_models_dir: get_json(store, KEY_AI_MODELS_DIR)
             .await?
-            .unwrap_or_else(|| default_archive_root().to_string_lossy().into_owned()),
+            .unwrap_or_else(|| {
+                default_ai_models_dir(&archive_root)
+                    .to_string_lossy()
+                    .into_owned()
+            }),
         archive_auto_enabled: get_json(store, KEY_ARCHIVE_AUTO_ENABLED)
             .await?
             .unwrap_or(true),
+        ai_chat_model: get_json(store, KEY_AI_CHAT_MODEL).await?,
+        ai_embedding_model: get_json(store, KEY_AI_EMBEDDING_MODEL).await?,
+        ai_idle_timeout_minutes: get_json(store, KEY_AI_IDLE_TIMEOUT_MINUTES)
+            .await?
+            .unwrap_or(DEFAULT_AI_IDLE_TIMEOUT_MINUTES),
+        archive_root,
     })
 }
 
@@ -136,6 +167,15 @@ pub(crate) async fn save(store: &Store, s: &Settings) -> Result<()> {
     .await?;
     set_json(store, KEY_ARCHIVE_ROOT, &s.archive_root).await?;
     set_json(store, KEY_ARCHIVE_AUTO_ENABLED, &s.archive_auto_enabled).await?;
+    set_json(store, KEY_AI_MODELS_DIR, &s.ai_models_dir).await?;
+    set_json(store, KEY_AI_CHAT_MODEL, &s.ai_chat_model).await?;
+    set_json(store, KEY_AI_EMBEDDING_MODEL, &s.ai_embedding_model).await?;
+    set_json(
+        store,
+        KEY_AI_IDLE_TIMEOUT_MINUTES,
+        &s.ai_idle_timeout_minutes,
+    )
+    .await?;
     Ok(())
 }
 

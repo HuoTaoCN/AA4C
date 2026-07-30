@@ -20,8 +20,10 @@ dependencies = [
 name = "aa4c-core"
 version = "0.4.0"
 dependencies = [
+ "aa4c-ai",
  "aa4c-discovery",
  "aa4c-download",
+ "aa4c-engine",
  "aa4c-identity",
  "aa4c-proto",
  "aa4c-server",

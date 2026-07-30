@@ -18,6 +18,7 @@ mod unified;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use aa4c_ai::AiService;
 use aa4c_discovery::DiscoveryService;
 use aa4c_download::{DownloadService, SidecarSpawner};
 use aa4c_identity::{Identity, PairingManager};
@@ -58,6 +59,12 @@ pub struct CoreConfig {
     /// 各自的启动/健康检查失败互不影响对方——`None` 时只是 BT 能力不可用，
     /// HTTP/HTTPS/FTP 直链正常工作。
     pub bt_spawner: Option<Arc<dyn SidecarSpawner>>,
+    /// AI 引擎（llama-server，里程碑 AI2）子进程拉起器（ARCHIVE_DESIGN.md §3.2）：
+    /// 与下载引擎完全独立的另一个可选注入——`None` 时 AI 能力整体不存在（同
+    /// `download_spawner` 的总闸语义）；`Some` 之后具体槽位是否真的可用还要看
+    /// `ai_chat_model`/`ai_embedding_model` 有没有配置模型文件（`AiService`
+    /// 内部处理，同下载能力"注入了但没配置/起不来"的既有降级设计）。
+    pub ai_spawner: Option<Arc<dyn SidecarSpawner>>,
 }
 
 impl CoreConfig {
@@ -76,6 +83,7 @@ impl CoreConfig {
             },
             download_spawner: None,
             bt_spawner: None,
+            ai_spawner: None,
         }
     }
 }
@@ -90,6 +98,9 @@ pub struct Core {
     /// 下载中心服务（里程碑 D1）；`None` = 本平台/构建未接入下载能力
     /// （与"接入了但 aria2c 起不来"的降级是两种不同的不可用，见 `CoreConfig` 文档）。
     pub download: Option<Arc<DownloadService>>,
+    /// AI 引擎服务（里程碑 AI2）；`None` = 本平台/构建未接入 AI 能力（与
+    /// `download` 的既有语义一致，见 `CoreConfig::ai_spawner` 文档）。
+    pub ai: Option<Arc<AiService>>,
     events: EventSender,
     self_info: DeviceInfo,
     listen_port: u16,
@@ -270,6 +281,26 @@ impl Core {
             save_dir_fallback.clone(),
         );
 
+        // 13. AI 引擎（ARCHIVE_DESIGN.md §3，里程碑 AI2）：懒启动，`AiService::start`
+        //     本身不拉起任何进程，只登记配置——同下载中心一样，注入了 spawner 但没
+        //     配置模型/进程起不来都不阻塞 Core 启动（`AiService` 内部按需处理，见
+        //     `ensure_running` 的 `Unavailable` 语义）。PID 文件放数据目录下的
+        //     `ai-state/`（不与归档/同步等其他子目录混放）。
+        let ai = config.ai_spawner.map(|spawner| {
+            aa4c_ai::AiService::start(
+                spawner,
+                aa4c_ai::AiConfig {
+                    chat_model: current.ai_chat_model.clone().map(PathBuf::from),
+                    embedding_model: current.ai_embedding_model.clone().map(PathBuf::from),
+                    idle_timeout: std::time::Duration::from_secs(
+                        u64::from(current.ai_idle_timeout_minutes) * 60,
+                    ),
+                    state_dir: config.data_dir.join("ai-state"),
+                },
+                events.clone(),
+            )
+        });
+
         tracing::info!(
             device = %self_info.name,
             id = %self_info.id,
@@ -283,6 +314,7 @@ impl Core {
             transfer,
             pairing,
             download,
+            ai,
             events,
             self_info,
             listen_port: actual_port,
@@ -296,6 +328,9 @@ impl Core {
         self.discovery.stop().await?;
         if let Some(download) = &self.download {
             download.shutdown().await;
+        }
+        if let Some(ai) = &self.ai {
+            ai.shutdown().await;
         }
         tracing::info!("AA4C core shut down");
         Ok(())

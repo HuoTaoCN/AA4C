@@ -44,6 +44,16 @@ pub struct Settings {
     /// 自动归档总闸（下载完成后是否跑规则引擎），默认开启——真正的保守闸门在每条
     /// 规则各自的 `enabled`（默认停用），见 ARCHIVE_DESIGN.md §2.3。
     pub archive_auto_enabled: bool,
+    /// 模型文件目录（默认 `<归档根>/模型`——与内置"模型"归档规则的目标目录故意
+    /// 同址：下载 GGUF → 自动归档进模型目录 → 模型库立即可见，ARCHIVE_DESIGN.md
+    /// §3.5）。
+    pub ai_models_dir: String,
+    /// 当前选定的对话模型文件路径，`None` = 未配置（AI 能力整体 `Unavailable`）。
+    pub ai_chat_model: Option<String>,
+    /// 当前选定的嵌入模型文件路径，`None` = 未配置。
+    pub ai_embedding_model: Option<String>,
+    /// AI 引擎空闲多久后自动退出释放内存（分钟），默认 10（ARCHIVE_DESIGN.md §3.3）。
+    pub ai_idle_timeout_minutes: u32,
 }
 
 #[cfg(test)]
@@ -66,6 +76,10 @@ mod tests {
             bt_idle_seeding_limit_minutes: Some(30),
             archive_root: "/Users/huo/Documents/AA4C归档".into(),
             archive_auto_enabled: true,
+            ai_models_dir: "/Users/huo/Documents/AA4C归档/模型".into(),
+            ai_chat_model: Some("/Users/huo/Documents/AA4C归档/模型/qwen3-4b.gguf".into()),
+            ai_embedding_model: None,
+            ai_idle_timeout_minutes: 10,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["deviceName"], "Huo 的 MacBook");
@@ -83,6 +97,13 @@ mod tests {
         assert_eq!(json["btIdleSeedingLimitMinutes"], 30);
         assert_eq!(json["archiveRoot"], "/Users/huo/Documents/AA4C归档");
         assert_eq!(json["archiveAutoEnabled"], true);
+        assert_eq!(json["aiModelsDir"], "/Users/huo/Documents/AA4C归档/模型");
+        assert_eq!(
+            json["aiChatModel"],
+            "/Users/huo/Documents/AA4C归档/模型/qwen3-4b.gguf"
+        );
+        assert_eq!(json["aiEmbeddingModel"], serde_json::Value::Null);
+        assert_eq!(json["aiIdleTimeoutMinutes"], 10);
         let back: Settings = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
     }

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use aa4c_engine::SidecarSpawner;
-use aa4c_types::{Aa4cError, AiEngineStatus, AiSlot, CoreEvent, Result};
+use aa4c_types::{Aa4cError, AiEngineStatus, AiSlot, AiSlotStatus, CoreEvent, Result};
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, Mutex};
 
@@ -132,6 +132,18 @@ impl AiService {
         self.stop_if_running(SlotKind::Embedding).await;
     }
 
+    /// 查询一个槽位当前的静态快照（供 `get_ai_status` 这类一次性查询用，不
+    /// 经事件总线）——`configured` 是"有没有配模型文件"，`running` 是"进程
+    /// 现在是不是真的活着"，两者独立：配了模型但还没被用过（懒启动）时
+    /// `configured=true, running=false` 是完全正常的状态，不是错误。
+    pub async fn status(&self, kind: SlotKind) -> AiSlotStatus {
+        let slot = self.slot_mutex(kind).lock().await;
+        AiSlotStatus {
+            configured: slot.model_path.is_some(),
+            running: slot.running.is_some(),
+        }
+    }
+
     /// 确保槽位已就绪，返回一个可独立使用、不再占着槽位大锁的 `LlamaClient`
     /// 克隆（`LlamaClient` 只有 `port`+`auth_header` 两个廉价字段，克隆开销
     /// 可忽略）+ 这个槽位的 `last_used` 句柄。**为什么要在这里就放手大锁**：
@@ -173,6 +185,20 @@ impl AiService {
         let running = slot.running.as_ref().expect("just ensured Some above");
         *running.last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         Ok((running.proc.client().clone(), running.last_used.clone()))
+    }
+
+    /// 用户在设置页换了模型文件时调用（`Core::update_settings` 检测到
+    /// `ai_chat_model`/`ai_embedding_model` 变化后转发）：更新槽位记住的模型
+    /// 路径，若该槽位当前正跑着（旧模型），顺手停掉——不这样做的话，正在跑的
+    /// 进程会继续伺服旧模型直到自然空闲超时，用户选了新模型却感知不到已经
+    /// 生效。下一次请求会用新路径懒启动，不需要重启整个应用。
+    pub async fn set_model(&self, kind: SlotKind, model_path: Option<PathBuf>) {
+        let mut slot = self.slot_mutex(kind).lock().await;
+        slot.model_path = model_path;
+        if let Some(running) = slot.running.take() {
+            running.proc.shutdown().await;
+            self.emit(kind, AiEngineStatus::Stopped, None);
+        }
     }
 
     async fn stop_if_running(&self, kind: SlotKind) {
@@ -322,13 +348,15 @@ mod tests {
             AiConfig {
                 chat_model: Some(model),
                 embedding_model: None,
-                // 500ms 曾经用过，本机一直稳定，但真实 CI（尤其负载较高的
-                // 共享 runner）会在"ensure_running 返回"到"chat_completion
-                // 真正发出请求"之间引入调度抖动——真机跑到过巡查任务在这个
-                // 窗口内就把进程杀了（`AiService` 文档里记录过的已知竞态窗口，
-                // 不是新 bug，只是 500ms 在慢速环境下把窗口踩实了）。2s 给
-                // 请求本身留出充分余量，同时依然比生产默认的 10 分钟短得多。
-                idle_timeout: Duration::from_secs(2),
+                // 500ms→2s 都在本机稳定，但真实 CI 上连续两次真机验证都在这个
+                // 精确的位置炸了——`aa4c-ai` 一个测试二进制里有 5 个测试并发拉起
+                // 真实 llama-server，共享 runner 的 CPU 被这几个真实进程同时抢
+                // 的时候，一次推理请求的端到端延迟能被拖到超过之前给的 2-4s
+                // 余量（`AiService` 文档记录过的已知竞态窗口：巡查任务在请求还
+                // 没走完时把进程杀了）。10s 是"哪怕全部并发测试同时抢 CPU 也
+                // 大概率跑得完一次极小模型的单轮推理"这个量级，代价只是这一个
+                // 测试本身多跑几秒，比继续小幅加时间再踩一次坑划算。
+                idle_timeout: Duration::from_secs(10),
                 state_dir: dir.path().to_path_buf(),
             },
             events,
@@ -361,9 +389,9 @@ mod tests {
         }
         assert!(saw_starting && saw_ready);
 
-        // 空闲超时是 2s，巡查 tick 同样是 2s（`idle_timeout.min(30s).max(1s)`）——
-        // 最坏情况下要等 idle_timeout + 一个 tick 周期才会被回收，给足 8 秒。
-        tokio::time::sleep(Duration::from_secs(8)).await;
+        // 空闲超时是 10s，巡查 tick 同样是 10s（`idle_timeout.min(30s).max(1s)`）——
+        // 最坏情况下要等 idle_timeout + 一个 tick 周期才会被回收，给足 25 秒。
+        tokio::time::sleep(Duration::from_secs(25)).await;
         assert!(
             !dir.path().join("llama-chat.pid").exists(),
             "idle reaper should have stopped the slot"

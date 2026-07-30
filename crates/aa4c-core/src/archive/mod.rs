@@ -96,6 +96,10 @@ mod tests {
             bt_idle_seeding_limit_minutes: None,
             archive_root: archive_root.to_string_lossy().into_owned(),
             archive_auto_enabled: true,
+            ai_models_dir: dir.path().join("models").to_string_lossy().into_owned(),
+            ai_chat_model: None,
+            ai_embedding_model: None,
+            ai_idle_timeout_minutes: 10,
         };
         settings::save(&store, &settings).await.unwrap();
         store
@@ -199,6 +203,10 @@ mod tests {
             bt_idle_seeding_limit_minutes: None,
             archive_root: dir.path().join("archive").to_string_lossy().into_owned(),
             archive_auto_enabled: false,
+            ai_models_dir: dir.path().join("models").to_string_lossy().into_owned(),
+            ai_chat_model: None,
+            ai_embedding_model: None,
+            ai_idle_timeout_minutes: 10,
         };
         settings::save(&store, &settings).await.unwrap();
         store
