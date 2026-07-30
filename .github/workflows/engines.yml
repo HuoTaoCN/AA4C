@@ -229,7 +229,11 @@ jobs:
           set -euo pipefail
           asset_name="llama-${{ inputs.llama_version }}-bin-${{ matrix.asset }}.tar.gz"
           url="https://github.com/ggml-org/llama.cpp/releases/download/${{ inputs.llama_version }}/${asset_name}"
-          expected_size="$(curl -fsSL "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${{ inputs.llama_version }}" \
+          # 认证请求：这个 job 矩阵会有多个平台并发同一时刻各打一次这个 API——
+          # 不带 token 走匿名限额（每 IP 每小时 60 次）在并发场景下真机验证时
+          # 直接触发了 403，认证请求限额是 5000/小时，同一个 job 内只调一次
+          # 也不该踩到，但认证是免费的，不authenticate 没有任何好处。
+          expected_size="$(curl -fsSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${{ inputs.llama_version }}" \
             | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(a['size'] for a in d['assets'] if a['name']=='${asset_name}'))")"
           for attempt in 1 2 3 4; do
             echo "downloading $url (attempt $attempt)"
@@ -302,7 +306,11 @@ jobs:
           set -euo pipefail
           asset_name="llama-${{ inputs.llama_version }}-bin-ubuntu-x64.tar.gz"
           url="https://github.com/ggml-org/llama.cpp/releases/download/${{ inputs.llama_version }}/${asset_name}"
-          expected_size="$(curl -fsSL "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${{ inputs.llama_version }}" \
+          # 认证请求：这个 job 矩阵会有多个平台并发同一时刻各打一次这个 API——
+          # 不带 token 走匿名限额（每 IP 每小时 60 次）在并发场景下真机验证时
+          # 直接触发了 403，认证请求限额是 5000/小时，同一个 job 内只调一次
+          # 也不该踩到，但认证是免费的，不authenticate 没有任何好处。
+          expected_size="$(curl -fsSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${{ inputs.llama_version }}" \
             | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(a['size'] for a in d['assets'] if a['name']=='${asset_name}'))")"
           for attempt in 1 2 3 4; do
             echo "downloading $url (attempt $attempt)"
@@ -405,7 +413,9 @@ jobs:
         run: |
           $assetName = "llama-${{ inputs.llama_version }}-bin-win-cpu-x64.zip"
           $url = "https://github.com/ggml-org/llama.cpp/releases/download/${{ inputs.llama_version }}/$assetName"
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${{ inputs.llama_version }}"
+          # 认证请求：同 macOS/Linux job 的注释——不带 token 在多平台并发场景下
+          # 真机验证时踩到了匿名限额 403。
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${{ inputs.llama_version }}" -Headers @{ Authorization = "Bearer ${{ secrets.GITHUB_TOKEN }}" }
           $expected = ($release.assets | Where-Object { $_.name -eq $assetName }).size
           $zip = "$env:RUNNER_TEMP\llama.zip"
           for ($attempt = 1; $attempt -le 4; $attempt++) {
@@ -416,7 +426,7 @@ jobs:
               Write-Host "download verified: $actual bytes"
               break
             }
-            Write-Warning "attempt $attempt: got $actual bytes, expected $expected"
+            Write-Warning "attempt ${attempt}: got $actual bytes, expected $expected"
             if ($attempt -eq 4) { throw "download did not match expected size after 4 attempts" }
           }
           $extractDir = "$env:RUNNER_TEMP\extract"
