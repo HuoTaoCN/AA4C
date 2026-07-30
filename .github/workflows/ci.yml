@@ -146,7 +146,12 @@ jobs:
           set -euo pipefail
           dest="$RUNNER_TEMP/stories260K.gguf"
           curl -fsSL -o "$dest" "https://github.com/HuoTaoCN/AA4C/releases/download/engines/test-fixtures/stories260K.gguf"
+          # 剥掉可能的前导反斜杠：GNU coreutils 的 sha256sum 在文件名（这里是
+          # $RUNNER_TEMP，Windows 上是反斜杠路径）含反斜杠时，会整行加一个
+          # `\` 转义前缀标记——真机 Windows CI 实测确认，awk 按空白切分会把
+          # 这个 `\` 也当成哈希的一部分，导致校验和比对总是失败。
           actual="$(sha256sum "$dest" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$dest" | awk '{print $1}')"
+          actual="${actual#\\}"
           expected="270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
           if [[ "$actual" != "$expected" ]]; then
             echo "error: stories260K.gguf checksum mismatch (expected $expected, got $actual)" >&2
