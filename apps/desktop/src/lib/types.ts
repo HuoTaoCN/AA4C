@@ -82,6 +82,14 @@ export interface Settings {
   /** 自动归档总闸（下载完成后跑规则引擎），默认开启；真正的保守闸门在每条规则
    * 各自的 enabled（默认停用），见 ARCHIVE_DESIGN.md §2.3（里程碑 AI1）。 */
   archiveAutoEnabled: boolean;
+  /** 模型文件目录，默认 `<归档根>/模型`（里程碑 AI2，ARCHIVE_DESIGN.md §3.5）。 */
+  aiModelsDir: string;
+  /** 当前选定的对话模型文件路径，null = 未配置。 */
+  aiChatModel: string | null;
+  /** 当前选定的嵌入模型文件路径，null = 未配置。 */
+  aiEmbeddingModel: string | null;
+  /** AI 引擎空闲多久后自动退出释放内存（分钟），默认 10（ARCHIVE_DESIGN.md §3.3）。 */
+  aiIdleTimeoutMinutes: number;
 }
 
 /** 一次连接实际走的档位（里程碑 C4 连接质量 + C5 打洞，见 CONNECT_DESIGN.md §2）。
@@ -331,4 +339,33 @@ export interface ArchiveAppliedPayload {
   fromPath: string;
   toPath: string;
   ruleId?: string;
+}
+
+// —— AI 模型库（里程碑 AI2.4，ARCHIVE_DESIGN.md §3.5）——
+
+/** ai_models_dir 下扫描到的一个本地 GGUF 模型。 */
+export interface LocalModel {
+  /** 绝对路径——选定对话/嵌入模型时把这个值写回 Settings.aiChatModel/aiEmbeddingModel。 */
+  path: string;
+  meta: ModelMeta;
+}
+
+export type AiSlotKind = "chat" | "embedding";
+export type AiEngineStatusCode = "starting" | "ready" | "stopped" | "unavailable";
+
+/** 一个槽位的一次性状态快照（get_ai_status 用）。 */
+export interface AiSlotStatus {
+  configured: boolean;
+  running: boolean;
+}
+export interface AiStatus {
+  chat: AiSlotStatus;
+  embedding: AiSlotStatus;
+}
+
+/** AI 引擎槽位状态变化事件（里程碑 AI2，懒启动/空闲自停都经这条通知 UI）。 */
+export interface AiEngineStatePayload {
+  slot: AiSlotKind;
+  status: AiEngineStatusCode;
+  error?: string;
 }

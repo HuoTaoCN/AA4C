@@ -38,12 +38,13 @@ fn spawn_event_forwarder(app: tauri::AppHandle, core: Arc<Core>) {
     });
 }
 
-/// 桌面三平台注入基于 `tauri-plugin-shell` 的下载引擎子进程拉起器（`sidecar_name`
-/// 是 `"aria2c"` 或 `"transmission-daemon"`）；Android 等移动构建返回 `None`——
-/// 下载能力整体不存在，`aa4c_core::orchestrate` 侧的下载相关 Command 会统一报
-/// `Unavailable`（V0.4 范围决定，见 DOWNLOAD_DESIGN.md §1.1）。
+/// 桌面三平台注入基于 `tauri-plugin-shell` 的具名 sidecar 拉起器（`sidecar_name`
+/// 是 `"aria2c"`/`"transmission-daemon"`/`"llama-server"`，D1/D2/AI2 三个引擎
+/// 共用这一个通用实现）；Android 等移动构建返回 `None`——对应能力整体不存在，
+/// `aa4c_core::orchestrate` 侧的相关 Command 会统一报 `Unavailable`（V0.4/V0.5
+/// 均不含 Android，见 DOWNLOAD_DESIGN.md §1.1/ARCHIVE_DESIGN.md §0）。
 #[cfg(desktop)]
-fn desktop_download_spawner(
+fn desktop_sidecar_spawner(
     app: &tauri::AppHandle,
     sidecar_name: &str,
 ) -> Option<Arc<dyn aa4c_download::SidecarSpawner>> {
@@ -54,7 +55,7 @@ fn desktop_download_spawner(
 }
 
 #[cfg(not(desktop))]
-fn desktop_download_spawner(
+fn desktop_sidecar_spawner(
     _app: &tauri::AppHandle,
     _sidecar_name: &str,
 ) -> Option<Arc<dyn aa4c_download::SidecarSpawner>> {
@@ -103,8 +104,11 @@ pub fn run() {
             // 下载中心（DOWNLOAD_DESIGN.md，里程碑 D1 aria2 + D2 Transmission）：只在
             // 桌面三平台注入 sidecar 拉起器——V0.4 明确不含 Android，`cfg(desktop)`
             // 由 Tauri 自动区分。两个引擎各自独立注入，互不影响对方的可用性。
-            config.download_spawner = desktop_download_spawner(app.handle(), "aria2c");
-            config.bt_spawner = desktop_download_spawner(app.handle(), "transmission-daemon");
+            config.download_spawner = desktop_sidecar_spawner(app.handle(), "aria2c");
+            config.bt_spawner = desktop_sidecar_spawner(app.handle(), "transmission-daemon");
+            // AI 引擎（ARCHIVE_DESIGN.md，里程碑 AI2）：同下载中心一样只在桌面三平台
+            // 注入，复用同一个通用 sidecar 拉起器。
+            config.ai_spawner = desktop_sidecar_spawner(app.handle(), "llama-server");
 
             // 启动序列是异步的；setup 在事件循环前运行，可阻塞等待
             let core = tauri::async_runtime::block_on(Core::start(config))?;
@@ -155,6 +159,8 @@ pub fn run() {
             commands::archive_files,
             commands::undo_archive,
             commands::list_archive_log,
+            commands::list_local_models,
+            commands::get_ai_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

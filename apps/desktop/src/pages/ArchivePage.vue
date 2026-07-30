@@ -1,17 +1,22 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { useAiStore } from "../stores/ai";
 import { useArchiveStore } from "../stores/archive";
+import { useSettingsStore } from "../stores/settings";
 import { useToastStore } from "../stores/toast";
 import { asCommandError } from "../lib/api";
 import { timeText, baseName } from "../lib/format";
-import type { ArchiveCategory, ArchiveRule } from "../lib/types";
+import type { ArchiveCategory, ArchiveRule, LocalModel } from "../lib/types";
 
 const archive = useArchiveStore();
+const ai = useAiStore();
+const settings = useSettingsStore();
 const toast = useToastStore();
 
 onMounted(() => {
   void archive.loadAll();
+  void ai.loadAll();
 });
 
 const CATEGORY_LABELS: Record<ArchiveCategory, string> = {
@@ -151,6 +156,43 @@ async function openEntryFolder(path: string) {
 }
 
 const recentLog = computed(() => archive.log.filter((l) => !l.undone).slice(0, 20));
+
+// —— 模型库（里程碑 AI2.4，ARCHIVE_DESIGN.md §3.5）——
+
+function modelFileName(path: string): string {
+  return baseName(path);
+}
+function modelSummary(model: LocalModel): string {
+  const parts = [
+    model.meta.architecture,
+    model.meta.sizeLabel,
+    model.meta.fileType,
+  ].filter((p): p is string => !!p);
+  if (model.meta.contextLength) {
+    parts.push(`${model.meta.contextLength} ctx`);
+  }
+  return parts.length ? parts.join(" · ") : "未知格式";
+}
+
+async function selectModel(kind: "chat" | "embedding", path: string) {
+  if (!settings.settings) return;
+  try {
+    const next =
+      kind === "chat"
+        ? { ...settings.settings, aiChatModel: path }
+        : { ...settings.settings, aiEmbeddingModel: path };
+    await settings.save(next);
+    await ai.loadStatus();
+    toast.push("success", kind === "chat" ? "已设为对话模型" : "已设为嵌入模型");
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
+}
+
+function isSelected(kind: "chat" | "embedding", path: string): boolean {
+  const cur = kind === "chat" ? settings.settings?.aiChatModel : settings.settings?.aiEmbeddingModel;
+  return cur === path;
+}
 </script>
 
 <template>
@@ -251,6 +293,40 @@ const recentLog = computed(() => archive.log.filter((l) => !l.undone).slice(0, 2
         <button class="btn btn-primary small" @click="createRule">新建</button>
       </div>
     </div>
+
+    <h3>模型库</h3>
+    <p class="hint muted">
+      扫描模型目录（设置页可更改）下的模型文件；下载的模型经归档规则移入这里后会自动出现。
+    </p>
+    <div v-if="ai.models.length" class="card list">
+      <div v-for="model in ai.models" :key="model.path" class="mrow">
+        <div class="minfo">
+          <div class="mname">{{ modelFileName(model.path) }}</div>
+          <div class="mmeta muted">{{ modelSummary(model) }}</div>
+        </div>
+        <button
+          class="btn small"
+          :class="isSelected('chat', model.path) ? 'btn-primary' : 'btn-ghost'"
+          @click="selectModel('chat', model.path)"
+        >
+          {{ isSelected("chat", model.path) ? "对话模型 ✓" : "设为对话模型" }}
+        </button>
+        <button
+          class="btn small"
+          :class="isSelected('embedding', model.path) ? 'btn-primary' : 'btn-ghost'"
+          @click="selectModel('embedding', model.path)"
+        >
+          {{ isSelected("embedding", model.path) ? "嵌入模型 ✓" : "设为嵌入模型" }}
+        </button>
+      </div>
+    </div>
+    <div v-else class="empty card muted">
+      还没有模型文件——下载一个 .gguf 模型，归档后会出现在这里。
+    </div>
+    <p v-if="ai.status" class="hint muted">
+      对话引擎：{{ ai.status.chat.running ? "运行中" : ai.status.chat.configured ? "待命" : "未配置" }}
+      · 嵌入引擎：{{ ai.status.embedding.running ? "运行中" : ai.status.embedding.configured ? "待命" : "未配置" }}
+    </p>
   </div>
 </template>
 
@@ -280,18 +356,21 @@ h3 {
   padding: 4px 0;
 }
 .lrow,
-.rrow {
+.rrow,
+.mrow {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 12px 16px;
 }
 .lrow + .lrow,
-.rrow + .rrow {
+.rrow + .rrow,
+.mrow + .mrow {
   border-top: 1px solid var(--aa-border);
 }
 .linfo,
-.rinfo {
+.rinfo,
+.minfo {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -299,10 +378,14 @@ h3 {
   gap: 4px;
 }
 .lname,
-.rname {
+.rname,
+.mname {
   font-size: 0.88rem;
   font-weight: 600;
   word-break: break-all;
+}
+.mmeta {
+  font-size: 0.76rem;
 }
 .cats {
   font-weight: 400;

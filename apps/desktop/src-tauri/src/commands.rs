@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use aa4c_core::Core;
 use aa4c_types::{
-    Aa4cError, ArchiveEntry, ArchiveLogEntry, ArchiveRule, CoreEvent, DeviceInfo, DownloadTask,
-    Settings, Share, ShareAccess, SyncConflict, SyncFileEntry, SyncScope, TransferTask, TrustLevel,
-    UnifiedFile,
+    Aa4cError, AiStatus, ArchiveEntry, ArchiveLogEntry, ArchiveRule, CoreEvent, DeviceInfo,
+    DownloadTask, LocalModel, Settings, Share, ShareAccess, SyncConflict, SyncFileEntry, SyncScope,
+    TransferTask, TrustLevel, UnifiedFile,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -282,6 +282,16 @@ pub async fn undo_archive(core: State<'_, Arc<Core>>, log_id: i64) -> CmdResult<
 #[tauri::command]
 pub async fn list_archive_log(core: State<'_, Arc<Core>>) -> CmdResult<Vec<ArchiveLogEntry>> {
     Ok(core.list_archive_log().await?)
+}
+
+#[tauri::command]
+pub async fn list_local_models(core: State<'_, Arc<Core>>) -> CmdResult<Vec<LocalModel>> {
+    Ok(core.list_local_models().await?)
+}
+
+#[tauri::command]
+pub async fn get_ai_status(core: State<'_, Arc<Core>>) -> CmdResult<AiStatus> {
+    Ok(core.get_ai_status().await?)
 }
 
 /// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。

@@ -8,6 +8,7 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 
+import { useAiStore } from "../stores/ai";
 import { useArchiveStore } from "../stores/archive";
 import { useDeviceStore } from "../stores/devices";
 import { useDownloadStore } from "../stores/download";
@@ -17,6 +18,7 @@ import { useSyncStore } from "../stores/sync";
 import { useToastStore } from "../stores/toast";
 import { useTransferStore } from "../stores/transfer";
 import type {
+  AiEngineStatePayload,
   ArchiveAppliedPayload,
   DeviceInfo,
   DeviceLostPayload,
@@ -57,6 +59,7 @@ export async function startEventBridge(): Promise<UnlistenFn> {
   const toast = useToastStore();
   const download = useDownloadStore();
   const archive = useArchiveStore();
+  const ai = useAiStore();
 
   const unlisten = await Promise.all([
     listen<DeviceInfo>("aa4c://device_found", (e) => devices.upsert(e.payload)),
@@ -131,6 +134,12 @@ export async function startEventBridge(): Promise<UnlistenFn> {
       archive.onApplied();
       void download.load();
     }),
+
+    // AI 引擎槽位状态（里程碑 AI2）：懒启动/空闲自停都经这条通知，模型库页
+    // 用它刷新"加载中/就绪"这类状态展示。
+    listen<AiEngineStatePayload>("aa4c://ai_engine_state", (e) =>
+      ai.onEngineState(e.payload),
+    ),
   ]);
 
   return () => unlisten.forEach((fn) => fn());

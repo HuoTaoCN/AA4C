@@ -26,6 +26,10 @@ const form = reactive<Settings>({
   btIdleSeedingLimitMinutes: null,
   archiveRoot: "",
   archiveAutoEnabled: true,
+  aiModelsDir: "",
+  aiChatModel: null,
+  aiEmbeddingModel: null,
+  aiIdleTimeoutMinutes: 10,
 });
 // 服务器地址单独用字符串编辑（空字符串 ⇄ null，避免保存一个全是空格的"已配置"假象）
 const serverUrlInput = computed({
@@ -125,6 +129,11 @@ async function changeDownloadDir() {
 async function changeArchiveRoot() {
   const picked = await settings.pickSaveDir();
   if (picked) form.archiveRoot = picked;
+}
+
+async function changeAiModelsDir() {
+  const picked = await settings.pickSaveDir();
+  if (picked) form.aiModelsDir = picked;
 }
 
 async function save() {
@@ -291,6 +300,34 @@ async function unpair(id: string) {
       <p class="hint muted">
         总开关；具体归到哪、要不要打标签由「归档」页里逐条规则决定，新规则默认停用。
       </p>
+
+      <div class="actions">
+        <button class="btn btn-primary" :disabled="settings.saving" @click="save">
+          {{ settings.saving ? "保存中…" : "保存" }}
+        </button>
+      </div>
+    </div>
+
+    <h3>AI</h3>
+    <div class="card form">
+      <div class="field">
+        <label>模型文件目录</label>
+        <div class="dir">
+          <span class="path">{{ form.aiModelsDir || "默认模型目录" }}</span>
+          <button class="btn btn-ghost small" @click="changeAiModelsDir">更改</button>
+        </div>
+        <p class="hint muted">
+          下载的模型文件（.gguf）归档到这里后会自动出现在「归档」页的模型库分区。
+        </p>
+      </div>
+
+      <div class="field">
+        <label>空闲多久后自动释放内存（分钟）</label>
+        <input type="number" min="1" v-model.number="form.aiIdleTimeoutMinutes" />
+        <p class="hint muted">
+          本地 AI 只在需要时才加载模型，用完这么久没有新请求就自动退出释放内存。
+        </p>
+      </div>
 
       <div class="actions">
         <button class="btn btn-primary" :disabled="settings.saving" @click="save">

@@ -3,12 +3,14 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AiStatus,
   ArchiveEntry,
   ArchiveLogEntry,
   ArchiveRule,
   CommandError,
   DeviceInfo,
   DownloadTask,
+  LocalModel,
   Settings,
   Share,
   ShareAccess,
@@ -91,6 +93,9 @@ export const api = {
     }),
   undoArchive: (logId: number) => invoke<void>("undo_archive", { logId }),
   listArchiveLog: () => invoke<ArchiveLogEntry[]>("list_archive_log"),
+
+  listLocalModels: () => invoke<LocalModel[]>("list_local_models"),
+  getAiStatus: () => invoke<AiStatus>("get_ai_status"),
 };
 
 /** 把任意 reject 值收敛为 CommandError（兜底未知错误）。 */
