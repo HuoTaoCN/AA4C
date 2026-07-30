@@ -71,10 +71,11 @@ impl TauriSidecarSpawner {
 }
 
 impl SidecarSpawner for TauriSidecarSpawner {
-    fn spawn(&self, args: &[String]) -> SpawnFuture {
+    fn spawn(&self, args: &[String], envs: &[(String, String)]) -> SpawnFuture {
         let app = self.app.clone();
         let sidecar_name = self.sidecar_name.clone();
         let args = args.to_vec();
+        let envs = envs.to_vec();
         Box::pin(async move {
             let mut sidecar = app.shell().sidecar(&sidecar_name).map_err(|e| {
                 Aa4cError::Unavailable(format!("{sidecar_name} sidecar not configured: {e}"))
@@ -83,6 +84,9 @@ impl SidecarSpawner for TauriSidecarSpawner {
                 for (key, value) in transmission_lib_search_env(&app) {
                     sidecar = sidecar.env(key, value);
                 }
+            }
+            for (key, value) in &envs {
+                sidecar = sidecar.env(key, value);
             }
             let (mut rx, child) = sidecar.args(args).spawn().map_err(|e| {
                 Aa4cError::Unavailable(format!("failed to spawn {sidecar_name} sidecar: {e}"))

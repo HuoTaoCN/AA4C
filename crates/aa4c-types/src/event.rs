@@ -16,6 +16,30 @@ pub enum ConnectionVia {
     Relay,
 }
 
+/// AI 引擎的两个独立槽位（对话/嵌入，ARCHIVE_DESIGN.md §3.3）——各自独立
+/// 进程、独立模型、独立生命周期，一个槽位的状态变化不影响另一个。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiSlot {
+    Chat,
+    Embedding,
+}
+
+/// AI 引擎槽位的生命周期状态（ARCHIVE_DESIGN.md §3.3：懒启动 + 空闲自停）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiEngineStatus {
+    /// 正在拉起进程 / 等待模型加载完成健康检查通过。
+    Starting,
+    /// 健康检查通过，可以接受推理请求。
+    Ready,
+    /// 空闲超时后已优雅退出（正常降级，不是错误）。
+    Stopped,
+    /// 模型未配置 / 启动失败 / 健康检查超时——同下载能力缺失的既有
+    /// `Aa4cError::Unavailable` 语义。
+    Unavailable,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum CoreEvent {
@@ -120,6 +144,16 @@ pub enum CoreEvent {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         rule_id: Option<String>,
     },
+
+    /// AI 引擎槽位状态变化（V0.5 里程碑 AI2，ARCHIVE_DESIGN.md §3.3）：懒启动/
+    /// 空闲自停都经这条通知 UI（"正在加载模型…"/引导去模型库）。
+    #[serde(rename_all = "camelCase")]
+    AiEngineState {
+        slot: AiSlot,
+        status: AiEngineStatus,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        error: Option<String>,
+    },
 }
 
 impl CoreEvent {
@@ -142,6 +176,7 @@ impl CoreEvent {
             Self::DownloadDone { .. } => "download_done",
             Self::DownloadFailed { .. } => "download_failed",
             Self::ArchiveApplied { .. } => "archive_applied",
+            Self::AiEngineState { .. } => "ai_engine_state",
         }
     }
 }
@@ -239,6 +274,26 @@ mod tests {
         assert_eq!(json["data"]["seeders"], 12);
         assert_eq!(json["data"]["peers"], 3);
         assert_eq!(json["data"]["ratio"], 1.5);
+
+        let back: CoreEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(back, event);
+    }
+
+    /// 里程碑 AI2：AI 引擎槽位状态事件的 JSON 形状，`error` 缺省时整体不出现
+    /// 在 JSON 里（同 `rule_id`/BT 专属字段的既有先例）。
+    #[test]
+    fn ai_engine_state_json_shape() {
+        let event = CoreEvent::AiEngineState {
+            slot: AiSlot::Embedding,
+            status: AiEngineStatus::Starting,
+            error: None,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "ai_engine_state");
+        assert_eq!(json["data"]["slot"], "embedding");
+        assert_eq!(json["data"]["status"], "starting");
+        assert!(json["data"].get("error").is_none());
+        assert_eq!(event.event_name(), "ai_engine_state");
 
         let back: CoreEvent = serde_json::from_value(json).unwrap();
         assert_eq!(back, event);

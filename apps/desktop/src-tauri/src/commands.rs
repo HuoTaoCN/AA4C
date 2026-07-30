@@ -377,5 +377,16 @@ pub fn event_payload(event: &CoreEvent) -> Value {
             }
             payload
         }
+        CoreEvent::AiEngineState {
+            slot,
+            status,
+            error,
+        } => {
+            let mut payload = json!({ "slot": slot, "status": status });
+            if let (Value::Object(map), Some(error)) = (&mut payload, error) {
+                map.insert("error".to_string(), json!(error));
+            }
+            payload
+        }
     }
 }

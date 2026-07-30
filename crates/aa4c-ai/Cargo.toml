@@ -1,0 +1,20 @@
+[package]
+name = "aa4c-ai"
+description = "AA4C 本地 AI 引擎：llama-server sidecar 进程 + 手写 OpenAI 兼容 HTTP 客户端 + 懒启动/空闲自停服务（V0.5 里程碑 AI2，ARCHIVE_DESIGN.md §3）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aa4c-types = { workspace = true }
+aa4c-engine = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+bs58 = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

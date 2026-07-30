@@ -81,19 +81,30 @@ metadata_kv_count: u64
 
 ## 3. AI 引擎（llama.cpp / llama-server，里程碑 AI2）
 
-### 3.1 已实证的关键事实（2026-07-21，规划阶段真机验证）
+### 3.1 已实证的关键事实
 
-1. **llama.cpp 官方 release（tag `b10069`）对全部目标平台提供预编译产物**：`llama-<tag>-bin-macos-arm64.tar.gz`、`-macos-x64.tar.gz`、`-ubuntu-x64.tar.gz`（另有 arm64/vulkan 变体）、`-win-cpu-x64.zip`（另有 CUDA/Vulkan 变体）、甚至 `-android-arm64.tar.gz`。**不需要像 aria2/Transmission 那样自建源码构建流水线**，engines.yml 只需"下载官方产物 → 裁剪 → 重新发布到我们自己的 engines release + 校验和"这一条轻量腿。
-2. **产物形态 = 可执行文件 + 一批动态库**（macos-arm64 包实测：`llama-server` + `libllama*.dylib`/`libggml*.dylib`（含 `libggml-metal`）等约 30 个文件 + 一堆我们不需要的 `llama-cli`/`llama-bench` 等工具）。`llama-server` 的 rpath 实测为 `@loader_path`（库在可执行文件旁边即可加载）——**与 Transmission 完全同形**，D2.8 的全部先例直接适用：`externalBin`（裁剪出的 `llama-server`）+ `bundle.resources`（`-libs/` 目录）+ `TauriSidecarSpawner` 运行时注入 `DYLD_LIBRARY_PATH`/`LD_LIBRARY_PATH`。
-3. **`llama-server` 全套参数支持环境变量配置**（本机运行 `--help` 实测）：`LLAMA_ARG_MODEL`/`LLAMA_ARG_PORT`/`LLAMA_ARG_HOST`/`LLAMA_ARG_EMBEDDINGS`/`LLAMA_ARG_CTX_SIZE`/`LLAMA_ARG_THREADS`/…以及 **`LLAMA_API_KEY`**。密钥经环境变量传递，**不走命令行参数**（命令行对本机任意进程经 `ps` 可见——DOWNLOAD_DESIGN v2 §7 的 rpc-secret 教训，这里靠环境变量满足，连配置文件都不用写）。
-4. llama.cpp 许可证 **MIT**——比 GPL 引擎更宽松，sidecar 进程隔离照旧（架构一致性，不是许可证被迫）。
+**规划阶段（2026-07-21）粗验**：确认 llama.cpp 官方 release 对三平台都有预编译产物、产物形态是可执行文件+动态库、支持环境变量配置、MIT 协议——见下方"AI2.0 实现期实证"，规划阶段的 tag（`b10069`）已过期被替换，以实现期实测为准。
+
+**AI2.0 实现期实证（2026-07-29，`aa4c-engine` 动手前，真机下载+运行验证）**：
+
+1. **Tag 锁定 `b10175`**（规划阶段的 `b10069` 早已被上游新 tag 取代——llama.cpp 近乎每日发版，**实现期一律取当时最新 tag，不追规划期写死的旧 tag**）。四个目标平台产物 `llama-<tag>-bin-{macos-arm64,macos-x64,ubuntu-x64,win-cpu-x64}.{tar.gz,zip}` 全部下载校验通过（GitHub API `size` 字段逐字节比对，`curl -sSL --fail` 首次下载曾静默截断 3/4 个文件——**必须校验字节数，不能只看 curl 退出码**）。
+2. **裁剪清单（`llama-server` 实际依赖闭包，`otool -L` / `objdump -p`（本机无 `readelf`，LLVM `objdump -p` 对 ELF `NEEDED`、PE `DLL Name` 均可读，够用）逐层实测）**：
+   - **macOS（arm64 / x64 同形，x64 缺 `libggml-metal`）**：保留 `llama-server` + `libllama-server-impl.dylib` + `libllama-common.0.0.<ver>.dylib` + `libmtmd.0.0.<ver>.dylib` + `libllama.0.0.<ver>.dylib` + `libggml.0.17.0.dylib` + `libggml-cpu.0.17.0.dylib` + `libggml-blas.0.17.0.dylib` + `libggml-metal.0.17.0.dylib`（仅 arm64）+ `libggml-rpc.0.17.0.dylib` + `libggml-base.0.17.0.dylib` + `LICENSE`，**外加官方包里对应的 `libxxx.0.dylib → libxxx.0.17.0.dylib` 这批 rpath 版本号 symlink**（`llama-server` 的 `@rpath` NEEDED 条目写的是短版本名，不是全版本文件名，**漏掉 symlink 会导致加载失败**——`tar -tvzf`/`find -type l` 才能看到，普通 `find -type f` 会漏掉，这是本次实证过程中的真实踩坑）。其余 ~30 个 `llama-cli`/`llama-bench`/`llama-quantize`/…工具二进制及其专属 `libllama-*-impl.dylib` 一律丢弃。
+   - **Linux（ubuntu-x64）**：保留 `llama-server` + `libllama-server-impl.so` + `libllama-common.so.0.0.<ver>` + `libmtmd.so.0.0.<ver>` + `libllama.so.0.0.<ver>` + `libggml.so.0.17.0` + `libggml-base.so.0.17.0` + `LICENSE`，**同样需要 `libxxx.so.0 → libxxx.so.0.0.<ver>` 这批 SONAME symlink**（`objdump -p` 里 `NEEDED` 写的正是 `libggml.so.0` 这种短名）。`libggml-cpu-*.so`（`alderlake`/`cascadelake`/`x64`/`zen4`…十余个按 CPU 微架构区分的变体）**不是链接期 NEEDED 依赖，是 ggml 后端注册表运行期按 CPU 特征探测后 dlopen 的插件**（`llama-server`/`libllama-server-impl.so` 的 NEEDED 列表里都没有它们）——**必须整批保留**（不能只留一个 baseline，否则老 CPU 探测不到对应变体会退化或失败）。`libggml-rpc.so`（分布式推理客户端后端）与 `ggml-rpc-server`（独立 RPC server 工具）本项目不启用 `--rpc`，**丢弃**。
+     ⚠️ **系统依赖风险（新发现，AppImage 打包的真实隐患）**：`libllama-server-impl.so`/`libllama-common.so` 的 NEEDED 里有 `libssl.so.3`/`libcrypto.so.3`（OpenSSL 3.x）和 `libgomp.so.1`（OpenMP），**官方产物完全不带这两类库，指望目标系统已装**。CI/开发机（新版 Ubuntu）默认有，但老发行版可能只有 OpenSSL 1.1 没有 3.x，会导致 AppImage 在部分 Linux 发行版上启动即报"找不到共享库"。`libstdc++.so.6`/`libm.so.6`/`libgcc_s.so.1`/`libc.so.6`/`ld-linux-x86-64.so.2` 是 glibc/gcc 运行时，各发行版基本都有，风险低。**AI2.3 打包腿必须决定：要么在 `release.yml` 的 AppImage 里额外裁一份 `libssl`/`libgomp` 一并塞进 `-libs/`，要么在文档里明确声明"需要系统自带 OpenSSL 3.x + libgomp1"的最低发行版版本——这是本次新发现，规划阶段（§3.4）未预见，必须在 AI2.3 落地前拍板，不能拖到发版后才发现（参见本节 AppImage 预警的既有教训同类模式）**。
+   - **Windows（win-cpu-x64）**：保留 `llama-server.exe` + `llama-server-impl.dll` + `llama-common.dll` + `mtmd.dll` + `llama.dll` + `ggml.dll` + `ggml-base.dll` + 全部 `ggml-cpu-*.dll`（与 Linux 同理，运行期按 CPU 特征加载，非链接期依赖，整批保留）+ `libomp140.x86_64.dll`（OpenMP 运行时，**Windows 没有系统级 libgomp 等价物，必须随包**）。`KERNEL32.dll`/`WS2_32.dll`/`CRYPT32.dll`/`MSVCP140.dll`/`VCRUNTIME140.dll`/`api-ms-win-crt-*.dll` 为系统 CRT/VC++ 运行时，按 D2 既有做法处理（Win10+ 系统自带或随 VC++ Redistributable，非本项目打包责任）。丢弃全部 `llama-*.exe`（除 `llama-server.exe`）及其专属 `*-impl.dll`。
+3. **`llama-server` 参数环境变量确认**：`--help` 实测除规划阶段已知的 `LLAMA_ARG_MODEL`/`LLAMA_ARG_PORT`/`LLAMA_ARG_HOST`/`LLAMA_ARG_EMBEDDINGS`/`LLAMA_ARG_CTX_SIZE`/`LLAMA_ARG_THREADS`/`LLAMA_API_KEY` 外，**嵌入槽位必须加 `--pooling {none,mean,cls,last,rank}`（env: `LLAMA_ARG_POOLING`）**——用非专用嵌入模型（本次用 stories260K 验证）跑 `/v1/embeddings`，不带 `--embeddings --pooling mean` 会直接 501 `"This server does not support embeddings. Start it with --embeddings"`；带上两个参数后端到端跑通。
+4. **JSON Schema 约束输出请求形态实测确认**：OpenAI 兼容形态 `response_format: {"type": "json_schema", "json_schema": {"name": "...", "schema": {...}}}`，随 `POST /v1/chat/completions` 请求体一起发送，服务端接受并按 schema 做 grammar 约束采样（本机用微型模型验证请求被正确处理、返回 200，不报 schema 格式错误；微型模型本身能力弱，生成内容不完全合规不代表请求形态错——**验证的是接口契约，不是模型质量**）。
+5. **真实端到端跑通**（微型模型 `stories260K.gguf`，来源见下）：本机启动 `llama-server`（macOS arm64 二进制，`--no-webui`），`GET /health` → `{"status":"ok"}`；`POST /v1/chat/completions`（含带 `response_format` 的请求）→ 200，正常返回 `choices[0].message.content`；重启并加 `--embeddings --pooling mean` 后 `POST /v1/embeddings` → 200，返回 `data[0].embedding` 浮点数组。三个端点全部真实进程验证通过，非文档推断。
+6. **微型 GGUF 测试固件来源**：`stories260K.gguf`（llama.cpp 官方 server 测试套件自用固件，来源见 `scripts/fetch_server_test_models.py` + `tools/server/tests/utils.py` 的 `model_hf_repo="ggml-org/models"`/`model_hf_file="tinyllamas/stories260K.gguf"`）。实测真实下载地址已从 `ggml-org/models` 302 跳转到 `ggml-org/models-moved`：`https://huggingface.co/ggml-org/models-moved/resolve/main/tinyllamas/stories260K.gguf`，大小 1,185,376 字节，SHA256 `270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d`。**已上传到 `engines/test-fixtures` release**（含 `SHA256SUMS`，下载校验一致），CI 集成测试可直接引用，不依赖第三方 URL 稳定性。
+7. llama.cpp 许可证 **MIT**——比 GPL 引擎更宽松，sidecar 进程隔离照旧（架构一致性，不是许可证被迫）。
 
 ### 3.2 进程与 RPC
 
 - 启动：`llama-server` 由 `TauriSidecarSpawner`（桌面）/`ProcessSpawner`（测试/headless）拉起，配置全走环境变量：`LLAMA_ARG_HOST=127.0.0.1`、随机端口、随机 `LLAMA_API_KEY`（uuid 拼 32 字节 base58，同分享 token 生成法）、`LLAMA_ARG_MODEL=<模型路径>`、`LLAMA_ARG_CTX_SIZE=8192`；嵌入槽位额外 `LLAMA_ARG_EMBEDDINGS=1`。
 - 孤儿防护：复用 `aa4c-engine::orphan_guard` 三平台路径（Windows Job Object / Linux `PR_SET_PDEATHSIG` / macOS PID 文件），llama-server 与 transmission-daemon 一样没有 `stop-with-process` 类机制。
 - RPC：**手写极简 HTTP/1.1 客户端**（照抄 `TransmissionClient` 先例，不引 reqwest）。用的端点：`GET /health`（就绪门），`POST /v1/chat/completions`（OpenAI 形态；批量任务非流式、知识库问答走 SSE 流式——`data: {...}` 行解析，`[DONE]` 结尾），`POST /v1/embeddings`。鉴权 `Authorization: Bearer <key>`。
-- **结构化输出**：分类/标签建议请求带 JSON Schema 约束（llama-server 支持 grammar 约束采样，输出保证合法 JSON，杜绝"解析模型自由发挥"这类脆弱代码）。具体请求字段名（`response_format` vs `json_schema`）实现期以 `--help`/实测为准（§11 待验证项）。
+- **结构化输出**：分类/标签建议请求带 JSON Schema 约束（llama-server 支持 grammar 约束采样，输出保证合法 JSON，杜绝"解析模型自由发挥"这类脆弱代码）。请求字段形态已实证（§3.1 第 4 点）：`response_format: {"type": "json_schema", "json_schema": {"name", "schema"}}`。
 - 就绪时间：模型加载可能要几十秒（CPU + 数 GB 模型），健康检查轮询上限设 120s；推理请求超时 300s（CPU 慢是常态，不是错误）。
 
 ### 3.3 生命周期：懒启动 + 空闲自停（与下载引擎的关键差异）
@@ -117,6 +128,17 @@ metadata_kv_count: u64
 - `Settings` 新增：`ai_models_dir`（默认 `<归档根>/模型`——与内置"模型"归档规则的目标目录**故意同址**：下载 GGUF → 自动归档进模型目录 → 模型库立即可见，一条龙）、`ai_chat_model` / `ai_embedding_model`（模型文件路径，null=未配置）。
 - 模型库页：扫描 `ai_models_dir` 下 `.gguf`（递归一层），逐个读 GGUF 头展示（名称/架构/量化/上下文长度/文件大小）；选定对话模型/嵌入模型；显示引擎状态（未加载/加载中/就绪）。
 - **推荐模型**（写死在前端的推荐卡片，给出可复制链接 + 一键"用下载中心下载"）：对话 `Qwen3-4B-Instruct` GGUF Q4_K_M（≈2.5GB，Apache-2.0）；嵌入 `Qwen3-Embedding-0.6B` GGUF Q8_0（≈0.6GB，Apache-2.0，中英双强）。**每个模型同时给 ModelScope（国内可达）与 Hugging Face 两个直链**；具体 URL 与文件名实现期核实（§11）。8GB 内存机器可跑 4B Q4；卡片上写清内存需求。
+
+### 3.6 AI2.1/AI2.2 实现偏差（2026-07-30，代码已落地，打包/模型库/前端仍未做）
+
+- **`aa4c-engine` 重构（AI2.1）**：`SidecarSpawner`/`EngineChild`/`ProcessSpawner`/`orphan_guard` 已从 `aa4c-download` 平移到新 crate `crates/aa4c-engine`；`aa4c-download` 用 `pub use aa4c_engine::{...}` 重导出，`aa4c-core`/`apps/desktop` 的既有导入路径零改动；`orphan_guard` 内部原本的 `pub(crate)` 全部提升为 `pub`（现在要跨 crate 用）。纯机械重构，`cargo test --workspace` 全部既有测试零修改通过（判据达成）。
+- **`SidecarSpawner` trait 新增 `envs` 参数（AI2.2 发现的必需扩展，不在原计划里）**：原 trait 只有 `spawn(&self, args: &[String])`，密钥/端口/模型路径这类 aria2/Transmission 不需要、但 llama-server **必须**通过环境变量传的动态值，没有地方能塞进去——Transmission 的库搜索路径是"壳层内部固定知道怎么算的静态信息"，`TauriSidecarSpawner` 一直是内部直接处理，从没走过参数；llama-server 反过来是"调用方每次 spawn 时才知道的动态值"，必须有一条参数通道。改成 `spawn(&self, args: &[String], envs: &[(String, String)])`，`ProcessSpawner`/`TauriSidecarSpawner` 两个实现与 `aa4c-download` 内的两个调用点（aria2/Transmission 都传 `&[]`，行为不变）一并更新，`cargo test --workspace` 复核过零回归。
+- **`aa4c-ai` crate 已落地**：`LlamaClient`（手写 HTTP/1.1，§3.2 描述的三个端点 + 流式 `chat_completion_stream`）、`LlamaProcess`（拉起+120s 健康轮询+优雅退出，§3.2/§3.3）、`AiService`（懒启动+空闲自停双槽位，§3.3；`AiEngineState` 事件已加进 `aa4c_types::CoreEvent`，`event_name()` 为 `"ai_engine_state"`）。
+- **`Connection: close` 是必需的，不是可选优化**：真机抓包发现 llama-server（cpp-httplib）默认走 HTTP keep-alive（不带这个请求头时响应带 `Keep-Alive: timeout=5, max=100`，连接不会自己关，D1/D2"读到 EOF = 读完"的假设不成立）；客户端主动发送 `Connection: close` 后，服务端会尊重它，**连流式（`Transfer-Encoding: chunked`）响应也会在结束后主动关闭 socket**——两种请求形态因此可以共用同一套"读到 EOF"心智，但流式响应必须先做 chunked 解码（不能像非流式那样囫囵读完整段）。
+- **SSE 增量解析用了真正的增量式 chunked 解码器**，不是"整段收完再切"——真机抓包确认过：分块大小（`205`/`f8`/`1e3`…十六进制）与 TCP 单次 `read()` 的字节数没有任何关系，解码器必须能在任意字节边界被切开喂入仍然正确（`chunked_decoder_handles_split_across_arbitrary_byte_boundaries` 测试逐字节位置穷举验证过）。
+- **空闲自停与"正在流式生成"之间的竞态**：`AiService` 的槽位大锁只在"确保进程已启动"这一步持有，实际推理请求期间不持锁（否则长请求会让并发请求、巡查任务全部卡住）——换来的代价是巡查任务判断"是否空闲"用的是一个独立的 `Arc<Mutex<Instant>>` 时间戳，流式请求的转发任务每收到一个 token 就刷新它一次，阻塞式请求在开始前/结束后各刷新一次。已知的剩余竞态窗口：一次阻塞式请求如果跑得比 idle_timeout 还长且中途没有任何输出（理论上不太可能，但没有硬性排除），巡查任务可能会在它进行中把进程杀掉——后果是这次请求收到连接被重置的错误，不会破坏其他状态，V0.5 默认 10 分钟空闲超时下判定为可接受，暂不做更复杂的忙碌引用计数。
+- **测试**：12 个测试，含 5 个真实进程集成测试（真实 `llama-server` 二进制 + `stories260K.gguf`，覆盖健康检查、阻塞式 `/v1/chat/completions`、流式 SSE 多 chunk、`/v1/embeddings`、懒启动+空闲自动回收+PID 文件清理全链路）——真实二进制缺失时 `require_llama_server`/`require_tiny_model` 直接 panic 报安装指引，不静默跳过（同 `require_aria2c` 先例）。`cargo test --workspace`（含 `aa4c-core` 单线程复核）全绿。
+- **未做**：打包腿（AI2.3）、`Settings`/Command/前端模型库（AI2.4）、`aa4c-core` 尚未实例化 `AiService`（Core 编排接线属于 AI2.4 的一部分，AI2.2 只交付独立可用的 crate）。
 
 ## 4. 数据模型（`aa4c-store`，两个迁移分属两个里程碑）
 
@@ -215,6 +237,6 @@ AI 建议（AI3）**不落库**——待确认建议是易失的内存态（应�
 
 ## 11. 实现期必须补的实证 + 仍待实现/后续
 
-**AI2 动手前必须逐项实证（对照 D1"先核实再定案"教训）**：① 锁定的 llama.cpp tag 三平台产物内容与依赖闭包（`otool -L`/`ldd` 逐文件核对裁剪清单）；② `llama-server` JSON Schema 约束输出的请求字段形态；③ macOS 官方两架构包逐文件 `lipo` 后 universal 构建真实通过；④ AppImage 在 `-libs/` 进 `LD_LIBRARY_PATH` 后真实打包成功（真实 CI 跑，不猜）；⑤ 推荐模型的 ModelScope/HF 直链与确切文件名；⑥ CI 用微型 GGUF（如 tinyllamas stories260K，≈1 MB，MIT）做真实进程集成测试——**先把这个微型模型上传到我们自己的 `engines/test-fixtures` release** 再在测试里引用（不依赖第三方 URL 稳定性，engines.yml 惯例）；嵌入端点在非嵌入模型上需 `--pooling mean`，可用性一并实测。
+**AI2.0 实证结论（2026-07-29，详见 §3.1）**：① ✅ tag 锁 `b10175`，三平台产物内容与依赖闭包逐文件核对，裁剪清单已写入 §3.1 第 2 点（含 macOS/Linux 的 rpath/SONAME symlink 陷阱、Linux 的 CPU 后端插件不可裁剪、Linux 的 `libssl`/`libgomp` 系统依赖新风险）；② ✅ JSON Schema 约束请求字段形态 `response_format.json_schema`，实测确认；③ **未验证**——本次只逐平台官方包核实，两架构 `lipo` 合并 universal 尚未实操，留给 AI2.3 打包腿动手时做（届时是真正需要产出 universal 二进制的时刻，规划阶段/AI2.0 均为核实产物形态，非打包实操）；④ **未验证**——同上，AppImage 真实打包留给 AI2.3+ 真实 CI，AI2.0 只发现并记录了 `libssl`/`libgomp` 这一新增系统依赖风险；⑤ **未验证**——推荐模型 ModelScope/HF 直链留给 AI2.4 模型库实现时核实；⑥ ✅ 微型 GGUF `stories260K.gguf`（来源、大小、SHA256 见 §3.1 第 6 点）已下载并本机真实跑通 `/health`+`/v1/chat/completions`（含 `response_format`）+`/v1/embeddings`（`--pooling mean`），并已上传到 `engines/test-fixtures` release。
 
 **仍待实现/后续**：图片/视频的多模态识别（llama.cpp mtmd 已在产物里，等场景成熟）；PDF/Office 文本提取；GPU 变体（CUDA/Vulkan）与硬件检测；Android/服务器端 AI；标签检索进统一文件视图；知识库多轮对话；规则的更多占位符与条件；Lua 插件钩子对接归档动作（D4 之后）。

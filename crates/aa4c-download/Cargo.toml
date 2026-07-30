@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 aa4c-types = { workspace = true }
 aa4c-store = { workspace = true }
+aa4c-engine = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tokio-tungstenite = { workspace = true }
@@ -22,18 +23,6 @@ tracing = { workspace = true }
 # 依赖树里现成的传递依赖（tungstenite 的 WebSocket 握手要用），这里只是把它
 # 提升成直接依赖，不引入新的依赖体量。
 base64 = "0.22"
-
-# 孤儿进程防护（DOWNLOAD_DESIGN.md §3.6.2）：Windows 上用 Job Object 按 PID
-# 事后归属，仅 Windows 需要——`orphan_guard::windows` 是这个 crate 里唯一
-# 用到它的地方。Linux 的等价机制（`PR_SET_PDEATHSIG`）手写 FFI 声明，
-# 不为一个系统调用引入 libc 依赖。
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_System_JobObjects",
-    "Win32_System_Threading",
-] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

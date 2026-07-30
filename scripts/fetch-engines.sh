@@ -5,12 +5,12 @@
 # `cargo test` 涉及 aa4c-desktop 时校验该文件存在——这不是可选步骤，见
 # V0.4_IMPLEMENTATION_PLAN.md D1 步骤 8 与 HANDOFF.md 环境要求。
 #
-# 两个引擎的产物形态不同（DOWNLOAD_DESIGN.md §3.6.5）：aria2 是每个三元组一个
-# 裸二进制；Transmission 是每个三元组一个 zip（daemon 可执行文件 + 它依赖的
-# 若干动态库/DLL，见 engines.yml 的 transmission-windows/macos/linux 三个 job）。
-# 裸二进制原地改名进 binaries/；zip 解包后，可执行文件同样改名进 binaries/，
-# 其余库文件放进 binaries/transmission-daemon-<triple>-libs/，供 tauri.conf.json
-# 的 bundle.resources 一并打进安装包（这一步尚未接线，见 HANDOFF.md）。
+# 三个引擎的产物形态（DOWNLOAD_DESIGN.md §3.6.5 / ARCHIVE_DESIGN.md §3.4）：
+# aria2 是每个三元组一个裸二进制；Transmission/llama-server 都是每个三元组
+# 一个 zip（可执行文件 + 它依赖的若干动态库/DLL，见 engines.yml 对应三个
+# job）。裸二进制原地改名进 binaries/；zip 解包后，可执行文件同样改名进
+# binaries/，其余库文件放进 binaries/<engine>-<triple>-libs/，供
+# tauri.conf.json 的 bundle.resources 一并打进安装包。
 #
 # 用法：
 #   scripts/fetch-engines.sh              # 正式模式：按下方写死的校验和下载 +
@@ -48,6 +48,11 @@ ARIA2_VERSION="1.37.0"
 ENGINES_TAG="engines/aria2-${ARIA2_VERSION}"
 TRANSMISSION_VERSION="4.1.3"
 TRANSMISSION_TAG="engines/transmission-${TRANSMISSION_VERSION}"
+# llama.cpp 官方 tag（AI2.0 实证锁定，ARCHIVE_DESIGN.md §3.1 第 1 点：几乎每天
+# 发版，升级时刻意取"实现期当时最新"而不是追一个规划期写死的旧 tag——升级步骤
+# 同上面两个引擎：改这里 + 手动跑一次 engines.yml + 填 checksum_for_llama()）。
+LLAMA_VERSION="b10175"
+LLAMA_TAG="engines/llama-${LLAMA_VERSION}"
 
 # 首次 engines.yml 跑完后，把 dist/SHA256SUMS 的值填进来。不用关联数组
 # （macOS 系统自带 bash 仍是 3.2，不支持 `declare -A`，见 scripts/dev-server.sh
@@ -70,6 +75,19 @@ checksum_for_transmission() {
     aarch64-apple-darwin) echo "a3086f57fd403fa52e3cf79ebc7ee7db9d6d71cdcd6be5137689d56476dcebec" ;;
     x86_64-apple-darwin) echo "5b9e208ebf7e87e9327d250351300f5e3413e71c396dcbfb085878aff54ab222" ;;
     x86_64-unknown-linux-gnu) echo "532ef742820352014d56eee7e9d64249655a59ac590b62f2123a504edb874b32" ;;
+    *) echo "" ;;
+  esac
+}
+
+# TODO(AI2.3)：engines.yml 的 llama 腿尚未跑过真实 CI（见该文件顶部注释），
+# 这里先留空——留空时下方主流程会报"no checksum recorded yet"并指向这个函数，
+# 不会悄悄下载一个没校验过的文件。首次真实跑完后把 dist/SHA256SUMS 的值填进来。
+checksum_for_llama() {
+  case "$1" in
+    x86_64-pc-windows-msvc) echo "" ;;
+    aarch64-apple-darwin) echo "" ;;
+    x86_64-apple-darwin) echo "" ;;
+    x86_64-unknown-linux-gnu) echo "" ;;
     *) echo "" ;;
   esac
 }

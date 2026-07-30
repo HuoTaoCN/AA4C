@@ -23,7 +23,7 @@ pub use archive::{
 pub use device::{DeviceId, DeviceInfo, Platform, TrustLevel};
 pub use download::{DownloadKind, DownloadStatus, DownloadTask};
 pub use error::{Aa4cError, Result};
-pub use event::{ConnectionVia, CoreEvent};
+pub use event::{AiEngineStatus, AiSlot, ConnectionVia, CoreEvent};
 pub use server_addr::ServerAddr;
 pub use settings::Settings;
 pub use share::{Share, ShareAccess, ShareLink};

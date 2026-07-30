@@ -35,7 +35,16 @@ pub trait SidecarSpawner: Send + Sync + 'static {
     /// 一律不通过 `args` 传（DOWNLOAD_DESIGN.md §3.1：命令行参数对本机任意
     /// 用户的进程经 `ps`/WMI 可见）——`args` 只应包含配置文件路径/公开标志位
     /// 这类不敏感的启动参数。
-    fn spawn(&self, args: &[String]) -> SpawnFuture;
+    ///
+    /// `envs` 是额外注入的环境变量（AI2.2 新增，llama-server 需要）——与
+    /// `args` 的取舍互补：aria2/Transmission 靠配置文件传参，唯一需要动态
+    /// 环境变量的是 Transmission 的动态库搜索路径，且那是"壳层固定知道怎么
+    /// 算"的静态信息，`TauriSidecarSpawner` 内部直接处理，不需要经这个参数；
+    /// llama-server 反过来**全部配置都走环境变量**（含随机端口、随机
+    /// `LLAMA_API_KEY`、模型路径——这些是调用方（`aa4c-ai`）每次 spawn 时才
+    /// 知道的动态值，不可能让壳层内部猜到），所以这个参数是必需的，不是
+    /// 对称性设计——两个引擎各自只用其中一条注入路径。
+    fn spawn(&self, args: &[String], envs: &[(String, String)]) -> SpawnFuture;
 }
 
 /// [`EngineChild::kill`] 的返回：借用 `&self`（同一句柄可被多次 `kill` 幂等调用），
@@ -103,12 +112,14 @@ impl ProcessSpawner {
 }
 
 impl SidecarSpawner for ProcessSpawner {
-    fn spawn(&self, args: &[String]) -> SpawnFuture {
+    fn spawn(&self, args: &[String], envs: &[(String, String)]) -> SpawnFuture {
         let binary = self.binary.clone();
         let args = args.to_vec();
+        let envs = envs.to_vec();
         Box::pin(async move {
             let mut cmd = tokio::process::Command::new(&binary);
             cmd.args(&args)
+                .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())

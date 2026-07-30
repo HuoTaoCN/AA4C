@@ -3,6 +3,20 @@
 version = 4
 
 [[package]]
+name = "aa4c-ai"
+version = "0.4.0"
+dependencies = [
+ "aa4c-engine",
+ "aa4c-types",
+ "bs58",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "aa4c-core"
 version = "0.4.0"
 dependencies = [
@@ -65,6 +79,7 @@ dependencies = [
 name = "aa4c-download"
 version = "0.4.0"
 dependencies = [
+ "aa4c-engine",
  "aa4c-store",
  "aa4c-types",
  "base64 0.22.1",
@@ -77,6 +92,16 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "aa4c-engine"
+version = "0.4.0"
+dependencies = [
+ "aa4c-types",
+ "tempfile",
+ "tokio",
+ "tracing",
  "windows-sys 0.59.0",
 ]
 

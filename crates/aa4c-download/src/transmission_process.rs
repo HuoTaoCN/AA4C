@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 
 use aa4c_types::Result;
 
-use crate::orphan_guard::{self, OrphanPidfile};
-use crate::spawner::{EngineChild, SidecarSpawner};
+use aa4c_engine::{protect_with_job_object, EngineChild, OrphanPidfile, SidecarSpawner};
+
 use crate::transmission_conf;
 
 /// 一个正在运行的 `transmission-daemon` 子进程 + 它的 RPC 连接信息。
@@ -58,11 +58,11 @@ impl TransmissionProcess {
             idle_seeding_limit_minutes,
         )?;
         let args = transmission_conf::spawn_args(&conf.config_dir);
-        let child = spawner.spawn(&args).await?;
+        let child = spawner.spawn(&args, &[]).await?;
 
         let pid = child.pid();
         pidfile.record(pid);
-        orphan_guard::protect_with_job_object(pid);
+        protect_with_job_object(pid);
 
         Ok(Self {
             child,
@@ -103,7 +103,7 @@ fn pidfile_path(data_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spawner::ProcessSpawner;
+    use aa4c_engine::ProcessSpawner;
 
     fn transmission_daemon_path() -> Option<std::path::PathBuf> {
         which_in_path("transmission-daemon")

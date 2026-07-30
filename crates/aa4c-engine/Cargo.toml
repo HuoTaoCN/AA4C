@@ -1,0 +1,28 @@
+[package]
+name = "aa4c-engine"
+description = "AA4C sidecar 引擎共享设施：子进程拉起/终止 + 孤儿进程防护（从 aa4c-download 平移，供 aa4c-download 与 aa4c-ai 共用，AI2.1）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aa4c-types = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+# 孤儿进程防护（DOWNLOAD_DESIGN.md §3.6.2）：Windows 上用 Job Object 按 PID
+# 事后归属，仅 Windows 需要——`orphan_guard::windows` 是这个 crate 里唯一
+# 用到它的地方。Linux 的等价机制（`PR_SET_PDEATHSIG`）手写 FFI 声明，
+# 不为一个系统调用引入 libc 依赖。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -33,7 +33,7 @@ use std::path::PathBuf;
 /// Linux 上给即将 spawn 的命令装 `PR_SET_PDEATHSIG`；其余平台是 no-op。
 /// 无条件对任意引擎调用是安全的（对已有 `stop-with-process` 的 aria2 只是
 /// 多一层免费的保险，对没有等价内建选项的 Transmission 是必需的）。
-pub(crate) fn arm_pdeathsig(cmd: &mut tokio::process::Command) {
+pub fn arm_pdeathsig(cmd: &mut tokio::process::Command) {
     #[cfg(target_os = "linux")]
     linux::arm(cmd);
     #[cfg(not(target_os = "linux"))]
@@ -69,7 +69,7 @@ mod linux {
 
 /// Windows 上把 `pid` 对应的进程绑进一个"宿主消失即被杀"的 Job Object。
 /// 幂等/尽力而为——失败只记日志，不返回错误、不阻塞调用方。
-pub(crate) fn protect_with_job_object(pid: u32) {
+pub fn protect_with_job_object(pid: u32) {
     #[cfg(windows)]
     windows::protect(pid);
     #[cfg(not(windows))]
@@ -158,18 +158,18 @@ mod windows {
 
 /// macOS（以及 Tauri 路径下的 Linux）孤儿进程兜底：PID 文件记录子进程身份，
 /// 下次启动核对身份匹配后才清理，防 PID 复用误杀无关进程。
-pub(crate) struct OrphanPidfile {
+pub struct OrphanPidfile {
     path: PathBuf,
 }
 
 impl OrphanPidfile {
-    pub(crate) fn new(path: impl Into<PathBuf>) -> Self {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
 
     /// 记录当前子进程的身份。失败只记日志——写不进 PID 文件不影响下载功能
     /// 本身，只是弱化了"下次启动清扫"这一层兜底。
-    pub(crate) fn record(&self, pid: u32) {
+    pub fn record(&self, pid: u32) {
         let Some(identity) = process_identity(pid) else {
             tracing::warn!(
                 pid,
@@ -185,14 +185,14 @@ impl OrphanPidfile {
 
     /// 清除本次正常关闭已经处理过的记录，避免下次启动误把一个已经善终的
     /// 进程当成孤儿去核对（虽然核对本身是安全的，纯粹是省一次无意义 I/O）。
-    pub(crate) fn clear(&self) {
+    pub fn clear(&self) {
         let _ = std::fs::remove_file(&self.path);
     }
 
     /// 启动时调用：读上次留下的 PID 文件，身份匹配才清理，然后无论如何都
     /// 删除这个文件（不匹配也不用留着——留着不会被再次使用，只是一个陈旧
     /// 记录，删掉避免误导下次读取的人）。
-    pub(crate) fn sweep(&self) {
+    pub fn sweep(&self) {
         let Ok(body) = std::fs::read_to_string(&self.path) else {
             return; // 没有上次遗留的文件，没什么可清扫的（正常路径）
         };

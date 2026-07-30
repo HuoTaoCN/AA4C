@@ -50,6 +50,14 @@ name: Build Engines
 #     `$GITHUB_PATH` 加的是整个目录，`cargo test` 找到的还是原来那份带着 DLL 的
 #     完整目录；正式打包成 sidecar 分发就不能只挪一个文件。
 
+# ⚠️ llama-server（V0.5 里程碑 AI2）尚未在真实 CI 跑过——本机 AI2.0 已用真实
+# 下载 + `otool -L`/`objdump -p` 逐文件核对过下面裁剪清单的正确性、真实跑通过
+# `/health`+`/v1/chat/completions`+`/v1/embeddings`（见 ARCHIVE_DESIGN.md
+# §3.1/§3.6），但这个 job 本身（真实下载官方产物→裁剪→重新打包→发布）还没
+# 有过一次真实 CI 运行验证。跟 aria2/transmission 不同，llama-server**不从
+# 源码构建**——直接下载 llama.cpp 官方预编译产物（已实证三平台齐全，MIT），
+# 裁剪到只剩实际依赖闭包再重新打包，跟 D2 的"自建构建"路线是两种不同的引擎
+# 接入方式（ARCHIVE_DESIGN.md §3.1 第 1 点）。
 on:
   workflow_dispatch:
     inputs:
@@ -61,6 +69,10 @@ on:
         description: "Transmission release tag to build (empty to skip this engine)"
         required: false
         default: "4.1.3"
+      llama_version:
+        description: "llama.cpp release tag to fetch + trim (empty to skip this engine, e.g. b10175)"
+        required: false
+        default: "b10175"
 
 jobs:
   aria2-windows:
@@ -187,6 +199,311 @@ jobs:
             （见 `scripts/fetch-engines.sh`，按 SHA256SUMS 里的值下载校验）。
             这不是 AA4C 应用本身的发布，跑完后请把 SHA256SUMS 的值填进
             `scripts/fetch-engines.sh` 的 `checksum_for()`。
+          draft: false
+          prerelease: false
+          files: dist/*
+
+  llama-macos:
+    name: llama-server (macOS ${{ matrix.target }}, official prebuilt trimmed)
+    if: inputs.llama_version != ''
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 同 aria2-macos/transmission-macos 的既有教训：只做"裁剪+重新打包"，
+          # 不编译，但**执行**这一步的智能测试仍然需要对应架构的原生 runner——
+          # arm64 二进制没法在 x86_64 runner 上跑，反过来也一样。
+          - target: aarch64-apple-darwin
+            asset: macos-arm64
+            runner: macos-latest
+          - target: x86_64-apple-darwin
+            asset: macos-x64
+            runner: macos-15-intel
+    steps:
+      - name: Download + byte-verify official prebuilt archive
+        # AI2.0 真机踩过的坑：`curl -fsSL` 报成功但文件被静默截断（3/4 个文件
+        # 当时只有 9-16MB 中的一部分）。GitHub API 的 `size` 字段是权威依据，
+        # 逐字节比对，不能只看 curl 退出码——重试到匹配为止。
+        run: |
+          set -euo pipefail
+          asset_name="llama-${{ inputs.llama_version }}-bin-${{ matrix.asset }}.tar.gz"
+          url="https://github.com/ggml-org/llama.cpp/releases/download/${{ inputs.llama_version }}/${asset_name}"
+          expected_size="$(curl -fsSL "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${{ inputs.llama_version }}" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(a['size'] for a in d['assets'] if a['name']=='${asset_name}'))")"
+          for attempt in 1 2 3 4; do
+            echo "downloading $url (attempt $attempt)"
+            curl -fsSL -o llama.tar.gz "$url"
+            actual_size="$(wc -c < llama.tar.gz | tr -d ' ')"
+            if [[ "$actual_size" == "$expected_size" ]]; then
+              echo "download verified: $actual_size bytes"
+              break
+            fi
+            echo "attempt $attempt: got $actual_size bytes, expected $expected_size" >&2
+            if [[ "$attempt" == "4" ]]; then
+              echo "error: download did not match expected size after 4 attempts" >&2
+              exit 1
+            fi
+          done
+          mkdir extract
+          tar xzf llama.tar.gz -C extract
+      - name: Trim to the AI2.0-verified dependency closure (ARCHIVE_DESIGN.md §3.1 第 2 点)
+        # 官方包还有 ~30 个 llama-cli/llama-bench/llama-quantize 等工具二进制和
+        # 各自专属的 libllama-*-impl.dylib，这里只保留 llama-server 实际需要的
+        # 那一份闭包。用 glob 而不是写死带版本号的文件名——AI2.0 记录的是"文件
+        # 家族"，具体的 0.0.<patch> 版本号会随 tag 变化，写死会在下次升级 tag
+        # 时悄悄失效。`cp -P` 保留 symlink 本身（不解引用）：rpath 依赖的是
+        # `libxxx.dylib` 这个短名 symlink，指向真正带版本号的文件，两者都要保留。
+        run: |
+          set -euo pipefail
+          SRC="$(dirname "$(find extract -name llama-server -type f | head -n1)")"
+          mkdir bundle
+          KEEP=(
+            "llama-server" "LICENSE"
+            "libllama-server-impl.dylib"
+            "libllama.dylib" "libllama.*.dylib"
+            "libllama-common.dylib" "libllama-common.*.dylib"
+            "libmtmd.dylib" "libmtmd.*.dylib"
+            "libggml.dylib" "libggml.*.dylib"
+            "libggml-base.dylib" "libggml-base.*.dylib"
+            "libggml-cpu.dylib" "libggml-cpu.*.dylib"
+            "libggml-blas.dylib" "libggml-blas.*.dylib"
+            "libggml-metal.dylib" "libggml-metal.*.dylib"
+            "libggml-rpc.dylib" "libggml-rpc.*.dylib"
+          )
+          for pat in "${KEEP[@]}"; do
+            find "$SRC" -maxdepth 1 \( -type f -o -type l \) -name "$pat" -exec cp -P {} bundle/ \;
+          done
+          chmod +x bundle/llama-server
+          echo "--- bundle contents ---"
+          ls -la bundle/
+          test -f bundle/llama-server
+      - name: Smoke test in an isolated directory with an empty environment
+        # 本机验证过这个手法能真实证明"不依赖构建/下载目录的绝对路径"——完全
+        # 清空环境变量、和源目录无关的临时目录跑，`--help` 能正常打印用法才算数
+        # （同 transmission-macos 既有先例的严格程度）。
+        run: |
+          set -euo pipefail
+          testdir="$(mktemp -d)"
+          cp bundle/* "$testdir/"
+          ( cd "$testdir" && env -i DYLD_LIBRARY_PATH="$testdir" ./llama-server --help > /dev/null )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-${{ matrix.target }}
+          path: bundle/
+
+  llama-linux:
+    name: llama-server (Linux x86_64, official prebuilt trimmed)
+    if: inputs.llama_version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download + byte-verify official prebuilt archive
+        run: |
+          set -euo pipefail
+          asset_name="llama-${{ inputs.llama_version }}-bin-ubuntu-x64.tar.gz"
+          url="https://github.com/ggml-org/llama.cpp/releases/download/${{ inputs.llama_version }}/${asset_name}"
+          expected_size="$(curl -fsSL "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${{ inputs.llama_version }}" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(a['size'] for a in d['assets'] if a['name']=='${asset_name}'))")"
+          for attempt in 1 2 3 4; do
+            echo "downloading $url (attempt $attempt)"
+            curl -fsSL -o llama.tar.gz "$url"
+            actual_size="$(wc -c < llama.tar.gz | tr -d ' ')"
+            if [[ "$actual_size" == "$expected_size" ]]; then
+              echo "download verified: $actual_size bytes"
+              break
+            fi
+            echo "attempt $attempt: got $actual_size bytes, expected $expected_size" >&2
+            if [[ "$attempt" == "4" ]]; then
+              echo "error: download did not match expected size after 4 attempts" >&2
+              exit 1
+            fi
+          done
+          mkdir extract
+          tar xzf llama.tar.gz -C extract
+      - name: Trim to the AI2.0-verified dependency closure + bundle libssl/libgomp (ARCHIVE_DESIGN.md §3.1 第 2 点)
+        # 与 macOS 的关键差异：`libggml-cpu-*.so`（alderlake/cascadelake/zen4…
+        # 十余个按 CPU 微架构区分的变体）不是链接期 NEEDED 依赖，是运行期按 CPU
+        # 特征探测后 dlopen 的插件，必须整批保留，不能只挑一个。另外 AI2.0 新
+        # 发现的系统依赖风险：`libssl.so.3`/`libcrypto.so.3`/`libgomp.so.1` 官方
+        # 产物不带、指望目标系统已装——老发行版可能没有 OpenSSL 3.x，会导致
+        # AppImage 在部分发行版上启动即报"找不到共享库"。这里选择**自己打包
+        # 这三个库**（从构建这个 job 的 Ubuntu 镜像系统路径复制），不依赖目标机器
+        # 系统版本，与 Windows/macOS 打包依赖库的既有精神一致（都是"自带依赖，
+        # 不依赖目标机器"）。
+        run: |
+          set -euo pipefail
+          SRC="$(dirname "$(find extract -name llama-server -type f | head -n1)")"
+          mkdir bundle
+          KEEP=(
+            "llama-server" "LICENSE"
+            "libllama-server-impl.so"
+            "libllama.so" "libllama.so.*"
+            "libllama-common.so" "libllama-common.so.*"
+            "libmtmd.so" "libmtmd.so.*"
+            "libggml.so" "libggml.so.*"
+            "libggml-base.so" "libggml-base.so.*"
+          )
+          for pat in "${KEEP[@]}"; do
+            find "$SRC" -maxdepth 1 \( -type f -o -type l \) -name "$pat" -exec cp -P {} bundle/ \;
+          done
+          # CPU 后端插件整批保留（运行期 dlopen，不是链接期 NEEDED）。
+          find "$SRC" -maxdepth 1 \( -type f -o -type l \) -name "libggml-cpu-*.so*" -exec cp -P {} bundle/ \;
+          chmod +x bundle/llama-server
+
+          for lib in libssl.so.3 libcrypto.so.3 libgomp.so.1; do
+            found="$(find /usr/lib /lib -name "$lib" 2>/dev/null | head -n1)"
+            if [[ -z "$found" ]]; then
+              echo "error: $lib not found on the build image — cannot self-contain the bundle" >&2
+              exit 1
+            fi
+            cp -L "$found" "bundle/$lib"
+          done
+
+          echo "--- bundle contents ---"
+          ls -la bundle/
+          test -f bundle/llama-server
+      - name: Verify the bundle resolves entirely within itself (LD_LIBRARY_PATH pointed only at bundle/)
+        run: |
+          set -euo pipefail
+          echo "--- ldd (LD_LIBRARY_PATH=bundle only) ---"
+          LD_LIBRARY_PATH="$PWD/bundle" ldd bundle/llama-server
+          if LD_LIBRARY_PATH="$PWD/bundle" ldd bundle/llama-server | grep -q 'not found'; then
+            echo "error: llama-server has unresolved shared library dependencies within the bundle:" >&2
+            LD_LIBRARY_PATH="$PWD/bundle" ldd bundle/llama-server | grep 'not found' >&2
+            exit 1
+          fi
+      - name: Smoke test in an isolated directory with system deps removed
+        # 同 transmission-linux 既有先例：真的卸载构建/系统自带的运行时包，逼着
+        # 动态链接器只能靠 bundle/ 目录里实际打包的文件解析——不是靠还留在机器
+        # 上的系统库侥幸跑通。`libssl3`/`libgomp1` 若被其他系统工具依赖，
+        # `apt-get purge` 可能报错或被跳过；这一步允许失败（`|| true`），后面的
+        # `ldd`/执行检查才是真正的判定依据。
+        run: |
+          set -euo pipefail
+          sudo apt-get purge -y libssl3 libgomp1 2>/dev/null || true
+          sudo apt-get autoremove -y || true
+          testdir="$(mktemp -d)"
+          cp bundle/* "$testdir/"
+          ( cd "$testdir" && LD_LIBRARY_PATH="$testdir" ldd ./llama-server )
+          if ( cd "$testdir" && LD_LIBRARY_PATH="$testdir" ldd ./llama-server ) | grep -q 'not found'; then
+            echo "error: still unresolved after purging system deps — bundle is not self-contained" >&2
+            exit 1
+          fi
+          ( cd "$testdir" && LD_LIBRARY_PATH="$testdir" ./llama-server --help > /dev/null )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-x86_64-unknown-linux-gnu
+          path: bundle/
+
+  llama-windows:
+    name: llama-server (Windows x86_64, official prebuilt trimmed)
+    if: inputs.llama_version != ''
+    runs-on: windows-latest
+    steps:
+      - name: Download + byte-verify official prebuilt archive
+        shell: pwsh
+        run: |
+          $assetName = "llama-${{ inputs.llama_version }}-bin-win-cpu-x64.zip"
+          $url = "https://github.com/ggml-org/llama.cpp/releases/download/${{ inputs.llama_version }}/$assetName"
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${{ inputs.llama_version }}"
+          $expected = ($release.assets | Where-Object { $_.name -eq $assetName }).size
+          $zip = "$env:RUNNER_TEMP\llama.zip"
+          for ($attempt = 1; $attempt -le 4; $attempt++) {
+            Write-Host "downloading $url (attempt $attempt)"
+            Invoke-WebRequest -Uri $url -OutFile $zip
+            $actual = (Get-Item $zip).Length
+            if ($actual -eq $expected) {
+              Write-Host "download verified: $actual bytes"
+              break
+            }
+            Write-Warning "attempt $attempt: got $actual bytes, expected $expected"
+            if ($attempt -eq 4) { throw "download did not match expected size after 4 attempts" }
+          }
+          $extractDir = "$env:RUNNER_TEMP\extract"
+          Expand-Archive -Path $zip -DestinationPath $extractDir
+          echo "EXTRACT_DIR=$extractDir" >> $env:GITHUB_ENV
+      - name: Trim to the AI2.0-verified dependency closure (ARCHIVE_DESIGN.md §3.1 第 2 点)
+        # 同 Linux：ggml-cpu-*.dll 是运行期按 CPU 特征加载的插件，整批保留；
+        # libomp140.x86_64.dll 是 OpenMP 运行时，Windows 没有系统级 libgomp
+        # 等价物，必须随包（同 macOS/Linux 打包依赖库的一致精神）。
+        shell: pwsh
+        run: |
+          $srcDir = (Get-ChildItem -Path $env:EXTRACT_DIR -Filter "llama-server.exe" -Recurse | Select-Object -First 1).DirectoryName
+          if (-not $srcDir) { throw "llama-server.exe not found after extraction" }
+          $bundle = "$env:RUNNER_TEMP\bundle"
+          New-Item -ItemType Directory -Path $bundle | Out-Null
+          $keep = @(
+            "llama-server.exe", "llama-server-impl.dll", "llama-common.dll",
+            "mtmd.dll", "llama.dll", "ggml.dll", "ggml-base.dll",
+            "libomp140.x86_64.dll"
+          )
+          foreach ($name in $keep) {
+            $src = Join-Path $srcDir $name
+            if (Test-Path $src) {
+              Copy-Item $src $bundle
+            } else {
+              Write-Warning "expected file $name not found next to llama-server.exe"
+            }
+          }
+          Get-ChildItem -Path $srcDir -Filter "ggml-cpu-*.dll" | Copy-Item -Destination $bundle
+          echo "BUNDLE_DIR=$bundle" >> $env:GITHUB_ENV
+      - name: Smoke test in an isolated directory
+        shell: pwsh
+        run: |
+          $testDir = Join-Path $env:RUNNER_TEMP "smoketest"
+          Copy-Item $env:BUNDLE_DIR -Destination $testDir -Recurse
+          & "$testDir\llama-server.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "llama-server.exe --help failed (exit $LASTEXITCODE)" }
+      - name: Zip the trimmed bundle
+        shell: pwsh
+        run: Compress-Archive -Path "$env:BUNDLE_DIR\*" -DestinationPath "$env:RUNNER_TEMP\bundle.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-x86_64-pc-windows-msvc
+          path: ${{ runner.temp }}\bundle.zip
+
+  llama-publish:
+    name: Publish llama-server engine release
+    needs: [llama-macos, llama-linux, llama-windows]
+    if: inputs.llama_version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: llama-server-*
+          path: artifacts
+      - name: Zip each triple's bundle and checksum
+        # 每个三元组都是"可执行文件 + 若干依赖库"一整个目录，同 Transmission
+        # 先例，release 里发的是每个三元组一个 zip，不是裸二进制。macOS 两个
+        # 单架构 zip 到这里还没合并——universal 合并放在 release.yml（同
+        # aria2/transmission 既有先例：Tauri 不会替 externalBin 自动 lipo，
+        # 合并工作必须在真正打包桌面安装包时用 `fetch-engines.sh` 下载好的两份
+        # 单架构产物自己做）。
+        run: |
+          mkdir -p dist
+          for dir in artifacts/*/; do
+            name="$(basename "$dir")"
+            if [[ "$name" == *windows* ]]; then
+              cp "$dir"/bundle.zip "dist/${name}.zip"
+            else
+              (cd "$dir" && zip -r "../../dist/${name}.zip" .)
+            fi
+          done
+          (cd dist && sha256sum * > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: engines/llama-${{ inputs.llama_version }}
+          name: "llama-server engine binaries ${{ inputs.llama_version }}"
+          body: |
+            官方 llama.cpp release 转发（裁剪到只剩 llama-server 实际依赖闭包），
+            供 AA4C 桌面端 sidecar 打包用（见 `scripts/fetch-engines.sh`，按
+            SHA256SUMS 里的值下载校验）。每个平台三元组一个 zip（可执行文件 +
+            它依赖的动态库，不是裸二进制——同一个包里的文件要整体解到同一个
+            目录）。这不是 AA4C 应用本身的发布，跑完后请把 SHA256SUMS 的值填进
+            `scripts/fetch-engines.sh` 的 `checksum_for_llama()`。
           draft: false
           prerelease: false
           files: dist/*

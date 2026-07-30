@@ -13,23 +13,20 @@
 //! 对每个引擎各自有一个天然、单一的判定点（对应 channel 发送失败 = 那个
 //! actor 已退出 = 那个引擎不可用）。
 
-// D1 上线时是 `forbid`——D2 接孤儿进程防护需要直接调用 Win32 API（Job Object）
-// 与 Linux `prctl`，两处都是必需的 unsafe FFI，`forbid` 连局部 `#[allow]` 都不
-// 认，收窄成 `deny` + 只在 `orphan_guard` 模块里 `#[allow(unsafe_code)]`，其余
-// 代码仍然维持"unsafe 默认不许"的原则不变。
-#![deny(unsafe_code)]
+// D2 接孤儿进程防护要用到的 unsafe FFI（Win32 Job Object / Linux `prctl`）已经
+// 随 AI2.1 平移进 `aa4c-engine`——这个 crate 自身不再有 unsafe 代码，恢复到
+// D1 上线时的 `forbid`。
+#![forbid(unsafe_code)]
 
 mod conf;
-mod orphan_guard;
 mod rpc;
-mod spawner;
 mod transmission_conf;
 mod transmission_process;
 mod transmission_rpc;
 mod util;
 
+pub use aa4c_engine::{EngineChild, KillFuture, ProcessSpawner, SidecarSpawner, SpawnFuture};
 pub use rpc::{Aria2Client, Aria2Notification};
-pub use spawner::{EngineChild, KillFuture, ProcessSpawner, SidecarSpawner, SpawnFuture};
 pub use transmission_process::TransmissionProcess;
 pub use transmission_rpc::TransmissionClient;
 
@@ -442,7 +439,7 @@ async fn spawn_and_connect_with_retries(
             }
         };
         let arg = format!("--conf-path={}", aria_conf.conf_path.display());
-        let child = match spawner.spawn(&[arg]).await {
+        let child = match spawner.spawn(&[arg], &[]).await {
             Ok(c) => c,
             Err(e) => {
                 last_err = Some(e);
