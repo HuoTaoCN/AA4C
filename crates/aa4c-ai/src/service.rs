@@ -322,7 +322,13 @@ mod tests {
             AiConfig {
                 chat_model: Some(model),
                 embedding_model: None,
-                idle_timeout: Duration::from_millis(500),
+                // 500ms 曾经用过，本机一直稳定，但真实 CI（尤其负载较高的
+                // 共享 runner）会在"ensure_running 返回"到"chat_completion
+                // 真正发出请求"之间引入调度抖动——真机跑到过巡查任务在这个
+                // 窗口内就把进程杀了（`AiService` 文档里记录过的已知竞态窗口，
+                // 不是新 bug，只是 500ms 在慢速环境下把窗口踩实了）。2s 给
+                // 请求本身留出充分余量，同时依然比生产默认的 10 分钟短得多。
+                idle_timeout: Duration::from_secs(2),
                 state_dir: dir.path().to_path_buf(),
             },
             events,
@@ -355,9 +361,9 @@ mod tests {
         }
         assert!(saw_starting && saw_ready);
 
-        // 空闲超时是 500ms，巡查 tick 也会被夹到 1s 上限内的较小值——给足
-        // 3 秒等它被回收，避免时间紧凑导致的偶发抖动。
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // 空闲超时是 2s，巡查 tick 同样是 2s（`idle_timeout.min(30s).max(1s)`）——
+        // 最坏情况下要等 idle_timeout + 一个 tick 周期才会被回收，给足 8 秒。
+        tokio::time::sleep(Duration::from_secs(8)).await;
         assert!(
             !dir.path().join("llama-chat.pid").exists(),
             "idle reaper should have stopped the slot"
