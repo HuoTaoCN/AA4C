@@ -498,7 +498,14 @@ jobs:
             if [[ "$name" == *windows* ]]; then
               cp "$dir"/bundle.zip "dist/${name}.zip"
             else
-              (cd "$dir" && zip -r "../../dist/${name}.zip" .)
+              # `-y`：保留 symlink 本身，不解引用成独立拷贝——macOS/Linux 的
+              # rpath/SONAME 版本号 symlink 家族本来是 1 个真文件 + 2 个
+              # symlink，不加 `-y` 会被 zip 默认行为解引用成 3 份独立文件
+              # （内容相同但 codesign 要分别校验），真机验证过这会让 macOS
+              # 冷启动多花 10+ 秒（dyld 对每个新文件都要单独走一次
+              # on-demand 签名校验），加 `-y` 后应恢复到接近原始产物的
+              # 启动速度。
+              (cd "$dir" && zip -ry "../../dist/${name}.zip" .)
             fi
           done
           (cd dist && sha256sum * > SHA256SUMS)

@@ -79,15 +79,14 @@ checksum_for_transmission() {
   esac
 }
 
-# TODO(AI2.3)：engines.yml 的 llama 腿尚未跑过真实 CI（见该文件顶部注释），
-# 这里先留空——留空时下方主流程会报"no checksum recorded yet"并指向这个函数，
-# 不会悄悄下载一个没校验过的文件。首次真实跑完后把 dist/SHA256SUMS 的值填进来。
+# engines.yml 的 llama 腿已在真实 CI 跑通（2026-07-30，run 30518097243，四个
+# 平台 job + publish 全绿），这些是 engines/llama-b10175 release 的 SHA256SUMS。
 checksum_for_llama() {
   case "$1" in
-    x86_64-pc-windows-msvc) echo "" ;;
-    aarch64-apple-darwin) echo "" ;;
-    x86_64-apple-darwin) echo "" ;;
-    x86_64-unknown-linux-gnu) echo "" ;;
+    x86_64-pc-windows-msvc) echo "c9d61dd6e01c17443533c07ff27daaeac85ba805223e2f5c676c9bb54a4e1860" ;;
+    aarch64-apple-darwin) echo "cc757a0cba461e882fbf1494a55b0dcda4b40fdf44ffb212376cf6576bd18bdb" ;;
+    x86_64-apple-darwin) echo "4a1bb6920758def360009493993bf2f880e1382f3414cf465cdf4fd6b823d6ce" ;;
+    x86_64-unknown-linux-gnu) echo "df1d10a78d1e10729180af6a1a49b153d40c53271461c51c06edfa07dcba8a68" ;;
     *) echo "" ;;
   esac
 }
@@ -167,6 +166,24 @@ if [[ "${1:-}" == "--from-path" ]]; then
   tlibs_dir="$BIN_DIR/transmission-daemon-${triple}-libs"
   mkdir -p "$tlibs_dir"
   : > "$tlibs_dir/.dev-placeholder"
+
+  # llama-server 同理 best-effort（`brew install llama.cpp` 在 macOS 上装好后
+  # PATH 里就有；Linux/Windows 开发机大概率没有，AI 能力运行时优雅降级成不可用，
+  # 同 BT 能力缺失的既有先例，不阻塞其余功能开发）。
+  lsrc="$(command -v llama-server || true)"
+  if [[ -n "$lsrc" ]]; then
+    ldest="$BIN_DIR/llama-server-${triple}${suffix}"
+    rm -f "$ldest"
+    cp "$lsrc" "$ldest"
+    chmod +x "$ldest"
+    echo "dev mode: copied $lsrc -> $ldest (NOT verified, NOT for release)"
+  else
+    echo "warning: llama-server not found in PATH — local AI features will be unavailable in this dev build" >&2
+    echo "  macOS: brew install llama.cpp" >&2
+  fi
+  llibs_dir="$BIN_DIR/llama-server-${triple}-libs"
+  mkdir -p "$llibs_dir"
+  : > "$llibs_dir/.dev-placeholder"
 
   exit 0
 fi
@@ -260,3 +277,63 @@ find "$t_extract_dir" -type f -exec mv {} "$t_libs_dir/" \;
 rm -rf "$t_extract_dir"
 
 echo "verified transmission-daemon-${triple}: $t_dest + $(find "$t_libs_dir" -type f | wc -l | tr -d ' ') lib file(s) in $t_libs_dir"
+
+# --- llama-server（V0.5 AI2）：同 Transmission，每个三元组一个 zip（可执行
+# 文件 + 依赖库），形态一样，逻辑照抄。
+l_expected="$(checksum_for_llama "$triple")"
+if [[ -z "$l_expected" ]]; then
+  echo "error: no checksum recorded yet for llama-server $triple." >&2
+  echo "  Run .github/workflows/engines.yml (workflow_dispatch) once, then fill" >&2
+  echo "  scripts/fetch-engines.sh's checksum_for_llama() from the resulting SHA256SUMS." >&2
+  echo "  For local development in the meantime, use: $0 --from-path" >&2
+  exit 1
+fi
+
+l_zip="$BIN_DIR/.llama-server-${triple}.zip.tmp"
+l_url="https://github.com/HuoTaoCN/AA4C/releases/download/${LLAMA_TAG}/llama-server-${triple}.zip"
+
+rm -f "$l_zip"
+echo "downloading $l_url"
+curl -fsSL -o "$l_zip" "$l_url"
+
+l_actual="$(sha256_of "$l_zip")"
+if [[ "$l_actual" != "$l_expected" ]]; then
+  echo "error: checksum mismatch for $l_zip" >&2
+  echo "  expected: $l_expected" >&2
+  echo "  actual:   $l_actual" >&2
+  rm -f "$l_zip"
+  exit 1
+fi
+echo "verified $l_zip (sha256 $l_actual)"
+
+l_extract_dir="$BIN_DIR/.llama-server-${triple}.extract.tmp"
+rm -rf "$l_extract_dir"
+mkdir -p "$l_extract_dir"
+unzip -q "$l_zip" -d "$l_extract_dir"
+rm -f "$l_zip"
+
+l_exe_name="llama-server${suffix}"
+l_exe_src="$(find "$l_extract_dir" -name "$l_exe_name" -type f | head -n1)"
+if [[ -z "$l_exe_src" ]]; then
+  echo "error: $l_exe_name not found inside $l_url" >&2
+  rm -rf "$l_extract_dir"
+  exit 1
+fi
+
+l_dest="$BIN_DIR/llama-server-${triple}${suffix}"
+l_libs_dir="$BIN_DIR/llama-server-${triple}-libs"
+rm -f "$l_dest"
+rm -rf "$l_libs_dir"
+mkdir -p "$l_libs_dir"
+
+mv "$l_exe_src" "$l_dest"
+chmod +x "$l_dest"
+# zip 里除可执行文件外的其余文件都是它依赖的动态库/DLL（见 engines.yml 的
+# llama-macos/linux/windows 三个 job 的裁剪打包逻辑），原样搬进 -libs/ 目录，
+# 供 tauri.conf.json 的 bundle.resources 一并打进安装包。`cp -P`/`mv` 都不解
+# 引用 symlink（Linux/macOS 的 SONAME/rpath 版本号 symlink 必须原样保留，
+# AI2.0 §3.1 第 2 点踩过的坑：漏掉会导致加载失败）。
+find "$l_extract_dir" \( -type f -o -type l \) -exec mv {} "$l_libs_dir/" \;
+rm -rf "$l_extract_dir"
+
+echo "verified llama-server-${triple}: $l_dest + $(find "$l_libs_dir" \( -type f -o -type l \) | wc -l | tr -d ' ') lib file(s) in $l_libs_dir"
