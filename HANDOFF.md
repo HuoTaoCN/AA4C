@@ -1,6 +1,6 @@
 # AA4C 开发交接（换机指南）
 
-> 最后更新：2026-07-30（**V0.5「AI」里程碑 AI1（规则式归档）已实现并发布；AI2（llama-server 引擎接入）的 AI2.0–AI2.4 五个子步骤全部完成**——前置实证（tag 锁定 `b10175`）、`aa4c-engine`/`aa4c-ai` 两个新 crate（懒启动+空闲自停双槽位 AI 服务，12 个测试含 5 个真实进程集成测试）、打包腿（`engines.yml` 真实 CI 跑通并发布 `engines/llama-b10175` release）、`tauri.conf.json`/`ci.yml`/`release.yml` 接线（`ci.yml` 三平台 `test` job 已真实跑绿，过程中顺带发现修了一个 AI1 遗留的 Windows 路径分隔符测试 bug）、模型库（`Settings` 新字段 + `Core` 实例化 `AiService` + Command + 前端「AI」区块/「模型库」分区）。全部细节、已知限制（`release.yml` 本身尚未被真实 tag push 验证、推荐模型直链未核实）见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md) §3.1/§3.6。下一步是 AI2.5（全量验证 + 文档收尾）或跳去 AI3（AI 标签/分类建议），见第四节）。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
+> 最后更新：2026-07-30（**V0.5「AI」里程碑 AI1（规则式归档）+ AI2（llama-server 引擎接入）全部完成**——AI2.0 前置实证（tag 锁定 `b10175`）→ AI2.1 `aa4c-engine` 重构 → AI2.2 新 crate `aa4c-ai`（懒启动+空闲自停双槽位 AI 服务，12 个测试含 5 个真实进程集成测试）→ AI2.3 打包腿（`engines.yml` 真实 CI 跑通并发布 `engines/llama-b10175` release，`tauri.conf.json`/`ci.yml`/`release.yml` 接线）→ AI2.4 模型库（`Settings` 新字段 + `Core` 实例化 `AiService` + Command + 前端「AI」区块/「模型库」分区）→ AI2.5 全量验证收尾。`ci.yml` 三平台 `test` job 已真实跑绿（过程中顺带发现修了一个 AI1 遗留的 Windows 路径分隔符测试 bug，与本次工作无关但一起修了）。**已知限制**：`release.yml` 的 AppImage 打包本身尚未被真实版本发布验证（只在真实 tag push 时触发）；推荐模型 ModelScope/HF 直链未核实、未实现。全部细节见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md) §3/§3.6。下一步是 AI3（AI 标签/分类建议）或用户指定方向，见第四节）。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
 > 给 AI Agent：开工前先读本文档"当前进度"与"下一步"，再按 [AGENTS.md](AGENTS.md) 的必读清单工作。
 
 ## 一、当前进度
@@ -177,7 +177,7 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 
 **跨服务器好友寻址 gap 已补完并随同一版本发布**（见第一节表格）：配对时交换 `server_hint`，`resolve_addr` 能查对端自己的服务器，不再局限于「自己的多台设备」+「双方恰好用同一服务器」两种场景。**仍未做、明确缩小的范围**：中继的 `RelayDialer`/打洞的 `PunchDialer` 依然只连自己配置的服务器——跨服务器的中继/打洞信令联邦需要服务器间协议，是独立的、更大的项目（CONNECT_DESIGN.md §12「多服务器联邦」），本次不做。
 
-**V0.5「AI」里程碑 AI1（规则式归档，无 AI 即完整可用）已实现**（见第一节表格）：设计见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)（其 §10 是已确认决策表），实现计划见 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 **AI1–AI5**——"AI"前缀是 V0.5 代号，与本文档下方历史章节「A1 已完成要点（Android 适配）」里的 Android 里程碑编号 A1 无关，起名时刻意避开了撞车）。
+**V0.5「AI」里程碑 AI1（规则式归档，无 AI 即完整可用）+ AI2（llama-server 引擎接入）均已实现**（见第一节表格）：设计见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)（其 §10 是已确认决策表），实现计划见 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 **AI1–AI5**——"AI"前缀是 V0.5 代号，与本文档下方历史章节「A1 已完成要点（Android 适配）」里的 Android 里程碑编号 A1 无关，起名时刻意避开了撞车）。
 
 **AI2.0（AI2 动手前的前置实证）已完成，结论已写入 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md) §3.1/§11**：llama.cpp tag 锁定 `b10175`（规划期用的 `b10069` 已过期，**以实现期实测为准，不追规划期旧 tag**）；四平台官方产物已下载校验、裁剪清单已逐文件核实（含一个新踩的坑：macOS/Linux 的 `@rpath`/`SONAME` 版本号 symlink 容易被 `find -type f` 漏掉，必须连 symlink 一起打包否则加载失败；Linux/Windows 的 `libggml-cpu-*`/`ggml-cpu-*` 是运行期按 CPU 特征 dlopen 的后端插件，不是链接期依赖，必须整批保留不能裁剪）；**新发现一个规划期没预见的打包风险**——Linux 版 `llama-server` 依赖系统 `libssl.so.3`/`libcrypto.so.3`/`libgomp.so.1`，官方产物不带，老发行版可能没有 OpenSSL 3.x，AI2.3 打包腿必须先决定是塞进 `-libs/` 还是声明最低发行版版本；JSON Schema 约束请求形态（`response_format.json_schema`）与嵌入端点必需的 `--pooling` 参数均已实测确认；微型测试固件 `stories260K.gguf`（来源、SHA256 见 ARCHIVE_DESIGN.md §3.1 第 6 点）已下载并本机真实跑通 `/health`+`/v1/chat/completions`+`/v1/embeddings` 三个端点，并已上传到项目自己的 `engines/test-fixtures` GitHub release（供 CI 测试引用、不依赖第三方 URL 稳定性）。
 
@@ -186,11 +186,12 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 - **AI2.2** 新 crate `aa4c-ai`：`LlamaClient`（手写 HTTP + 真正增量式 chunked/SSE 解码器）+ `LlamaProcess`（拉起/健康轮询/优雅退出）+ `AiService`（双槽位懒启动+空闲自停）；`SidecarSpawner::spawn` 补了必需的 `envs` 参数（llama-server 全走环境变量配置）。
 - **AI2.3** 打包腿：`engines.yml` 四个 job 真实 CI 跑通，发布 `engines/llama-b10175` release；`tauri.conf.json`/`download_spawner.rs`/`ci.yml`/`release.yml` 全部接线。
 - **AI2.4** 模型库：`Settings` 新增 4 个 `ai_*` 字段；`Core::start()` 按需实例化 `AiService`（镜像 `DownloadService` 接线方式），`update_settings()` 换模型时同步通知；Command `list_local_models`/`get_ai_status`；前端「AI」设置区块 + 归档页「模型库」分区。
-- **`ci.yml` 三平台已真实跑绿**（多轮真实 push 验证）：过程中修了三个真问题——Windows `sha256sum` 反斜杠转义、AI1 遗留的 Windows 路径分隔符测试 bug（与本次工作无关，顺带测出来一起修了）、`aa4c-ai` 一个测试在真实 CI 资源争抢下的竞态窗口（超时从 500ms/3s 加宽到 10s/25s）。
+- **`ci.yml` 三平台已真实跑绿**（多轮真实 push 验证）：过程中修了三个真问题——Windows `sha256sum` 反斜杠转义、AI1 遗留的 Windows 路径分隔符测试 bug（与本次工作无关，顺带测出来一起修了）、`aa4c-ai` 一个测试在真实 CI 资源争抢下的竞态窗口（超时从 500ms/3s 加宽到 10s/25s）。三平台 `test` job 最终都跑绿；期间偶发的 `quic_roundtrip_transfer`/`two_cores_pair_then_transfer`/`forced_punch_path_completes_a_transfer` 失败反复复现为同一类已知的 QUIC/配对网络测试资源争抢型 flaky（本机单线程复核反复确认非回归，与本次 archive/AI 改动代码路径无关），rerun 后即过。
+- **AI2.5 全量验证收尾已完成**：`cargo test --workspace`（含 `aa4c-core` 单线程复核）+ `cargo clippy --workspace --all-targets -- -D warnings` + `cargo fmt --all --check` + `pnpm build` 本机全部通过；ROADMAP.md/CHANGELOG.md/V0.5_IMPLEMENTATION_PLAN.md 已同步标注 AI2 完成状态。
 
-**仍未做**：AI2.5（全量验证 + 文档收尾）；`release.yml` 本身尚未被真实 tag push 验证过（只到本地 `cargo check` + `engines.yml` 独立跑通，AppImage/lipo 合并的端到端效果要等真正发版才会触发）；真机 `pnpm tauri dev`（含真实 Tauri 后端 + 真实模型）走查未做，目前只验证了纯前端 dev 模式。
+**仍未做**：`release.yml` 的 AppImage 打包本身尚未被真实版本发布验证（只在真实 tag push 时触发，代码已就绪）；推荐模型的 ModelScope/HF 直链未核实、未实现；真机 `pnpm tauri dev`（含真实 Tauri 后端 + 真实模型）走查未做，目前只验证了纯前端 dev 模式。
 
-**下一步**：AI2.5（收尾：全量验证 + 文档）或跳去 AI3（AI 标签/分类建议）。也可穿插补 V0.3 其余已知缺口（见下）。
+**下一步**：AI3（AI 标签/分类建议）或用户指定方向。也可穿插补 V0.3 其余已知缺口（见下）。
 
 **V0.3 范围内其余已知的、有意缩小的缺口**（不阻塞任何已完成里程碑，可随时单独补）：
 - 分享链接：`aa4c://` deep-link 系统级注册（桌面三平台 + Android intent）未做，首版只支持粘贴链接打开；二维码生成未做。

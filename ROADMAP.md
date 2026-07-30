@@ -97,7 +97,7 @@
 - 模型管理（GGUF 识别与归档）
 - 本地知识库（llama.cpp，完全本地、零云端调用）
 
-> 设计详见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)（v1 定稿，关键外部事实已真机实证；AI1 已实现）；实现计划见 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 AI1–AI5）。V0.5 仅桌面三平台，不含 Android。
+> 设计详见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)（v1 定稿，关键外部事实已真机实证；AI1/AI2 已实现）；实现计划见 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 AI1–AI5）。V0.5 仅桌面三平台，不含 Android。
 
 ---
 
