@@ -156,19 +156,23 @@ mod tests {
         .expect("archive hook should apply the matching rule in time");
         assert_eq!(
             event.0,
-            archive_root.join("模型/model.gguf").to_string_lossy()
+            archive_root
+                .join("模型")
+                .join("model.gguf")
+                .to_string_lossy()
         );
         assert_eq!(event.1.as_deref(), Some("r1"));
 
         assert!(!src.exists());
-        assert!(archive_root.join("模型/model.gguf").exists());
+        assert!(archive_root.join("模型").join("model.gguf").exists());
 
         let task = store.get_download("gid1").await.unwrap().unwrap();
         assert_eq!(
             task.save_path.as_deref(),
             Some(
                 archive_root
-                    .join("模型/model.gguf")
+                    .join("模型")
+                    .join("model.gguf")
                     .to_string_lossy()
                     .as_ref()
             )

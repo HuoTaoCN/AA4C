@@ -579,7 +579,7 @@ mod tests {
         };
         assert!(!src.exists(), "source should have been moved away");
         assert!(to_path.exists());
-        assert_eq!(to_path, archive_root.join("模型/model.gguf"));
+        assert_eq!(to_path, archive_root.join("模型").join("model.gguf"));
 
         let entry = store.get_archive_entry(&entry_id).await.unwrap().unwrap();
         assert_eq!(entry.category, ArchiveCategory::Model);
