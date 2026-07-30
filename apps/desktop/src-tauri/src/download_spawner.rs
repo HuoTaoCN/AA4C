@@ -3,19 +3,20 @@
 //! 依赖倒置边界在桌面壳层的具体实现——crate 本身不知道、也不需要知道背后是
 //! Tauri（同 `RelayDialer`/`PunchDialer`/`ShareResolver` 一路的既有先例）。
 //!
-//! 一个实例绑定一个具体的 sidecar 名字（构造时指定，`"aria2c"` 或
-//! `"transmission-daemon"`）——D1 上线时是硬编码 `"aria2c"`，D2 接
-//! Transmission 时需要第二个不同名字的 sidecar，遂参数化。
+//! 一个实例绑定一个具体的 sidecar 名字（构造时指定，`"aria2c"`/
+//! `"transmission-daemon"`/`"llama-server"`）——D1 上线时是硬编码 `"aria2c"`，
+//! D2 接 Transmission 时需要第二个不同名字的 sidecar，遂参数化；AI2 接
+//! llama-server 复用同一套机制，不需要第三个类型。
 //!
-//! `transmission-daemon` sidecar 额外需要在 spawn 前注入动态库搜索路径
-//! （`TRANSMISSION_LIBS_ENV_VARS`）：Tauri 的 `externalBin` 和 `bundle.resources`
-//! 在打包后落在不同目录（macOS `Contents/MacOS/` vs `Contents/Resources/`；
-//! Linux deb/AppImage 的 `usr/bin/` vs `usr/lib/<product>/`；实测确认，见
-//! DOWNLOAD_DESIGN.md §3.6.5），而 engines.yml 给 transmission-daemon 的
-//! dylib/so 依赖打的 rpath 假设"依赖库和可执行文件同目录"——两者对不上，
-//! 不注入的话 sidecar 启动时找不到依赖库直接崩。Windows 不需要（NSIS 把
-//! externalBin 和 resources 一起装进同一个 `$INSTDIR`，天然同目录）。aria2c
-//! 是单文件静态二进制，没有这个问题，不注入。
+//! `transmission-daemon`/`llama-server` 两个 sidecar 都额外需要在 spawn 前
+//! 注入动态库搜索路径（`lib_search_env`）：Tauri 的 `externalBin` 和
+//! `bundle.resources` 在打包后落在不同目录（macOS `Contents/MacOS/` vs
+//! `Contents/Resources/`；Linux deb/AppImage 的 `usr/bin/` vs
+//! `usr/lib/<product>/`；实测确认，见 DOWNLOAD_DESIGN.md §3.6.5），而
+//! engines.yml 给这两个引擎的 dylib/so 依赖打的 rpath 假设"依赖库和可执行
+//! 文件同目录"——两者对不上，不注入的话 sidecar 启动时找不到依赖库直接崩。
+//! Windows 不需要（NSIS 把 externalBin 和 resources 一起装进同一个
+//! `$INSTDIR`，天然同目录）。aria2c 是单文件静态二进制，没有这个问题，不注入。
 
 use std::collections::VecDeque;
 use std::sync::Mutex as StdMutex;
@@ -33,15 +34,18 @@ const STDIO_TAIL_LINES: usize = 20;
 /// `"binaries/transmission-daemon-*-libs/*": "transmission-libs/"`。
 const TRANSMISSION_LIBS_RESOURCE_SUBDIR: &str = "transmission-libs";
 
+/// 同上，对应 `"binaries/llama-server-*-libs/*": "llama-libs/"`（AI2.3）。
+const LLAMA_LIBS_RESOURCE_SUBDIR: &str = "llama-libs";
+
 /// 找不到 `resource_dir()`（理论上不应该发生，Tauri 打包后总有这个目录）
 /// 或目录本身不存在（dev 模式没有真正的依赖库，见 fetch-engines.sh
 /// `--from-path` 分支的占位文件）都不报错——sidecar 该怎么启动还怎么启动，
 /// 只是找不到依赖库时会在 dyld/ld.so 层面失败，那个错误本身已经足够诊断。
-fn transmission_lib_search_env(app: &AppHandle) -> Vec<(&'static str, String)> {
+fn lib_search_env(app: &AppHandle, resource_subdir: &str) -> Vec<(&'static str, String)> {
     let Ok(resource_dir) = app.path().resource_dir() else {
         return Vec::new();
     };
-    let lib_dir = resource_dir.join(TRANSMISSION_LIBS_RESOURCE_SUBDIR);
+    let lib_dir = resource_dir.join(resource_subdir);
     let lib_dir = lib_dir.to_string_lossy().into_owned();
 
     if cfg!(target_os = "macos") {
@@ -80,8 +84,13 @@ impl SidecarSpawner for TauriSidecarSpawner {
             let mut sidecar = app.shell().sidecar(&sidecar_name).map_err(|e| {
                 Aa4cError::Unavailable(format!("{sidecar_name} sidecar not configured: {e}"))
             })?;
-            if sidecar_name == "transmission-daemon" {
-                for (key, value) in transmission_lib_search_env(&app) {
+            let libs_resource_subdir = match sidecar_name.as_str() {
+                "transmission-daemon" => Some(TRANSMISSION_LIBS_RESOURCE_SUBDIR),
+                "llama-server" => Some(LLAMA_LIBS_RESOURCE_SUBDIR),
+                _ => None,
+            };
+            if let Some(subdir) = libs_resource_subdir {
+                for (key, value) in lib_search_env(&app, subdir) {
                     sidecar = sidecar.env(key, value);
                 }
             }

@@ -34,7 +34,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 \
-            libevent-dev libpsl-dev libminiupnpc-dev libcurl4-openssl-dev
+            libevent-dev libpsl-dev libminiupnpc-dev libcurl4-openssl-dev libssl3 libgomp1
       # v0.4.0-preview.2 首次真实 tag push 里 appimage 目标报
       # "failed to run linuxdeploy"，Tauri 不透出底层 stderr，一开始按 FUSE
       # 缺失猜（装 libfuse2、设 APPIMAGE_EXTRACT_AND_RUN=1）都没用，最后靠
@@ -47,6 +47,16 @@ jobs:
       # "ERROR: Could not find dependency: libevent-2.1.so.7" 后中断整个打包。
       # libfuse2（真正需要，只是不是这次的根因）+ 这四个运行时库都装上后
       # appimage 打包成功（真机验证过，见 verify-appimage.yml 诊断记录）。
+      #
+      # `libssl3`/`libgomp1` 是 AI2（llama-server）同一类问题的预防性修——
+      # ARCHIVE_DESIGN.md §3.1 第 2 点已经记录了这个新发现：llama-server 的
+      # NEEDED 里有 `libssl.so.3`/`libcrypto.so.3`/`libgomp.so.1`，官方产物不带、
+      # engines.yml 的 llama-linux job 选择自己打包一份塞进 -libs/（供**运行时**
+      # `LD_LIBRARY_PATH` 用），但同上面的教训，linuxdeploy **打包阶段**的 ELF
+      # 扫描走的是系统路径，不认 bundle.resources——这两个包在 ubuntu-latest
+      # 镜像上大概率已经因为其他依赖被间接装上，这里显式声明只是不想赌"大概率"，
+      # 具体这次 tag push 里 AppImage 打包是否真的过，仍需真实 CI 验证确认
+      # （不能靠本地推理替代，同 §3.4 的既有要求）。
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
@@ -71,11 +81,11 @@ jobs:
       # 简单地找 `<name>-universal-apple-darwin` 这个固定文件名，找不到就直接报
       # "resource path ... doesn't exist" 报错——这份 lipo 合并工作必须我们自己做
       # （见 scripts/fetch-engines.sh 顶部用法说明；那份注释此前的假设是错的）。
-      - name: Stage aria2c sidecar (Linux)
+      - name: Stage aria2c + llama-server sidecars (Linux)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: bash scripts/fetch-engines.sh x86_64-unknown-linux-gnu
-      - name: Stage aria2c + transmission-daemon sidecars (macOS, both archs, lipo into universal)
+      - name: Stage aria2c + transmission-daemon + llama-server sidecars (macOS, both archs, lipo into universal)
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
@@ -88,7 +98,10 @@ jobs:
             "$BIN_DIR/aria2c-aarch64-apple-darwin" "$BIN_DIR/aria2c-x86_64-apple-darwin"
           lipo -create -output "$BIN_DIR/transmission-daemon-universal-apple-darwin" \
             "$BIN_DIR/transmission-daemon-aarch64-apple-darwin" "$BIN_DIR/transmission-daemon-x86_64-apple-darwin"
-          chmod +x "$BIN_DIR/aria2c-universal-apple-darwin" "$BIN_DIR/transmission-daemon-universal-apple-darwin"
+          lipo -create -output "$BIN_DIR/llama-server-universal-apple-darwin" \
+            "$BIN_DIR/llama-server-aarch64-apple-darwin" "$BIN_DIR/llama-server-x86_64-apple-darwin"
+          chmod +x "$BIN_DIR/aria2c-universal-apple-darwin" "$BIN_DIR/transmission-daemon-universal-apple-darwin" \
+            "$BIN_DIR/llama-server-universal-apple-darwin"
 
           # 依赖库同理需要 lipo 成 fat dylib——两个单架构 -libs/ 目录里文件名完全
           # 相同，如果不合并、直接让 bundle.resources 的 glob 两个目录都扫到，会
@@ -105,7 +118,30 @@ jobs:
           done
           rm -rf "$BIN_DIR/transmission-daemon-aarch64-apple-darwin-libs" \
             "$BIN_DIR/transmission-daemon-x86_64-apple-darwin-libs"
-      - name: Stage aria2c sidecar (Windows)
+
+          # llama-server 的两个单架构 -libs/ 目录**不完全对称**（ARCHIVE_DESIGN.md
+          # §3.1 第 2 点：x64 官方产物没有 libggml-metal，那是 Apple Silicon 专属
+          # 的 GPU 后端）——文件名集合取并集，两边都有的才 lipo 合并，只有一边有
+          # 的（目前只有 libggml-metal 这一个）直接原样拷贝，不需要（也没法）
+          # 合并一个不存在的架构切片。
+          mkdir -p "$BIN_DIR/llama-server-universal-apple-darwin-libs"
+          (cd "$BIN_DIR/llama-server-aarch64-apple-darwin-libs" && find . -type f -o -type l) | sed 's|^\./||' > /tmp/arm64_libs.txt
+          (cd "$BIN_DIR/llama-server-x86_64-apple-darwin-libs" && find . -type f -o -type l) | sed 's|^\./||' > /tmp/x64_libs.txt
+          sort -u /tmp/arm64_libs.txt /tmp/x64_libs.txt | while IFS= read -r name; do
+            arm64_f="$BIN_DIR/llama-server-aarch64-apple-darwin-libs/$name"
+            x64_f="$BIN_DIR/llama-server-x86_64-apple-darwin-libs/$name"
+            out="$BIN_DIR/llama-server-universal-apple-darwin-libs/$name"
+            if [[ -f "$arm64_f" && -f "$x64_f" ]]; then
+              lipo -create -output "$out" "$arm64_f" "$x64_f"
+            elif [[ -f "$arm64_f" ]]; then
+              cp -P "$arm64_f" "$out"
+            else
+              cp -P "$x64_f" "$out"
+            fi
+          done
+          rm -rf "$BIN_DIR/llama-server-aarch64-apple-darwin-libs" \
+            "$BIN_DIR/llama-server-x86_64-apple-darwin-libs"
+      - name: Stage aria2c + llama-server sidecars (Windows)
         if: matrix.os == 'windows-latest'
         shell: bash
         run: bash scripts/fetch-engines.sh x86_64-pc-windows-msvc

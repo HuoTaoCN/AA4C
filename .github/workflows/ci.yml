@@ -21,10 +21,20 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev aria2 \
             transmission-daemon
-      # aa4c-desktop 声明了 externalBin（下载中心 sidecar，里程碑 D1 aria2c + D2
-      # transmission-daemon）：cargo 一碰这个 crate 就会校验这些文件存在，
-      # `--from-path` 只是把 CI 里装好的系统二进制复制过去顶个位置——lint/test
-      # 不需要真的执行子进程，不影响这一步验证的内容。
+      # llama-server（V0.5 AI2）不在 apt 仓库——没有可装的系统包，同 engines.yml
+      # 的 llama-linux job 一样直接下官方 release 解出来，放进 PATH。lint 不执行
+      # 子进程，不需要额外设 LD_LIBRARY_PATH（那是 test job 才要操心的事）。
+      - name: Install llama-server (Linux, official prebuilt, unpack only)
+        run: |
+          curl -fsSL -o llama.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/b10175/llama-b10175-bin-ubuntu-x64.tar.gz"
+          mkdir -p "$RUNNER_TEMP/llama"
+          tar xzf llama.tar.gz -C "$RUNNER_TEMP/llama"
+          dirname "$(find "$RUNNER_TEMP/llama" -name llama-server -type f)" >> "$GITHUB_PATH"
+      # aa4c-desktop 声明了 externalBin（下载中心/AI 引擎 sidecar，里程碑 D1
+      # aria2c + D2 transmission-daemon + AI2 llama-server）：cargo 一碰这个
+      # crate 就会校验这些文件存在，`--from-path` 只是把 CI 里装好的系统二进制
+      # 复制过去顶个位置——lint/test 不需要真的执行子进程，不影响这一步验证的
+      # 内容。
       - name: Stage sidecar placeholders
         run: bash scripts/fetch-engines.sh --from-path
       - uses: dtolnay/rust-toolchain@stable
@@ -95,6 +105,54 @@ jobs:
           $exe = Get-ChildItem -Path $extractDir -Filter "transmission-daemon.exe" -Recurse | Select-Object -First 1
           if (-not $exe) { throw "transmission-daemon.exe not found after MSI extraction" }
           Add-Content -Path $env:GITHUB_PATH -Value $exe.DirectoryName
+      # aa4c-ai 的集成测试驱动真实 llama-server（V0.5 AI2，见
+      # crates/aa4c-ai/src/{process,service}.rs 的 #[cfg(test)]）。macOS 用
+      # `brew install llama.cpp`（同 ARCHIVE_DESIGN.md §3.4，rpath 由 Homebrew
+      # 自己处理，不需要额外设 DYLD_LIBRARY_PATH）；Linux/Windows 没有系统包，
+      # 直接下官方 release 解出来（同 engines.yml 的 llama-linux/windows job
+      # 用的同一份官方产物，未裁剪版本自带全部依赖库，够测试用）。
+      - name: Install llama-server (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install llama.cpp
+      - name: Install llama-server (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          curl -fsSL -o llama.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/b10175/llama-b10175-bin-ubuntu-x64.tar.gz"
+          mkdir -p "$RUNNER_TEMP/llama"
+          tar xzf llama.tar.gz -C "$RUNNER_TEMP/llama"
+          bin_dir="$(dirname "$(find "$RUNNER_TEMP/llama" -name llama-server -type f)")"
+          echo "$bin_dir" >> "$GITHUB_PATH"
+          echo "AA4C_TEST_LLAMA_SERVER_BIN=$bin_dir/llama-server" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$bin_dir" >> "$GITHUB_ENV"
+      - name: Install llama-server (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP\llama.zip"
+          Invoke-WebRequest -Uri "https://github.com/ggml-org/llama.cpp/releases/download/b10175/llama-b10175-bin-win-cpu-x64.zip" -OutFile $zip
+          $extractDir = "$env:RUNNER_TEMP\llama"
+          Expand-Archive -Path $zip -DestinationPath $extractDir
+          $exe = Get-ChildItem -Path $extractDir -Filter "llama-server.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "llama-server.exe not found after extraction" }
+          Add-Content -Path $env:GITHUB_PATH -Value $exe.DirectoryName
+          Add-Content -Path $env:GITHUB_ENV -Value "AA4C_TEST_LLAMA_SERVER_BIN=$($exe.FullName)"
+      # 微型 GGUF 测试固件（ARCHIVE_DESIGN.md §3.1 第 6 点：来源/SHA256 已实证），
+      # 三平台共用同一份，走我们自己的 engines/test-fixtures release（不依赖第
+      # 三方 URL 稳定性，engines.yml 惯例）。
+      - name: Download tiny GGUF test fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/stories260K.gguf"
+          curl -fsSL -o "$dest" "https://github.com/HuoTaoCN/AA4C/releases/download/engines/test-fixtures/stories260K.gguf"
+          actual="$(sha256sum "$dest" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$dest" | awk '{print $1}')"
+          expected="270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "error: stories260K.gguf checksum mismatch (expected $expected, got $actual)" >&2
+            exit 1
+          fi
+          echo "AA4C_TEST_TINY_GGUF=$dest" >> "$GITHUB_ENV"
       - name: Stage sidecar placeholders
         shell: bash
         run: bash scripts/fetch-engines.sh --from-path
