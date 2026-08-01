@@ -60,9 +60,9 @@ LLAMA_TAG="engines/llama-${LLAMA_VERSION}"
 checksum_for() {
   case "$1" in
     x86_64-pc-windows-msvc) echo "be2099c214f63a3cb4954b09a0becd6e2e34660b886d4c898d260febfe9d70c2" ;;
-    aarch64-apple-darwin) echo "34f5dd97cd307d355306d0fbdcd0c14e1b4fdba54f210e94ca4a03bd0c9e965a" ;;
-    x86_64-apple-darwin) echo "2af49a6dc10d696cdc329bbac8f0d6d3948b39322cff0e31f2334012a893bea9" ;;
-    x86_64-unknown-linux-gnu) echo "ca1edb54e583f1e476f3a5084b8458d31821a12948d88217dd842ebbf7daf825" ;;
+    aarch64-apple-darwin) echo "95f936fbf4d1e059d12aa0f617c6f9df50de5c1ea8eb846984989260cfcf4eb7" ;;
+    x86_64-apple-darwin) echo "9843b062b7b1892a4a4cfd405191fdeab6c46ecd91a653e03bbf90464dd59509" ;;
+    x86_64-unknown-linux-gnu) echo "0c8ba5a45b9b2099e76f555c5936423396e9cecb3314252085bbac3e055c7cc7" ;;
     *) echo "" ;;
   esac
 }
@@ -72,21 +72,23 @@ checksum_for() {
 checksum_for_transmission() {
   case "$1" in
     x86_64-pc-windows-msvc) echo "1295b252da08e6cc06c388f3e011c540ce8eee96d13c7bf8a388a74f7e80dca7" ;;
-    aarch64-apple-darwin) echo "a3086f57fd403fa52e3cf79ebc7ee7db9d6d71cdcd6be5137689d56476dcebec" ;;
-    x86_64-apple-darwin) echo "5b9e208ebf7e87e9327d250351300f5e3413e71c396dcbfb085878aff54ab222" ;;
-    x86_64-unknown-linux-gnu) echo "532ef742820352014d56eee7e9d64249655a59ac590b62f2123a504edb874b32" ;;
+    aarch64-apple-darwin) echo "22e201989776624f2eb84370565c684fab97951280818ce2275b301670378e24" ;;
+    x86_64-apple-darwin) echo "74c0a0d8751fe69ddd17f9b36cbcfe11bacfa07903301aec4a9dfdb50baa250e" ;;
+    x86_64-unknown-linux-gnu) echo "b9e25aae94f8d4eb5f228ab168baf8a2e42056e093161db3c601b05381ea9020" ;;
     *) echo "" ;;
   esac
 }
 
-# engines.yml 的 llama 腿已在真实 CI 跑通（2026-07-30，run 30518097243，四个
-# 平台 job + publish 全绿），这些是 engines/llama-b10175 release 的 SHA256SUMS。
+# engines.yml 的 llama 腿已在真实 CI 跑通，这些是 engines/llama-b10175 release
+# 的 SHA256SUMS（2026-07-30 校验和刷新：workflow 被重新跑过一次，产物内容变了
+# 但发布时间未变，之前记的旧校验和已经过期，见 fetch-engines.sh 同一次改动里
+# aria2/transmission 两个 checksum_for*() 的说明）。
 checksum_for_llama() {
   case "$1" in
     x86_64-pc-windows-msvc) echo "c9d61dd6e01c17443533c07ff27daaeac85ba805223e2f5c676c9bb54a4e1860" ;;
-    aarch64-apple-darwin) echo "cc757a0cba461e882fbf1494a55b0dcda4b40fdf44ffb212376cf6576bd18bdb" ;;
-    x86_64-apple-darwin) echo "4a1bb6920758def360009493993bf2f880e1382f3414cf465cdf4fd6b823d6ce" ;;
-    x86_64-unknown-linux-gnu) echo "df1d10a78d1e10729180af6a1a49b153d40c53271461c51c06edfa07dcba8a68" ;;
+    aarch64-apple-darwin) echo "9e8215c097f698434a6a4705230c2678115ea9ce0ddb4b4bfbd9157444d63f2e" ;;
+    x86_64-apple-darwin) echo "8e8e617e2e45787f67510ee038a028b9be42f72570a7f4b4a7fd280dfbfec33f" ;;
+    x86_64-unknown-linux-gnu) echo "a6a8dc577c0227a9dcf29e610b0a71b67d5da50f73e173ef21a1c283852ddc84" ;;
     *) echo "" ;;
   esac
 }
