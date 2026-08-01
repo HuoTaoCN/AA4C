@@ -56,7 +56,15 @@ const RECONCILE_INTERVAL: Duration = Duration::from_secs(2);
 /// 收尾再真正退出（实测确认：日志打「3 second(s) has passed. Stopping
 /// application.」）——这个宽限期必须明显长于那 3 秒，否则我们自己的强杀会抢在
 /// aria2 完成 session 落盘之前发生，直接违背"先礼后兵"想要的效果。
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+///
+/// 曾经用过 5 秒（只比那 3 秒多 2 秒余量），本机一直稳定，但在真实
+/// windows-latest CI runner 上翻过车：`missing_session_file_marks_orphaned_
+/// task_as_error`（2026-07-30，run 30521416776 / job 90802462461）在
+/// `svc.shutdown().await` 返回后立刻 `remove_file(aria2.session)` 就报
+/// `NotFound`——Windows 上的磁盘 I/O/杀毒软件扫描比本机慢，2 秒余量在负载较高
+/// 的共享 runner 上被吃满。8 秒给到 5 秒余量，同 aa4c-ai idle-reaper 那次
+/// CI 抖动的处理方式一致（按实测差距加余量，而不是凭感觉猜）。
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(8);
 /// Transmission 的 RPC 是纯请求-响应（HTTP，每次调用开关一条连接），没有 aria2
 /// WS 连接那种"断开"信号可以监听——`torrent-get` 轮询本身就是唯一的存活信号。
 /// 连续这么多次轮询失败（daemon 进程可能已经崩溃）才判定 BT 能力在本次会话
