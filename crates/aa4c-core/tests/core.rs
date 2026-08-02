@@ -1671,3 +1671,106 @@ async fn archive_lifecycle_through_core_orchestration() {
 
     a.core.shutdown().await.unwrap();
 }
+
+/// AI 建议全链路（V0.5 里程碑 AI3，ARCHIVE_DESIGN.md §5）：真实 `llama-server` + 微型
+/// GGUF（同 AI2.0/AI3.1 实证结论，不 mock）走 `Core` 公开方法——`start_suggest`
+/// 正确组好输入（文件识别 + 读文本头，这两步是 aa4c-core 的职责，aa4c-ai 不碰
+/// 文件系统）、`AiSuggestProgress` 事件如实广播、`resolve_suggestion(adopt=true)`
+/// 采纳后文件真的被移动、打上 `TagSource::Ai` 标签、留下可撤销的 `archive_log`
+/// 记录并广播 `ArchiveApplied`。需要 `AA4C_TEST_LLAMA_SERVER_BIN`/`AA4C_TEST_TINY_GGUF`
+/// 两个环境变量（同 aa4c-ai 的 `require_llama_server`/`require_tiny_model`，见
+/// HANDOFF.md 环境要求）——没设就显式 panic，不静默跳过。
+#[tokio::test]
+async fn ai_suggest_lifecycle_through_core_orchestration() {
+    use aa4c_download::ProcessSpawner;
+
+    fn require_llama_server_bin() -> PathBuf {
+        match std::env::var("AA4C_TEST_LLAMA_SERVER_BIN") {
+            Ok(p) => PathBuf::from(p),
+            Err(_) => {
+                panic!("AA4C_TEST_LLAMA_SERVER_BIN not set — see ARCHIVE_DESIGN.md §3.1/HANDOFF.md")
+            }
+        }
+    }
+    fn require_tiny_gguf() -> PathBuf {
+        match std::env::var("AA4C_TEST_TINY_GGUF") {
+            Ok(p) => PathBuf::from(p),
+            Err(_) => panic!("AA4C_TEST_TINY_GGUF not set — see ARCHIVE_DESIGN.md §3.1 第 6 点"),
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = CoreConfig::new(dir.path().to_path_buf());
+    config.listen_port = 0;
+    config.transfer.default_save_dir = dir.path().join("downloads");
+    config.ai_spawner = Some(Arc::new(ProcessSpawner::new(require_llama_server_bin())));
+    let core = Core::start(config).await.expect("core starts");
+
+    let mut settings = core.get_settings().await.unwrap();
+    settings.ai_chat_model = Some(require_tiny_gguf().to_string_lossy().into_owned());
+    core.update_settings(settings).await.unwrap();
+
+    let src = dir.path().join("todo.md");
+    tokio::fs::write(&src, "- buy milk\n- write tests\n")
+        .await
+        .unwrap();
+
+    let mut ev = core.subscribe();
+    core.start_suggest(vec![src.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+
+    let mut saw_done = false;
+    for _ in 0..200 {
+        if let Ok(Ok(CoreEvent::AiSuggestProgress { done, total })) =
+            timeout(Duration::from_millis(500), ev.recv()).await
+        {
+            assert_eq!(total, 1);
+            if done >= total {
+                saw_done = true;
+                break;
+            }
+        }
+    }
+    assert!(saw_done, "expected the batch to finish within the timeout");
+
+    let suggestions = core.list_suggestions().await.unwrap();
+    assert_eq!(suggestions.len(), 1);
+    let suggestion = &suggestions[0];
+    if let Some(err) = &suggestion.error {
+        panic!("expected a schema-valid suggestion, got error: {err}");
+    }
+    assert_eq!(suggestion.path, src.to_string_lossy());
+
+    let target_dir = dir.path().join("suggest-target");
+    let moved = core
+        .resolve_suggestion(
+            suggestion.id.clone(),
+            true,
+            Some(target_dir.to_string_lossy().into_owned()),
+        )
+        .await
+        .unwrap()
+        .expect("adopting should return the file's final path");
+    let to_path = PathBuf::from(&moved);
+    assert!(!src.exists(), "file should have been moved on adopt");
+    assert!(to_path.exists());
+    assert!(to_path.starts_with(&target_dir));
+
+    // 待确认列表应该已经摘掉这一条。
+    assert!(core.list_suggestions().await.unwrap().is_empty());
+
+    let entries = core.list_archive_entries().await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].current_path, to_path.to_string_lossy());
+
+    let log = core.list_archive_log().await.unwrap();
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0].to_path, to_path.to_string_lossy());
+    assert!(
+        log[0].rule_id.is_none(),
+        "AI suggestion adopt has no rule_id"
+    );
+
+    core.shutdown().await.unwrap();
+}

@@ -1,6 +1,6 @@
 # AA4C 归档与 AI 设计（V0.5「AI」）
 
-> 状态：**里程碑 AI1（规则式归档，无 AI）已实现**；AI2–AI5（AI 引擎/建议/知识库/发布）仍是设计稿。对应 [ROADMAP.md](ROADMAP.md) V0.5（AI 归档：自动分类 / 标签 / 模型管理 / 本地知识库）；实现拆解见 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 AI1–AI5）。
+> 状态：**里程碑 AI1（规则式归档）、AI2（llama-server 引擎接入）、AI3（AI 标签/分类建议）已实现**；AI4–AI5（知识库/发布）仍是设计稿。对应 [ROADMAP.md](ROADMAP.md) V0.5（AI 归档：自动分类 / 标签 / 模型管理 / 本地知识库）；实现拆解见 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 AI1–AI5）。
 >
 > **本文档的关键外部事实已在规划阶段真机实证（不是从网页/文档抄的），标注在 §3.1**：llama.cpp 官方 release 对我们全部目标平台提供预编译二进制（这一点直接决定了引擎分发方案——对照 V0.4 D1 的教训：aria2 官方"有二进制"的说法对 2/3 平台不成立，被迫自建整条构建流水线）；`llama-server` 的环境变量配置与 `LLAMA_API_KEY` 已在本机真实二进制上验证。实现期仍需补验证的项集中列在 §11。AI1 落地时又补了一处实证：`general.file_type` 的量化枚举/名称表直接抓取 llama.cpp `master` 分支的 `include/llama.h`（`enum llama_ftype`）与 `src/llama-model-loader.cpp`（`llama_ftype_name()`），不是凭记忆猜的，见 §2.2 与 `crates/aa4c-core/src/archive/gguf.rs` 模块文档。
 >
@@ -144,6 +144,13 @@ metadata_kv_count: u64
 - **模型库（AI2.4）已完成**：`Settings` 新增 `ai_models_dir`/`ai_chat_model`/`ai_embedding_model`/`ai_idle_timeout_minutes`（`aa4c-types`+`aa4c-core` 的 load/save，镜像 `archive_root`/`archive_auto_enabled` 写法；`ai_models_dir` 默认值依赖 `archive_root`，`Core::start()` 里先算出 `archive_root` 再构造 `Settings` 字面量）。`Core::start()` 按 `config.ai_spawner` 是否注入决定要不要实例化 `AiService`（镜像 `DownloadService` 的可选能力接线），`Core::shutdown()` 一并停掉；`Core::update_settings()` 新增对 `ai_chat_model`/`ai_embedding_model` 变化的 diff，调用新增的 `AiService::set_model()`（换模型时顺手停掉正在跑的旧进程，不需要重启应用）。`AiService` 新增查询方法 `status(kind) -> aa4c_types::AiSlotStatus`（一次性快照，不经事件总线）。Command：`list_local_models`（递归一层扫描 `ai_models_dir`，读 GGUF 头，坏文件跳过不中断整批）、`get_ai_status`。桌面壳层 `desktop_download_spawner` 改名 `desktop_sidecar_spawner`（三个引擎共用同一个通用实现，旧名字带"download"是历史遗留，D1/D2 时只有下载引擎）。前端：新 `LocalModel`/`AiStatus`/`AiSlotStatus`/`AiEngineStatePayload` 类型 + `useAiStore` + `aa4c://ai_engine_state` 事件桥接；设置页新增「AI」区块（模型目录选择器+空闲超时分钟数）；归档页新增「模型库」分区（列表 + 设为对话/嵌入模型按钮 + 引擎运行状态提示）。**推荐模型双源直链（ModelScope/HF）未做**——ARCHIVE_DESIGN.md §3.5 提到的 URL 尚未实证核实，不编造链接，留给之后需要时再核实补上。`pnpm build` 通过，浏览器走查过两个新区块渲染正常（无 Tauri 后端的纯前端 dev 模式下优雅显示空态，不报错）。
 - **未做**：AI2.5（全量验证 + 文档收尾）；`release.yml` 的 AppImage 产出与 macOS lipo 合并逻辑本身**尚未被真实 tag push 验证过**（只验证到 `cargo check -p aa4c-desktop` 本地通过 + `engines.yml` 独立跑通，release.yml 要等真实打 tag 发版才会触发，按计划这是 AI5 的事）；真机走查 `pnpm tauri dev`（当前只验证了纯前端 dev 模式，没有真实 Tauri 后端+真实模型的端到端点击走查）。
 
+### 3.7 AI3 实现偏差（2026-08-02，代码已落地，全量验证通过）
+
+- **`aa4c-ai::suggest` 模块**：`SuggestEngine`（单并发批量队列 + 门闩，重叠批量直接拒绝而不是排队——§5 描述的场景本来就是"等一批做完再发下一批"，不需要队列语义）；`build_request`/`parse_suggestion` 严格照抄 AI2.0 实证的请求形态（`response_format.json_schema`，见 §3.1 第 4 点）。`aa4c-ai` 依旧不碰文件系统——`SuggestInput`（path/category/size/text_head）由调用方（`aa4c-core::orchestrate::start_suggest`）组好传入，`text_head` 只对 Document/Code/Subtitle 三个类别读（图片/视频/音频/模型/压缩包/安装包是二进制，读了也是乱码），读取用 `Read::take` 限流到 8KB 而不是整读再截断。
+- **`Core` 编排**：`start_suggest`/`list_suggestions`/`resolve_suggestion` 与设计一致；`resolve_suggestion(id, adopt, target_dir)` 内部新增 `archive::engine::apply_suggestion()`（`finish_move` 抽出的 `record_entry` 共享辅助函数，供规则式归档与 AI 建议采纳共用"落 `archive_entries` + 打标签"这一步）——采纳时 `target_dir` 给了才移动文件+写 `archive_log`+广播 `ArchiveApplied`，不给就原地打标签（`TagSource::Ai`），不生成可撤销的日志记录（没有物理移动，撤销无意义）。建议的 `category` 直接采用模型输出，不重新跑 `detect_category` 覆盖——用户点"采纳"就是认可了这个类别。
+- **UI**：沿用 AI1 建立的先例——归档页仍是纵向堆叠的独立 `<h3>` 分区，不是 §8 描述的 tab/分段卡片；"AI 建议"是独立分区（进度 + 待确认列表 + 采纳/忽略按钮），未与"最近动作"合并成单一"归纳"分区。对话模型未配置时按钮禁用并提示去模型库选一个，不允许发起注定失败的请求。
+- **测试**：`aa4c-ai::suggest` 单元测试覆盖请求构造/响应解析/未配置引擎降级/重叠批量拒绝，另有 1 个真实 `llama-server`+微型 GGUF 的端到端测试（对真实文件出建议，只断言 schema 合法，不断言内容质量——微型模型说胡话是预期内的失败模式）；`aa4c-core` 新增 `ai_suggest_lifecycle_through_core_orchestration`，走 `Core` 公开方法用真实模型跑通"选文件 → 出建议 → 采纳 → 文件真的被移动/打标签/可撤销"全链路。`cargo test --workspace`（真实模型环境变量注入）全绿，含单线程复核排除并行资源争抢导致的已知 QUIC flaky 干扰（`quic_resume_after_disconnect`/`two_cores_pair_then_transfer` 隔离重跑均通过，与本次改动无关）。
+
 ## 4. 数据模型（`aa4c-store`，两个迁移分属两个里程碑）
 
 **迁移 009（AI1）**——归档：
@@ -214,7 +221,7 @@ AI 建议（AI3）**不落库**——待确认建议是易失的内存态（应�
 |--------|------|------|
 | AI1 ✅ 已实现 | 文档先行 + 规则式归档（识别/GGUF/规则/移动/撤销/UI）| 真实下载一个小 .gguf → 自动移入模型目录、记录可撤销；同步范围警示可见 |
 | AI2 ✅ 代码/CI 已实现，AppImage 打包待发版验证 | `aa4c-engine` 重构 + llama-server 接入 + 打包腿 + 模型库 | 真机加载真实模型 `/health` 就绪（已达成）；三平台安装包含引擎且 AppImage 验证通过（`release.yml` 只在真实 tag push 时触发，代码已就绪，端到端效果留给 AI5 发版时验证，见 §3.6） |
-| AI3 | AI 标签/分类建议（批量队列 + 待确认流） | 真实模型对一批真实文件出建议，采纳后标签/移动生效 |
+| AI3 ✅ 已实现 | AI 标签/分类建议（批量队列 + 待确认流） | 真实模型对一批真实文件出建议，采纳后标签/移动生效（已用真实 llama-server + 微型 GGUF 走通 `Core` 全链路） |
 | AI4 | 知识库（摄入/检索/流式问答） | 对自己的笔记目录问一个问题得到带引用的回答 |
 | AI5 | 收尾：全量验证 + 文档 + `v0.5.0-preview` 发布 | 三平台 + Android APK 发布产物齐全 |
 

@@ -8,8 +8,8 @@ use std::sync::Arc;
 use aa4c_core::Core;
 use aa4c_types::{
     Aa4cError, AiStatus, ArchiveEntry, ArchiveLogEntry, ArchiveRule, CoreEvent, DeviceInfo,
-    DownloadTask, LocalModel, Settings, Share, ShareAccess, SyncConflict, SyncFileEntry, SyncScope,
-    TransferTask, TrustLevel, UnifiedFile,
+    DownloadTask, LocalModel, Settings, Share, ShareAccess, Suggestion, SyncConflict,
+    SyncFileEntry, SyncScope, TransferTask, TrustLevel, UnifiedFile,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -294,6 +294,26 @@ pub async fn get_ai_status(core: State<'_, Arc<Core>>) -> CmdResult<AiStatus> {
     Ok(core.get_ai_status().await?)
 }
 
+#[tauri::command]
+pub async fn start_suggest(core: State<'_, Arc<Core>>, paths: Vec<String>) -> CmdResult<()> {
+    Ok(core.start_suggest(paths).await?)
+}
+
+#[tauri::command]
+pub async fn list_suggestions(core: State<'_, Arc<Core>>) -> CmdResult<Vec<Suggestion>> {
+    Ok(core.list_suggestions().await?)
+}
+
+#[tauri::command]
+pub async fn resolve_suggestion(
+    core: State<'_, Arc<Core>>,
+    id: String,
+    adopt: bool,
+    target_dir: Option<String>,
+) -> CmdResult<Option<String>> {
+    Ok(core.resolve_suggestion(id, adopt, target_dir).await?)
+}
+
 /// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。
 pub fn event_payload(event: &CoreEvent) -> Value {
     match event {
@@ -397,6 +417,9 @@ pub fn event_payload(event: &CoreEvent) -> Value {
                 map.insert("error".to_string(), json!(error));
             }
             payload
+        }
+        CoreEvent::AiSuggestProgress { done, total } => {
+            json!({ "done": done, "total": total })
         }
     }
 }

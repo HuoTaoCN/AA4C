@@ -369,3 +369,21 @@ export interface AiEngineStatePayload {
   status: AiEngineStatusCode;
   error?: string;
 }
+
+// —— AI 标签/分类建议（里程碑 AI3，ARCHIVE_DESIGN.md §5）——
+
+/** 一条建议：`error` 非空代表这个文件建议失败，此时 category/tags/reason 是占位空值。 */
+export interface Suggestion {
+  id: string;
+  path: string;
+  category: ArchiveCategory;
+  tags: string[];
+  reason: string;
+  error?: string;
+}
+
+/** 批量建议进度事件（`aa4c://ai_suggest_progress`）：done/total 都是裸计数。 */
+export interface AiSuggestProgressPayload {
+  done: number;
+  total: number;
+}

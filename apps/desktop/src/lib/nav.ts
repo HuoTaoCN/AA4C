@@ -65,7 +65,7 @@ export const CAPABILITIES: NavItem[] = [
     icon: "🗂️",
     built: true,
     version: "V0.5",
-    desc: "按规则自动分类、打标签、归档到指定目录；AI 建议与知识库随后续版本上线",
+    desc: "按规则自动分类、打标签、归档到指定目录；AI 建议辅助打标签，本地知识库随后续版本上线",
   },
 ];
 

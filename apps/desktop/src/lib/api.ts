@@ -14,6 +14,7 @@ import type {
   Settings,
   Share,
   ShareAccess,
+  Suggestion,
   SyncConflict,
   SyncFileEntry,
   SyncScope,
@@ -96,6 +97,16 @@ export const api = {
 
   listLocalModels: () => invoke<LocalModel[]>("list_local_models"),
   getAiStatus: () => invoke<AiStatus>("get_ai_status"),
+
+  startSuggest: (paths: string[]) =>
+    invoke<void>("start_suggest", { paths }),
+  listSuggestions: () => invoke<Suggestion[]>("list_suggestions"),
+  resolveSuggestion: (id: string, adopt: boolean, targetDir?: string) =>
+    invoke<string | null>("resolve_suggestion", {
+      id,
+      adopt,
+      targetDir: targetDir ?? null,
+    }),
 };
 
 /** 把任意 reject 值收敛为 CommandError（兜底未知错误）。 */

@@ -714,6 +714,106 @@ impl Core {
             embedding: ai.status(aa4c_ai::SlotKind::Embedding).await,
         })
     }
+
+    // —— AI 标签/分类建议（ARCHIVE_DESIGN.md §5，里程碑 AI3）——
+
+    /// `self.suggest` 为 `None` 时统一报 `Unavailable`——同 `ai_service` 的既有先例。
+    fn suggest_engine(&self) -> Result<&Arc<aa4c_ai::SuggestEngine>> {
+        self.suggest.as_ref().ok_or_else(|| {
+            Aa4cError::Unavailable("AI capability not available on this build".into())
+        })
+    }
+
+    /// 对一批文件起一次建议批量队列（单并发，逐个调用，`CoreEvent::AiSuggestProgress`
+    /// 通知进度）。这里负责把 `aa4c-ai::suggest` 需要的输入组好——文件识别/读文本头是
+    /// `aa4c-core` 的活，`aa4c-ai` 不依赖 `aa4c-store`（见 crate 分层）。已有批量在跑时
+    /// 直接透传 `SuggestEngine::start_batch` 的 `Unavailable` 错误，不静默排队。
+    pub async fn start_suggest(&self, paths: Vec<String>) -> Result<()> {
+        let suggest = self.suggest_engine()?;
+        let inputs = paths
+            .into_iter()
+            .map(|p| {
+                let path = PathBuf::from(p);
+                let category = crate::archive::detect::detect_category(&path);
+                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                let text_head = if is_text_like_category(category) {
+                    read_text_head(&path)
+                } else {
+                    None
+                };
+                aa4c_ai::SuggestInput {
+                    path,
+                    category,
+                    size,
+                    text_head,
+                }
+            })
+            .collect();
+        suggest.start_batch(inputs)
+    }
+
+    /// 当前全部待确认建议（含失败项）快照。
+    pub async fn list_suggestions(&self) -> Result<Vec<aa4c_types::Suggestion>> {
+        Ok(self.suggest_engine()?.list())
+    }
+
+    /// 采纳或忽略一条建议：`id` 已不在待确认列表（比如已经处理过）时返回 `Ok(None)`，
+    /// 不报错——UI 侧重复点击/两个窗口都打开归档页这类竞态不应该弹错误。`adopt=false`
+    /// 只是把它从队列摘掉（忽略语义，ARCHIVE_DESIGN.md §5"忽略=丢弃"）；`adopt=true`
+    /// 走 AI1 的既有归档动作写标签，`target_dir` 给了才顺带移动，返回值是文件的
+    /// 最终路径（未移动时等于原路径）。
+    pub async fn resolve_suggestion(
+        &self,
+        id: String,
+        adopt: bool,
+        target_dir: Option<String>,
+    ) -> Result<Option<String>> {
+        let suggest = self.suggest_engine()?;
+        let Some(suggestion) = suggest.take(&id) else {
+            return Ok(None);
+        };
+        if !adopt {
+            return Ok(None);
+        }
+        let source = PathBuf::from(&suggestion.path);
+        let target_dir = target_dir.map(PathBuf::from);
+        let (_, to_path) = crate::archive::engine::apply_suggestion(
+            &self.store,
+            &self.events,
+            &source,
+            target_dir.as_deref(),
+            suggestion.category,
+            &suggestion.tags,
+        )
+        .await?;
+        Ok(Some(to_path.to_string_lossy().into_owned()))
+    }
+}
+
+/// 只有这几个类别的文件才值得读内容喂给模型——图片/视频/音频/模型/压缩包/安装包
+/// 都是二进制格式，读了也是乱码，白白占上下文（ARCHIVE_DESIGN.md §5"V0.5 无视觉"）。
+fn is_text_like_category(category: aa4c_types::ArchiveCategory) -> bool {
+    use aa4c_types::ArchiveCategory;
+    matches!(
+        category,
+        ArchiveCategory::Document | ArchiveCategory::Code | ArchiveCategory::Subtitle
+    )
+}
+
+/// 读文件开头 ≤8KB（ARCHIVE_DESIGN.md §5）。用 `Read::take` 限流而不是先整个读进来再
+/// 截断——避免"类别判断偶尔判错、其实是个几 GB 大文件"这种情况下的无谓大量 I/O。
+/// 截断可能落在多字节字符中间，`from_utf8_lossy` 把尾部的半个字符替换成 U+FFFD，
+/// 不影响这段文字喂给模型做参考。
+fn read_text_head(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    const LIMIT: u64 = 8 * 1024;
+    let file = std::fs::File::open(path).ok()?;
+    let mut buf = Vec::new();
+    file.take(LIMIT).read_to_end(&mut buf).ok()?;
+    if buf.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// 综合 mDNS 在线快照 → 落库最后地址 → 查对端自己的服务器（`server_hint`，配对时交换，

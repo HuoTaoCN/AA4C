@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useAiStore } from "../stores/ai";
 import { useArchiveStore } from "../stores/archive";
 import { useSettingsStore } from "../stores/settings";
@@ -17,6 +18,7 @@ const toast = useToastStore();
 onMounted(() => {
   void archive.loadAll();
   void ai.loadAll();
+  void archive.loadSuggestions();
 });
 
 const CATEGORY_LABELS: Record<ArchiveCategory, string> = {
@@ -193,14 +195,88 @@ function isSelected(kind: "chat" | "embedding", path: string): boolean {
   const cur = kind === "chat" ? settings.settings?.aiChatModel : settings.settings?.aiEmbeddingModel;
   return cur === path;
 }
+
+// —— AI 建议（里程碑 AI3，ARCHIVE_DESIGN.md §5）——
+
+async function pickFilesForSuggest() {
+  const picked = await open({ multiple: true });
+  if (!picked) return;
+  const paths = Array.isArray(picked) ? picked : [picked];
+  if (paths.length === 0) return;
+  try {
+    await archive.startSuggest(paths);
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
+}
+
+async function adoptSuggestion(id: string) {
+  try {
+    await archive.resolveSuggestion(id, true);
+    toast.push("success", "已采纳建议");
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
+}
+
+async function ignoreSuggestion(id: string) {
+  try {
+    await archive.resolveSuggestion(id, false);
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
+}
 </script>
 
 <template>
   <div class="archive">
     <h2>归档</h2>
     <p class="intro muted">
-      按规则自动把下载完成的文件分类归位（模型、图片、文档……）；AI 建议与本地知识库随后续版本上线。
+      按规则自动把下载完成的文件分类归位（模型、图片、文档……）；AI 建议辅助打标签/分类，本地知识库随后续版本上线。
     </p>
+
+    <h3>AI 建议</h3>
+    <p class="hint muted">
+      选几个文件让对话模型给出分类/标签建议——建议只会进这个待确认列表，不会自己改动文件（规则自动、AI 建议）。
+    </p>
+    <div class="card banner">
+      <span v-if="archive.suggestRunning">
+        正在生成建议…（{{ archive.suggestDone }}/{{ archive.suggestTotal }}）
+      </span>
+      <span v-else-if="!ai.status?.chat.configured">
+        还没有配置对话模型——先在下面的模型库选一个。
+      </span>
+      <span v-else>选中文件，AI 会给出分类和标签，采纳前不会移动任何文件。</span>
+      <button
+        class="btn btn-primary small"
+        :disabled="archive.suggestRunning || !ai.status?.chat.configured"
+        @click="pickFilesForSuggest"
+      >
+        选择文件生成建议
+      </button>
+    </div>
+    <div v-if="archive.suggestions.length" class="card list">
+      <div v-for="s in archive.suggestions" :key="s.id" class="srow">
+        <div class="sinfo">
+          <div class="sname">{{ baseName(s.path) }}</div>
+          <div v-if="s.error" class="smeta error">建议失败：{{ s.error }}</div>
+          <div v-else class="smeta muted">
+            {{ CATEGORY_LABELS[s.category] }}
+            <template v-if="s.tags.length"> · {{ s.tags.join("、") }}</template>
+            <template v-if="s.reason"> · {{ s.reason }}</template>
+          </div>
+        </div>
+        <button
+          class="btn btn-primary small"
+          :disabled="!!s.error"
+          @click="adoptSuggestion(s.id)"
+        >
+          采纳
+        </button>
+        <button class="btn btn-ghost small" @click="ignoreSuggestion(s.id)">忽略</button>
+      </div>
+    </div>
+    <div v-else-if="!archive.suggestRunning" class="empty card muted">还没有待确认的建议。</div>
 
     <h3>最近动作</h3>
     <div v-if="recentLog.length" class="card list">
@@ -357,7 +433,8 @@ h3 {
 }
 .lrow,
 .rrow,
-.mrow {
+.mrow,
+.srow {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -365,12 +442,14 @@ h3 {
 }
 .lrow + .lrow,
 .rrow + .rrow,
-.mrow + .mrow {
+.mrow + .mrow,
+.srow + .srow {
   border-top: 1px solid var(--aa-border);
 }
 .linfo,
 .rinfo,
-.minfo {
+.minfo,
+.sinfo {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -379,13 +458,18 @@ h3 {
 }
 .lname,
 .rname,
-.mname {
+.mname,
+.sname {
   font-size: 0.88rem;
   font-weight: 600;
   word-break: break-all;
 }
-.mmeta {
+.mmeta,
+.smeta {
   font-size: 0.76rem;
+}
+.smeta.error {
+  color: var(--aa-danger);
 }
 .cats {
   font-weight: 400;

@@ -199,21 +199,9 @@ async fn finish_move(
     rule_id: Option<&str>,
     tags: &[String],
 ) -> Result<(String, PathBuf)> {
-    let entry_id = uuid::Uuid::new_v4().to_string();
-    store
-        .insert_archive_entry(
-            &entry_id,
-            &to_path.to_string_lossy(),
-            category,
-            size,
-            model_meta,
-        )
-        .await?;
-    if !tags.is_empty() {
-        let tags: Vec<(String, TagSource)> =
-            tags.iter().map(|t| (t.clone(), TagSource::Rule)).collect();
-        store.add_archive_tags(&entry_id, &tags).await?;
-    }
+    let tag_pairs: Vec<(String, TagSource)> =
+        tags.iter().map(|t| (t.clone(), TagSource::Rule)).collect();
+    let entry_id = record_entry(store, category, size, model_meta, to_path, &tag_pairs).await?;
     store
         .append_archive_log(
             &entry_id,
@@ -229,6 +217,89 @@ async fn finish_move(
         rule_id: rule_id.map(str::to_owned),
     });
     Ok((entry_id, to_path.to_path_buf()))
+}
+
+/// `finish_move`/`apply_suggestion` 共用：落一条 `archive_entries` + 可选的一批标签。
+/// 不碰 `archive_log`/事件——那两样只在真的发生了物理移动时才有意义（`apply_suggestion`
+/// 在用户选择"只打标签不移动"时会跳过它们，见调用方）。
+async fn record_entry(
+    store: &Store,
+    category: ArchiveCategory,
+    size: u64,
+    model_meta: Option<&ModelMeta>,
+    at_path: &Path,
+    tags: &[(String, TagSource)],
+) -> Result<String> {
+    let entry_id = uuid::Uuid::new_v4().to_string();
+    store
+        .insert_archive_entry(
+            &entry_id,
+            &at_path.to_string_lossy(),
+            category,
+            size,
+            model_meta,
+        )
+        .await?;
+    if !tags.is_empty() {
+        store.add_archive_tags(&entry_id, tags).await?;
+    }
+    Ok(entry_id)
+}
+
+/// AI 建议采纳落库（里程碑 AI3，ARCHIVE_DESIGN.md §5）：写入 `TagSource::Ai` 标签，
+/// `target_dir` 给了才顺带移动文件（同 `apply_manual` 的移动语义，`EXDEV` 回退拷贝）；
+/// 不给就原地打标签，不生成 `archive_log` 记录（没有发生物理移动，撤销无从谈起）。
+/// 建议的 `category` 直接采用（不重新跑 `detect_category`——用户既然点了"采纳"，就是
+/// 认可了 AI 给出的类别，不需要拿探测结果覆盖它）。
+pub async fn apply_suggestion(
+    store: &Store,
+    events: &tokio::sync::broadcast::Sender<CoreEvent>,
+    source_path: &Path,
+    target_dir: Option<&Path>,
+    category: ArchiveCategory,
+    tags: &[String],
+) -> Result<(String, PathBuf)> {
+    let model_meta = if category == ArchiveCategory::Model {
+        parse_model_meta(source_path).ok()
+    } else {
+        None
+    };
+    let size = std::fs::metadata(source_path).map(|m| m.len()).unwrap_or(0);
+
+    let to_path = match target_dir {
+        Some(dir) => move_into(source_path, dir)?,
+        None => source_path.to_path_buf(),
+    };
+
+    let tag_pairs: Vec<(String, TagSource)> =
+        tags.iter().map(|t| (t.clone(), TagSource::Ai)).collect();
+    let entry_id = record_entry(
+        store,
+        category,
+        size,
+        model_meta.as_ref(),
+        &to_path,
+        &tag_pairs,
+    )
+    .await?;
+
+    if target_dir.is_some() {
+        store
+            .append_archive_log(
+                &entry_id,
+                &source_path.to_string_lossy(),
+                &to_path.to_string_lossy(),
+                None,
+            )
+            .await?;
+        let _ = events.send(CoreEvent::ArchiveApplied {
+            entry_id: entry_id.clone(),
+            from_path: source_path.to_string_lossy().into_owned(),
+            to_path: to_path.to_string_lossy().into_owned(),
+            rule_id: None,
+        });
+    }
+    Ok((entry_id, to_path))
 }
 
 /// 撤销一条移动历史：把文件挪回 `from_path`，回写 `archive_entries.current_path`，
@@ -662,5 +733,79 @@ mod tests {
         let after = store.list_archive_rules().await.unwrap();
         assert_eq!(after.len(), 5);
         assert!(after.iter().any(|r| r.enabled));
+    }
+
+    /// AI 建议采纳、不给 `target_dir`：只打标签，文件原地不动，也不产生可撤销的
+    /// 移动记录（ARCHIVE_DESIGN.md §5——采纳才落库，但"落库"不等于"必须移动"）。
+    #[tokio::test]
+    async fn apply_suggestion_without_target_dir_tags_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = aa4c_store::Store::open(&dir.path().join("aa4c.db"))
+            .await
+            .unwrap();
+        let (tx, _rx) = tokio::sync::broadcast::channel(16);
+
+        let src = dir.path().join("notes.md");
+        std::fs::write(&src, b"# hello").unwrap();
+
+        let (entry_id, to_path) = apply_suggestion(
+            &store,
+            &tx,
+            &src,
+            None,
+            ArchiveCategory::Document,
+            &["笔记".to_string(), "markdown".to_string()],
+        )
+        .await
+        .unwrap();
+
+        assert!(src.exists(), "no target_dir => file stays put");
+        assert_eq!(to_path, src);
+        let entry = store.get_archive_entry(&entry_id).await.unwrap().unwrap();
+        assert_eq!(entry.category, ArchiveCategory::Document);
+        assert_eq!(entry.current_path, src.to_string_lossy());
+        let tags = store.list_archive_tags(&entry_id).await.unwrap();
+        assert_eq!(tags.len(), 2);
+        assert!(tags.iter().all(|t| t.source == TagSource::Ai));
+        assert!(
+            store.list_archive_log().await.unwrap().is_empty(),
+            "no physical move => no log entry"
+        );
+    }
+
+    /// AI 建议采纳、给了 `target_dir`：既打标签又移动，产生可撤销的移动记录
+    /// （同 `apply_manual` 的移动语义）。
+    #[tokio::test]
+    async fn apply_suggestion_with_target_dir_moves_and_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = aa4c_store::Store::open(&dir.path().join("aa4c.db"))
+            .await
+            .unwrap();
+        let (tx, _rx) = tokio::sync::broadcast::channel(16);
+
+        let src_dir = dir.path().join("downloads");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("todo.md");
+        std::fs::write(&src, b"- buy milk").unwrap();
+        let target_dir = dir.path().join("archive").join("笔记");
+
+        let (entry_id, to_path) = apply_suggestion(
+            &store,
+            &tx,
+            &src,
+            Some(&target_dir),
+            ArchiveCategory::Document,
+            &["笔记".to_string()],
+        )
+        .await
+        .unwrap();
+
+        assert!(!src.exists(), "source should have been moved away");
+        assert_eq!(to_path, target_dir.join("todo.md"));
+        assert!(to_path.exists());
+        let tags = store.list_archive_tags(&entry_id).await.unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].source, TagSource::Ai);
+        assert_eq!(store.list_archive_log().await.unwrap().len(), 1);
     }
 }

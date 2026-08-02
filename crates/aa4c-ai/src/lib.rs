@@ -14,8 +14,10 @@
 mod client;
 mod process;
 mod service;
+mod suggest;
 mod util;
 
 pub use client::LlamaClient;
 pub use process::{LlamaProcess, SlotKind};
 pub use service::{AiConfig, AiService};
+pub use suggest::{SuggestEngine, SuggestInput};

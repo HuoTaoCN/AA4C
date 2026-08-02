@@ -24,3 +24,37 @@ pub(crate) fn generate_secret() -> String {
     bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
     bs58::encode(bytes).into_string()
 }
+
+/// 真实进程全链路测试的两个前置件——`service.rs`/`suggest.rs` 的集成测试共用
+/// （AI2.0/AI3.1 实证结论：真实 `llama-server` + 微型 GGUF，不 mock）。放这里
+/// 而不是各自复制一份：两处测试都要用，超过"三行重复"的阈值。
+#[cfg(test)]
+pub(crate) fn require_llama_server() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("AA4C_TEST_LLAMA_SERVER_BIN") {
+        return std::path::PathBuf::from(p);
+    }
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    let exe_name = if cfg!(windows) {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    };
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(exe_name);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    panic!(
+        "llama-server not found in PATH and AA4C_TEST_LLAMA_SERVER_BIN not set — see \
+         ARCHIVE_DESIGN.md §3.1/HANDOFF.md."
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn require_tiny_model() -> std::path::PathBuf {
+    match std::env::var("AA4C_TEST_TINY_GGUF") {
+        Ok(p) => std::path::PathBuf::from(p),
+        Err(_) => panic!("AA4C_TEST_TINY_GGUF not set — see ARCHIVE_DESIGN.md §3.1 第 6 点。"),
+    }
+}

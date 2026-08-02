@@ -19,6 +19,7 @@ import { useToastStore } from "../stores/toast";
 import { useTransferStore } from "../stores/transfer";
 import type {
   AiEngineStatePayload,
+  AiSuggestProgressPayload,
   ArchiveAppliedPayload,
   DeviceInfo,
   DeviceLostPayload,
@@ -139,6 +140,11 @@ export async function startEventBridge(): Promise<UnlistenFn> {
     // 用它刷新"加载中/就绪"这类状态展示。
     listen<AiEngineStatePayload>("aa4c://ai_engine_state", (e) =>
       ai.onEngineState(e.payload),
+    ),
+
+    // AI 建议批量进度（里程碑 AI3）：done>=total 时 store 自己拉取结果列表。
+    listen<AiSuggestProgressPayload>("aa4c://ai_suggest_progress", (e) =>
+      archive.onSuggestProgress(e.payload.done, e.payload.total),
     ),
   ]);
 

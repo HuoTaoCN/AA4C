@@ -2,17 +2,35 @@
 
 import { defineStore } from "pinia";
 import { api } from "../lib/api";
-import type { ArchiveEntry, ArchiveLogEntry, ArchiveRule } from "../lib/types";
+import type {
+  ArchiveEntry,
+  ArchiveLogEntry,
+  ArchiveRule,
+  Suggestion,
+} from "../lib/types";
 
 interface State {
   rules: ArchiveRule[];
   entries: ArchiveEntry[];
   log: ArchiveLogEntry[];
   loading: boolean;
+  suggestions: Suggestion[];
+  suggestRunning: boolean;
+  suggestDone: number;
+  suggestTotal: number;
 }
 
 export const useArchiveStore = defineStore("archive", {
-  state: (): State => ({ rules: [], entries: [], log: [], loading: false }),
+  state: (): State => ({
+    rules: [],
+    entries: [],
+    log: [],
+    loading: false,
+    suggestions: [],
+    suggestRunning: false,
+    suggestDone: 0,
+    suggestTotal: 0,
+  }),
 
   actions: {
     async loadRules() {
@@ -63,6 +81,39 @@ export const useArchiveStore = defineStore("archive", {
     onApplied() {
       void this.loadEntries();
       void this.loadLog();
+    },
+
+    // —— AI 建议（里程碑 AI3，ARCHIVE_DESIGN.md §5）——
+
+    /** 起一批建议：进度经 `onSuggestProgress` 事件更新，结果调用方自己后续
+     * `loadSuggestions()` 拉取（批量跑完时机由事件的 done===total 判断）。 */
+    async startSuggest(paths: string[]) {
+      this.suggestRunning = true;
+      this.suggestDone = 0;
+      this.suggestTotal = paths.length;
+      await api.startSuggest(paths);
+    },
+    async loadSuggestions() {
+      this.suggestions = await api.listSuggestions();
+    },
+    /** 采纳（`adopt=true`，可选 `targetDir` 顺带移动）或忽略一条建议；两种情况
+     * 都从本地列表摘掉这一条（忽略=丢弃，ARCHIVE_DESIGN.md §5），采纳时顺带
+     * 刷新归档记录/日志。 */
+    async resolveSuggestion(id: string, adopt: boolean, targetDir?: string) {
+      await api.resolveSuggestion(id, adopt, targetDir);
+      this.suggestions = this.suggestions.filter((s) => s.id !== id);
+      if (adopt) {
+        await Promise.all([this.loadEntries(), this.loadLog()]);
+      }
+    },
+    /** `AiSuggestProgress` 事件到来时更新进度；跑完（done>=total）后拉取结果。 */
+    onSuggestProgress(done: number, total: number) {
+      this.suggestDone = done;
+      this.suggestTotal = total;
+      if (done >= total) {
+        this.suggestRunning = false;
+        void this.loadSuggestions();
+      }
     },
   },
 });

@@ -17,7 +17,7 @@ mod share;
 mod sync;
 mod transfer;
 
-pub use ai::{AiSlotStatus, AiStatus, LocalModel};
+pub use ai::{AiSlotStatus, AiStatus, LocalModel, Suggestion};
 pub use archive::{
     ArchiveAction, ArchiveCategory, ArchiveEntry, ArchiveLogEntry, ArchiveMatch, ArchiveRule,
     ArchiveTag, ModelMeta, TagSource,

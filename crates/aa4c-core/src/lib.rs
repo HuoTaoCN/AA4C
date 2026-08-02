@@ -18,7 +18,7 @@ mod unified;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aa4c_ai::AiService;
+use aa4c_ai::{AiService, SuggestEngine};
 use aa4c_discovery::DiscoveryService;
 use aa4c_download::{DownloadService, SidecarSpawner};
 use aa4c_identity::{Identity, PairingManager};
@@ -101,6 +101,9 @@ pub struct Core {
     /// AI 引擎服务（里程碑 AI2）；`None` = 本平台/构建未接入 AI 能力（与
     /// `download` 的既有语义一致，见 `CoreConfig::ai_spawner` 文档）。
     pub ai: Option<Arc<AiService>>,
+    /// AI 标签/分类建议批量队列（里程碑 AI3，ARCHIVE_DESIGN.md §5）；`None` 同
+    /// `ai` 的既有语义——没有 AI 引擎就没有建议能力。
+    pub suggest: Option<Arc<SuggestEngine>>,
     events: EventSender,
     self_info: DeviceInfo,
     listen_port: u16,
@@ -300,6 +303,12 @@ impl Core {
                 events.clone(),
             )
         });
+        // AI 标签/分类建议（里程碑 AI3，ARCHIVE_DESIGN.md §5）：门闩条件跟 `ai` 一致
+        // （没有 AI 引擎就不可能出建议），`SuggestEngine::new` 借用 `ai` 的对话槽位，
+        // 不单独起进程/占资源。
+        let suggest = ai
+            .clone()
+            .map(|ai| aa4c_ai::SuggestEngine::new(ai, events.clone()));
 
         tracing::info!(
             device = %self_info.name,
@@ -315,6 +324,7 @@ impl Core {
             pairing,
             download,
             ai,
+            suggest,
             events,
             self_info,
             listen_port: actual_port,

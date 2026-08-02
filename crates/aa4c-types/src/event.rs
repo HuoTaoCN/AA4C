@@ -154,6 +154,15 @@ pub enum CoreEvent {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         error: Option<String>,
     },
+
+    /// AI 标签/分类建议批量队列进度（V0.5 里程碑 AI3，ARCHIVE_DESIGN.md §5）：
+    /// 单并发逐个调用，每处理完一个文件发一次，`done == total` 即批量结束
+    /// （不单独发"批量完成"事件，前端自己比较两个数字）。
+    #[serde(rename_all = "camelCase")]
+    AiSuggestProgress {
+        done: u32,
+        total: u32,
+    },
 }
 
 impl CoreEvent {
@@ -177,6 +186,7 @@ impl CoreEvent {
             Self::DownloadFailed { .. } => "download_failed",
             Self::ArchiveApplied { .. } => "archive_applied",
             Self::AiEngineState { .. } => "ai_engine_state",
+            Self::AiSuggestProgress { .. } => "ai_suggest_progress",
         }
     }
 }
@@ -294,6 +304,20 @@ mod tests {
         assert_eq!(json["data"]["status"], "starting");
         assert!(json["data"].get("error").is_none());
         assert_eq!(event.event_name(), "ai_engine_state");
+
+        let back: CoreEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(back, event);
+    }
+
+    /// 里程碑 AI3：批量建议进度事件的 JSON 形状——两个裸数字，没有可省略字段。
+    #[test]
+    fn ai_suggest_progress_json_shape() {
+        let event = CoreEvent::AiSuggestProgress { done: 2, total: 5 };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "ai_suggest_progress");
+        assert_eq!(json["data"]["done"], 2);
+        assert_eq!(json["data"]["total"], 5);
+        assert_eq!(event.event_name(), "ai_suggest_progress");
 
         let back: CoreEvent = serde_json::from_value(json).unwrap();
         assert_eq!(back, event);

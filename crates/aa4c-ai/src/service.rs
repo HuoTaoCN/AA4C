@@ -276,37 +276,8 @@ async fn reap_if_idle(service: &AiService, kind: SlotKind) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::{require_llama_server, require_tiny_model};
     use aa4c_engine::ProcessSpawner;
-    use std::path::PathBuf;
-
-    fn require_llama_server() -> PathBuf {
-        if let Ok(p) = std::env::var("AA4C_TEST_LLAMA_SERVER_BIN") {
-            return PathBuf::from(p);
-        }
-        let path_var = std::env::var_os("PATH").unwrap_or_default();
-        let exe_name = if cfg!(windows) {
-            "llama-server.exe"
-        } else {
-            "llama-server"
-        };
-        for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join(exe_name);
-            if candidate.is_file() {
-                return candidate;
-            }
-        }
-        panic!(
-            "llama-server not found in PATH and AA4C_TEST_LLAMA_SERVER_BIN not set — see \
-             ARCHIVE_DESIGN.md §3.1/HANDOFF.md."
-        );
-    }
-
-    fn require_tiny_model() -> PathBuf {
-        match std::env::var("AA4C_TEST_TINY_GGUF") {
-            Ok(p) => PathBuf::from(p),
-            Err(_) => panic!("AA4C_TEST_TINY_GGUF not set — see ARCHIVE_DESIGN.md §3.1 第 6 点。"),
-        }
-    }
 
     /// 未配置模型的槽位直接 `Unavailable`，不尝试拉起进程——同下载能力
     /// 缺失时的既有降级语义。
