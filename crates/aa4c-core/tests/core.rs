@@ -134,22 +134,37 @@ async fn two_cores_pair_then_transfer() {
     });
 
     let mut ev_a2 = a.core.subscribe();
+    // b 一侧的 TransferDone 是它自己收尾（校验 + 落盘 + 落库）后独立触发的，跟 a
+    // 一侧的完成事件之间没有同步保证——a 先看到 done 时 b 的落库可能还在路上。
+    // 两边都等到各自的终态事件，才能放心断言下面双方的任务记录状态。
+    let mut ev_b3 = b.core.subscribe();
     let task_id = a.core.send_files(&b_id, vec![src]).await.unwrap();
 
-    let done = timeout(WAIT, async {
+    let wait_a = async {
         loop {
             match ev_a2.recv().await.unwrap() {
-                CoreEvent::TransferDone { task_id: t } if t == task_id => return true,
+                CoreEvent::TransferDone { task_id: t } if t == task_id => return,
                 CoreEvent::TransferFailed { task_id: t, error } if t == task_id => {
-                    panic!("transfer failed: {error}")
+                    panic!("transfer failed (a side): {error}")
                 }
                 _ => {}
             }
         }
-    })
-    .await
-    .expect("transfer reaches terminal state");
-    assert!(done);
+    };
+    let wait_b = async {
+        loop {
+            match ev_b3.recv().await.unwrap() {
+                CoreEvent::TransferDone { .. } => return,
+                CoreEvent::TransferFailed { error, .. } => {
+                    panic!("transfer failed (b side): {error}")
+                }
+                _ => {}
+            }
+        }
+    };
+    let (a_done, b_done) = tokio::join!(timeout(WAIT, wait_a), timeout(WAIT, wait_b));
+    a_done.expect("a-side transfer reaches terminal state");
+    b_done.expect("b-side transfer reaches terminal state");
 
     // 文件落盘且内容正确
     let received: PathBuf = recv_dir.join("hello.txt");
@@ -348,22 +363,36 @@ async fn quic_roundtrip_transfer() {
     });
 
     let mut ev_a2 = a.core.subscribe();
+    // 同 two_cores_pair_then_transfer：b 一侧的收尾（校验 + 落盘 + 落库）跟 a 一侧
+    // 的完成事件之间没有同步保证，两边都要等到各自的终态事件再断言任务记录。
+    let mut ev_b3 = b.core.subscribe();
     let task_id = a.core.send_files(&b_id, vec![src]).await.unwrap();
 
-    let done = timeout(WAIT, async {
+    let wait_a = async {
         loop {
             match ev_a2.recv().await.unwrap() {
-                CoreEvent::TransferDone { task_id: t } if t == task_id => return true,
+                CoreEvent::TransferDone { task_id: t } if t == task_id => return,
                 CoreEvent::TransferFailed { task_id: t, error } if t == task_id => {
-                    panic!("transfer failed: {error}")
+                    panic!("transfer failed (a side): {error}")
                 }
                 _ => {}
             }
         }
-    })
-    .await
-    .expect("transfer reaches terminal state");
-    assert!(done);
+    };
+    let wait_b = async {
+        loop {
+            match ev_b3.recv().await.unwrap() {
+                CoreEvent::TransferDone { .. } => return,
+                CoreEvent::TransferFailed { error, .. } => {
+                    panic!("transfer failed (b side): {error}")
+                }
+                _ => {}
+            }
+        }
+    };
+    let (a_done, b_done) = tokio::join!(timeout(WAIT, wait_a), timeout(WAIT, wait_b));
+    a_done.expect("a-side transfer reaches terminal state");
+    b_done.expect("b-side transfer reaches terminal state");
 
     assert_eq!(
         tokio::fs::read(recv_dir.join("hello.txt")).await.unwrap(),
