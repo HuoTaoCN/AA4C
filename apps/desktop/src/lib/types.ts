@@ -387,3 +387,45 @@ export interface AiSuggestProgressPayload {
   done: number;
   total: number;
 }
+
+// —— 本地知识库（里程碑 AI4，ARCHIVE_DESIGN.md §6）——
+
+export interface KbSource {
+  id: string;
+  path: string;
+  createdAt: number;
+}
+
+/** `kb_list_sources` 返回这个而不是裸 `KbSource`，前端直接拿到摄入进度摘要。 */
+export interface KbSourceSummary {
+  id: string;
+  path: string;
+  createdAt: number;
+  docCount: number;
+  indexedCount: number;
+  failedCount: number;
+}
+
+export interface KbAnswerSource {
+  path: string;
+}
+
+/** 知识库摄入进度事件（`aa4c://kb_ingest_progress`）。 */
+export interface KbIngestProgressPayload {
+  sourceId: string;
+  done: number;
+  total: number;
+}
+
+/** 问答流式增量事件（`aa4c://kb_answer_delta`）。 */
+export interface KbAnswerDeltaPayload {
+  requestId: string;
+  delta: string;
+}
+
+/** 问答结束事件（`aa4c://kb_answer_done`）：`error` 缺省代表成功。 */
+export interface KbAnswerDonePayload {
+  requestId: string;
+  sources: KbAnswerSource[];
+  error?: string;
+}

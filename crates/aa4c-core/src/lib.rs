@@ -18,7 +18,7 @@ mod unified;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aa4c_ai::{AiService, SuggestEngine};
+use aa4c_ai::{AiService, KbService, SuggestEngine};
 use aa4c_discovery::DiscoveryService;
 use aa4c_download::{DownloadService, SidecarSpawner};
 use aa4c_identity::{Identity, PairingManager};
@@ -104,6 +104,9 @@ pub struct Core {
     /// AI 标签/分类建议批量队列（里程碑 AI3，ARCHIVE_DESIGN.md §5）；`None` 同
     /// `ai` 的既有语义——没有 AI 引擎就没有建议能力。
     pub suggest: Option<Arc<SuggestEngine>>,
+    /// 本地知识库（里程碑 AI4，ARCHIVE_DESIGN.md §6）；`None` 同 `ai` 的既有语义
+    /// ——没有 AI 引擎就没有嵌入能力，知识库也就无从谈起。
+    pub kb: Option<Arc<KbService>>,
     events: EventSender,
     self_info: DeviceInfo,
     listen_port: u16,
@@ -309,6 +312,12 @@ impl Core {
         let suggest = ai
             .clone()
             .map(|ai| aa4c_ai::SuggestEngine::new(ai, events.clone()));
+        // 本地知识库（里程碑 AI4，ARCHIVE_DESIGN.md §6）：同 `suggest` 一样门闩
+        // 条件跟 `ai` 一致，借用同一个 `AiService`（对话槽位问答、嵌入槽位摄入/
+        // 检索），不单独起进程。`store.clone()` 廉价（内部只是一个 mpsc Sender）。
+        let kb = ai
+            .clone()
+            .map(|ai| aa4c_ai::KbService::new(ai, store.clone(), events.clone()));
 
         tracing::info!(
             device = %self_info.name,
@@ -325,6 +334,7 @@ impl Core {
             download,
             ai,
             suggest,
+            kb,
             events,
             self_info,
             listen_port: actual_port,

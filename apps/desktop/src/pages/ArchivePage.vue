@@ -4,6 +4,8 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAiStore } from "../stores/ai";
 import { useArchiveStore } from "../stores/archive";
+import { useDownloadStore } from "../stores/download";
+import { useKbStore } from "../stores/kb";
 import { useSettingsStore } from "../stores/settings";
 import { useToastStore } from "../stores/toast";
 import { asCommandError } from "../lib/api";
@@ -12,6 +14,8 @@ import type { ArchiveCategory, ArchiveRule, LocalModel } from "../lib/types";
 
 const archive = useArchiveStore();
 const ai = useAiStore();
+const kb = useKbStore();
+const download = useDownloadStore();
 const settings = useSettingsStore();
 const toast = useToastStore();
 
@@ -19,6 +23,7 @@ onMounted(() => {
   void archive.loadAll();
   void ai.loadAll();
   void archive.loadSuggestions();
+  void kb.loadSources();
 });
 
 const CATEGORY_LABELS: Record<ArchiveCategory, string> = {
@@ -196,6 +201,37 @@ function isSelected(kind: "chat" | "embedding", path: string): boolean {
   return cur === path;
 }
 
+/** 推荐模型直链（ARCHIVE_DESIGN.md §3.5）：URL 已实测核实可下载（HTTP 200/302 直连
+ * 官方 CDN，见提交历史），文件名由服务端 `Content-Disposition` 给出，下载中心/aria2
+ * 会按它落盘——不需要在这里手动拼文件名。 */
+const RECOMMENDED_MODELS = [
+  {
+    key: "chat",
+    label: "对话模型 · Qwen3-4B-Instruct-2507（Q4_K_M，约 2.5GB，8GB 内存可跑）",
+    hfUrl:
+      "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+    msUrl:
+      "https://modelscope.cn/models/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/master/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+  },
+  {
+    key: "embedding",
+    label: "嵌入模型 · Qwen3-Embedding-0.6B（Q8_0，约 0.6GB，中英双强）",
+    hfUrl:
+      "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    msUrl:
+      "https://modelscope.cn/models/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/master/Qwen3-Embedding-0.6B-Q8_0.gguf",
+  },
+];
+
+async function downloadRecommendedModel(url: string) {
+  try {
+    await download.add(url);
+    toast.push("success", "已加入下载任务，完成后会自动归档到模型目录");
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
+}
+
 // —— AI 建议（里程碑 AI3，ARCHIVE_DESIGN.md §5）——
 
 async function pickFilesForSuggest() {
@@ -226,13 +262,58 @@ async function ignoreSuggestion(id: string) {
     toast.push("error", asCommandError(e).message);
   }
 }
+
+// —— 本地知识库（里程碑 AI4，ARCHIVE_DESIGN.md §6）——
+
+async function pickKbSourceDir() {
+  const picked = await open({ directory: true });
+  if (!picked || Array.isArray(picked)) return;
+  try {
+    await kb.addSource(picked);
+    toast.push("success", "已添加来源");
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
+}
+
+async function removeKbSource(id: string) {
+  try {
+    await kb.removeSource(id);
+    toast.push("info", "已移除来源");
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
+}
+
+async function reindexKbSource(id: string) {
+  try {
+    await kb.reindex(id);
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
+}
+
+const kbQuestion = ref("");
+async function askKb() {
+  const question = kbQuestion.value.trim();
+  if (!question) return;
+  try {
+    await kb.ask(question);
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
+}
+
+async function openKbSourcePath(path: string) {
+  await openPath(path);
+}
 </script>
 
 <template>
   <div class="archive">
     <h2>归档</h2>
     <p class="intro muted">
-      按规则自动把下载完成的文件分类归位（模型、图片、文档……）；AI 建议辅助打标签/分类，本地知识库随后续版本上线。
+      按规则自动把下载完成的文件分类归位（模型、图片、文档……）；AI 建议辅助打标签/分类，本地知识库可以对自己的文件提问。
     </p>
 
     <h3>AI 建议</h3>
@@ -374,6 +455,19 @@ async function ignoreSuggestion(id: string) {
     <p class="hint muted">
       扫描模型目录（设置页可更改）下的模型文件；下载的模型经归档规则移入这里后会自动出现。
     </p>
+    <div class="card list rec-list">
+      <div v-for="rec in RECOMMENDED_MODELS" :key="rec.key" class="krow">
+        <div class="kinfo">
+          <div class="kname">{{ rec.label }}</div>
+        </div>
+        <button class="btn btn-ghost small" @click="downloadRecommendedModel(rec.hfUrl)">
+          HF 下载
+        </button>
+        <button class="btn btn-ghost small" @click="downloadRecommendedModel(rec.msUrl)">
+          ModelScope 下载
+        </button>
+      </div>
+    </div>
     <div v-if="ai.models.length" class="card list">
       <div v-for="model in ai.models" :key="model.path" class="mrow">
         <div class="minfo">
@@ -403,6 +497,83 @@ async function ignoreSuggestion(id: string) {
       对话引擎：{{ ai.status.chat.running ? "运行中" : ai.status.chat.configured ? "待命" : "未配置" }}
       · 嵌入引擎：{{ ai.status.embedding.running ? "运行中" : ai.status.embedding.configured ? "待命" : "未配置" }}
     </p>
+
+    <h3>知识库</h3>
+    <p class="hint muted">
+      添加一个文本文件目录作为来源，摄入后可以直接提问——回答只依据摄入的内容，并会带上参考的文件。
+    </p>
+    <div class="card banner">
+      <span v-if="kb.activeIngest">
+        正在摄入…（{{ kb.activeIngest.done }}/{{ kb.activeIngest.total }}）
+      </span>
+      <span v-else-if="!ai.status?.embedding.configured">
+        还没有配置嵌入模型——先在上面的模型库选一个。
+      </span>
+      <span v-else>选一个目录作为知识库来源，会扫描其中的文本/代码文件。</span>
+      <button
+        class="btn btn-primary small"
+        :disabled="!ai.status?.embedding.configured"
+        @click="pickKbSourceDir"
+      >
+        添加来源
+      </button>
+    </div>
+    <div v-if="kb.sources.length" class="card list">
+      <div v-for="source in kb.sources" :key="source.id" class="krow">
+        <div class="kinfo">
+          <div class="kname">{{ source.path }}</div>
+          <div class="kmeta muted">
+            已索引 {{ source.indexedCount }} / {{ source.docCount }}
+            <template v-if="source.failedCount"> · 失败 {{ source.failedCount }}</template>
+          </div>
+        </div>
+        <button
+          class="btn btn-ghost small"
+          :disabled="!!kb.activeIngest"
+          @click="reindexKbSource(source.id)"
+        >
+          摄入
+        </button>
+        <button class="btn btn-ghost small" @click="openKbSourcePath(source.path)">
+          打开位置
+        </button>
+        <button class="btn btn-danger small" @click="removeKbSource(source.id)">删除</button>
+      </div>
+    </div>
+    <div v-else class="empty card muted">还没有知识库来源。</div>
+
+    <div class="card kb-ask">
+      <div class="ask-row">
+        <input
+          v-model="kbQuestion"
+          type="text"
+          placeholder="向知识库提问……"
+          @keyup.enter="askKb"
+        />
+        <button
+          class="btn btn-primary small"
+          :disabled="kb.asking || !ai.status?.chat.configured || !ai.status?.embedding.configured"
+          @click="askKb"
+        >
+          {{ kb.asking ? "回答中…" : "提问" }}
+        </button>
+      </div>
+      <div v-if="kb.answer || kb.answerError" class="answer">
+        <p v-if="kb.answerError" class="answer-error">{{ kb.answerError }}</p>
+        <p v-else class="answer-text">{{ kb.answer }}</p>
+        <div v-if="kb.answerSources.length" class="answer-sources">
+          <span class="muted">引用：</span>
+          <button
+            v-for="s in kb.answerSources"
+            :key="s.path"
+            class="btn btn-ghost small"
+            @click="openKbSourcePath(s.path)"
+          >
+            {{ baseName(s.path) }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -434,7 +605,8 @@ h3 {
 .lrow,
 .rrow,
 .mrow,
-.srow {
+.srow,
+.krow {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -443,13 +615,15 @@ h3 {
 .lrow + .lrow,
 .rrow + .rrow,
 .mrow + .mrow,
-.srow + .srow {
+.srow + .srow,
+.krow + .krow {
   border-top: 1px solid var(--aa-border);
 }
 .linfo,
 .rinfo,
 .minfo,
-.sinfo {
+.sinfo,
+.kinfo {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -459,17 +633,58 @@ h3 {
 .lname,
 .rname,
 .mname,
-.sname {
+.sname,
+.kname {
   font-size: 0.88rem;
   font-weight: 600;
   word-break: break-all;
 }
 .mmeta,
-.smeta {
+.smeta,
+.kmeta {
   font-size: 0.76rem;
 }
 .smeta.error {
   color: var(--aa-danger);
+}
+.kb-ask {
+  padding: 16px;
+  margin-top: 4px;
+}
+.ask-row {
+  display: flex;
+  gap: 8px;
+}
+.ask-row input[type="text"] {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--aa-border);
+  border-radius: var(--aa-radius-sm);
+  background: var(--aa-bg);
+  color: var(--aa-text);
+  font-size: 0.88rem;
+}
+.answer {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--aa-border);
+}
+.answer-text {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.answer-error {
+  font-size: 0.85rem;
+  color: var(--aa-danger);
+}
+.answer-sources {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.8rem;
 }
 .cats {
   font-weight: 400;

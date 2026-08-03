@@ -1774,3 +1774,120 @@ async fn ai_suggest_lifecycle_through_core_orchestration() {
 
     core.shutdown().await.unwrap();
 }
+
+/// 本地知识库全链路（V0.5 里程碑 AI4，ARCHIVE_DESIGN.md §6）：真实 `llama-server` +
+/// 微型 GGUF 走 `Core` 公开方法——`kb_add_source` 登记来源、`kb_reindex` 真的扫描
+/// 摄入一个真实文本文件（`CoreEvent::KbIngestProgress` 如实广播）、`kb_ask` 真的
+/// 检索到相关内容并流式回答（`KbAnswerDelta`/`KbAnswerDone` 如实广播，引用来源
+/// 命中被摄入的那个文件）。需要 `AA4C_TEST_LLAMA_SERVER_BIN`/`AA4C_TEST_TINY_GGUF`
+/// 两个环境变量，同上一条 AI3 测试。
+#[tokio::test]
+async fn kb_lifecycle_through_core_orchestration() {
+    use aa4c_download::ProcessSpawner;
+
+    fn require_llama_server_bin() -> PathBuf {
+        match std::env::var("AA4C_TEST_LLAMA_SERVER_BIN") {
+            Ok(p) => PathBuf::from(p),
+            Err(_) => {
+                panic!("AA4C_TEST_LLAMA_SERVER_BIN not set — see ARCHIVE_DESIGN.md §3.1/HANDOFF.md")
+            }
+        }
+    }
+    fn require_tiny_gguf() -> PathBuf {
+        match std::env::var("AA4C_TEST_TINY_GGUF") {
+            Ok(p) => PathBuf::from(p),
+            Err(_) => panic!("AA4C_TEST_TINY_GGUF not set — see ARCHIVE_DESIGN.md §3.1 第 6 点"),
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = CoreConfig::new(dir.path().to_path_buf());
+    config.listen_port = 0;
+    config.transfer.default_save_dir = dir.path().join("downloads");
+    config.ai_spawner = Some(Arc::new(ProcessSpawner::new(require_llama_server_bin())));
+    let core = Core::start(config).await.expect("core starts");
+
+    let model = require_tiny_gguf().to_string_lossy().into_owned();
+    let mut settings = core.get_settings().await.unwrap();
+    settings.ai_chat_model = Some(model.clone());
+    settings.ai_embedding_model = Some(model);
+    core.update_settings(settings).await.unwrap();
+
+    let notes_dir = dir.path().join("notes");
+    tokio::fs::create_dir_all(&notes_dir).await.unwrap();
+    tokio::fs::write(
+        notes_dir.join("todo.md"),
+        "买牛奶。\n\n写测试。\n\n给知识库摄入一段可以被检索到的文本内容。",
+    )
+    .await
+    .unwrap();
+
+    let mut ev = core.subscribe();
+    let source = core
+        .kb_add_source(notes_dir.to_string_lossy().into_owned())
+        .await
+        .unwrap();
+    core.kb_reindex(source.id.clone()).await.unwrap();
+
+    let ingest_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut ingest_done = false;
+    while tokio::time::Instant::now() < ingest_deadline {
+        let remaining = ingest_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if let Ok(Ok(CoreEvent::KbIngestProgress { done, total, .. })) =
+            timeout(remaining, ev.recv()).await
+        {
+            if done >= total {
+                ingest_done = true;
+                break;
+            }
+        }
+    }
+    assert!(ingest_done, "expected ingest to finish within the timeout");
+
+    let sources = core.kb_list_sources().await.unwrap();
+    let summary = sources.iter().find(|s| s.id == source.id).unwrap();
+    assert_eq!(summary.indexed_count, 1);
+    assert_eq!(summary.failed_count, 0);
+
+    let request_id = core
+        .kb_ask("知识库里提到了什么可以被检索的内容？".into())
+        .await
+        .unwrap();
+
+    let ask_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut got_delta = false;
+    let mut done_sources = Vec::new();
+    let mut saw_done = false;
+    while tokio::time::Instant::now() < ask_deadline {
+        let remaining = ask_deadline.saturating_duration_since(tokio::time::Instant::now());
+        match timeout(remaining, ev.recv()).await {
+            Ok(Ok(CoreEvent::KbAnswerDelta {
+                request_id: rid, ..
+            })) if rid == request_id => {
+                got_delta = true;
+            }
+            Ok(Ok(CoreEvent::KbAnswerDone {
+                request_id: rid,
+                sources,
+                error,
+            })) if rid == request_id => {
+                assert!(error.is_none(), "expected no error, got {error:?}");
+                done_sources = sources;
+                saw_done = true;
+                break;
+            }
+            _ => continue,
+        }
+    }
+    assert!(saw_done, "expected KbAnswerDone within the timeout");
+    assert!(got_delta, "expected at least one streamed delta");
+    assert!(
+        done_sources.iter().any(|s| s.path.ends_with("todo.md")),
+        "expected the ingested file to be cited as a source, got {done_sources:?}"
+    );
+
+    core.kb_remove_source(source.id.clone()).await.unwrap();
+    assert!(core.kb_list_sources().await.unwrap().is_empty());
+
+    core.shutdown().await.unwrap();
+}

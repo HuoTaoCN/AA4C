@@ -788,6 +788,44 @@ impl Core {
         .await?;
         Ok(Some(to_path.to_string_lossy().into_owned()))
     }
+
+    // —— 本地知识库（ARCHIVE_DESIGN.md §6，里程碑 AI4）——
+
+    /// `self.kb` 为 `None` 时统一报 `Unavailable`——同 `suggest_engine` 的既有先例。
+    fn kb_service(&self) -> Result<&Arc<aa4c_ai::KbService>> {
+        self.kb.as_ref().ok_or_else(|| {
+            Aa4cError::Unavailable("AI capability not available on this build".into())
+        })
+    }
+
+    pub async fn kb_add_source(&self, path: String) -> Result<aa4c_types::KbSource> {
+        self.kb_service()?.add_source(PathBuf::from(path)).await
+    }
+
+    /// 删除来源（级联清空其文档与 chunk）。
+    pub async fn kb_remove_source(&self, id: String) -> Result<()> {
+        self.kb_service()?.remove_source(&id).await
+    }
+
+    pub async fn kb_list_sources(&self) -> Result<Vec<aa4c_types::KbSourceSummary>> {
+        self.kb_service()?.list_sources().await
+    }
+
+    /// 起一次增量摄入（后台任务，立即返回，进度经 `CoreEvent::KbIngestProgress`）。
+    /// 已有摄入在跑时透传 `KbService::reindex` 的 `Unavailable`，不排队。
+    pub async fn kb_reindex(&self, source_id: String) -> Result<()> {
+        self.kb_service()?.reindex(source_id)
+    }
+
+    /// 起一次流式问答（后台任务，立即返回一个 `request_id` 供前端关联后续的
+    /// `KbAnswerDelta`/`KbAnswerDone` 事件——同 `start_pairing` 返回 `sessionId`
+    /// 的既有先例，调用方不用自己造 id）。
+    pub async fn kb_ask(&self, question: String) -> Result<String> {
+        let kb = self.kb_service()?;
+        let request_id = uuid::Uuid::new_v4().to_string();
+        kb.ask(request_id.clone(), question);
+        Ok(request_id)
+    }
 }
 
 /// 只有这几个类别的文件才值得读内容喂给模型——图片/视频/音频/模型/压缩包/安装包

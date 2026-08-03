@@ -8,8 +8,8 @@ use std::sync::Arc;
 use aa4c_core::Core;
 use aa4c_types::{
     Aa4cError, AiStatus, ArchiveEntry, ArchiveLogEntry, ArchiveRule, CoreEvent, DeviceInfo,
-    DownloadTask, LocalModel, Settings, Share, ShareAccess, Suggestion, SyncConflict,
-    SyncFileEntry, SyncScope, TransferTask, TrustLevel, UnifiedFile,
+    DownloadTask, KbSource, KbSourceSummary, LocalModel, Settings, Share, ShareAccess, Suggestion,
+    SyncConflict, SyncFileEntry, SyncScope, TransferTask, TrustLevel, UnifiedFile,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -314,6 +314,31 @@ pub async fn resolve_suggestion(
     Ok(core.resolve_suggestion(id, adopt, target_dir).await?)
 }
 
+#[tauri::command]
+pub async fn kb_add_source(core: State<'_, Arc<Core>>, path: String) -> CmdResult<KbSource> {
+    Ok(core.kb_add_source(path).await?)
+}
+
+#[tauri::command]
+pub async fn kb_remove_source(core: State<'_, Arc<Core>>, id: String) -> CmdResult<()> {
+    Ok(core.kb_remove_source(id).await?)
+}
+
+#[tauri::command]
+pub async fn kb_list_sources(core: State<'_, Arc<Core>>) -> CmdResult<Vec<KbSourceSummary>> {
+    Ok(core.kb_list_sources().await?)
+}
+
+#[tauri::command]
+pub async fn kb_reindex(core: State<'_, Arc<Core>>, source_id: String) -> CmdResult<()> {
+    Ok(core.kb_reindex(source_id).await?)
+}
+
+#[tauri::command]
+pub async fn kb_ask(core: State<'_, Arc<Core>>, question: String) -> CmdResult<String> {
+    Ok(core.kb_ask(question).await?)
+}
+
 /// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。
 pub fn event_payload(event: &CoreEvent) -> Value {
     match event {
@@ -420,6 +445,27 @@ pub fn event_payload(event: &CoreEvent) -> Value {
         }
         CoreEvent::AiSuggestProgress { done, total } => {
             json!({ "done": done, "total": total })
+        }
+        CoreEvent::KbIngestProgress {
+            source_id,
+            done,
+            total,
+        } => {
+            json!({ "sourceId": source_id, "done": done, "total": total })
+        }
+        CoreEvent::KbAnswerDelta { request_id, delta } => {
+            json!({ "requestId": request_id, "delta": delta })
+        }
+        CoreEvent::KbAnswerDone {
+            request_id,
+            sources,
+            error,
+        } => {
+            let mut payload = json!({ "requestId": request_id, "sources": sources });
+            if let (Value::Object(map), Some(error)) = (&mut payload, error) {
+                map.insert("error".to_string(), json!(error));
+            }
+            payload
         }
     }
 }

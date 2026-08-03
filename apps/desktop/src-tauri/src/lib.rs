@@ -164,6 +164,11 @@ pub fn run() {
             commands::start_suggest,
             commands::list_suggestions,
             commands::resolve_suggestion,
+            commands::kb_add_source,
+            commands::kb_remove_source,
+            commands::kb_list_sources,
+            commands::kb_reindex,
+            commands::kb_ask,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

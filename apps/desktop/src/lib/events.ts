@@ -12,6 +12,7 @@ import { useAiStore } from "../stores/ai";
 import { useArchiveStore } from "../stores/archive";
 import { useDeviceStore } from "../stores/devices";
 import { useDownloadStore } from "../stores/download";
+import { useKbStore } from "../stores/kb";
 import { usePairingStore } from "../stores/pairing";
 import { useSettingsStore } from "../stores/settings";
 import { useSyncStore } from "../stores/sync";
@@ -26,6 +27,9 @@ import type {
   DownloadDonePayload,
   DownloadFailedPayload,
   DownloadProgressPayload,
+  KbAnswerDeltaPayload,
+  KbAnswerDonePayload,
+  KbIngestProgressPayload,
   PairingPinPayload,
   PairingRequestPayload,
   PairingResultPayload,
@@ -61,6 +65,7 @@ export async function startEventBridge(): Promise<UnlistenFn> {
   const download = useDownloadStore();
   const archive = useArchiveStore();
   const ai = useAiStore();
+  const kb = useKbStore();
 
   const unlisten = await Promise.all([
     listen<DeviceInfo>("aa4c://device_found", (e) => devices.upsert(e.payload)),
@@ -145,6 +150,17 @@ export async function startEventBridge(): Promise<UnlistenFn> {
     // AI 建议批量进度（里程碑 AI3）：done>=total 时 store 自己拉取结果列表。
     listen<AiSuggestProgressPayload>("aa4c://ai_suggest_progress", (e) =>
       archive.onSuggestProgress(e.payload.done, e.payload.total),
+    ),
+
+    // 本地知识库（里程碑 AI4）：摄入进度 + 流式问答增量/结束。
+    listen<KbIngestProgressPayload>("aa4c://kb_ingest_progress", (e) =>
+      kb.onIngestProgress(e.payload),
+    ),
+    listen<KbAnswerDeltaPayload>("aa4c://kb_answer_delta", (e) =>
+      kb.onAnswerDelta(e.payload),
+    ),
+    listen<KbAnswerDonePayload>("aa4c://kb_answer_done", (e) =>
+      kb.onAnswerDone(e.payload),
     ),
   ]);
 

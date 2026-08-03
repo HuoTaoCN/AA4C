@@ -10,11 +10,17 @@ rust-version.workspace = true
 [dependencies]
 aa4c-types = { workspace = true }
 aa4c-engine = { workspace = true }
+# 知识库（里程碑 AI4，ARCHIVE_DESIGN.md §1）：知识库强依赖嵌入引擎，设计上整体
+# 归属 aa4c-ai::kb（不是 aa4c-core），含它自己的扫描/CRUD，故这里直接依赖
+# aa4c-store——aa4c-store 只依赖 aa4c-types，不会形成环。
+aa4c-store = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 bs58 = { workspace = true }
 uuid = { workspace = true }
+# 知识库文档内容哈希（增量摄入判断），复用 aa4c-transfer 既有的文件哈希算法选型。
+blake3 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

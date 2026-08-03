@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DeviceId, DeviceInfo, TaskId, TransferTask};
+use crate::{DeviceId, DeviceInfo, KbAnswerSource, TaskId, TransferTask};
 
 /// 一次连接实际走的档位（CONNECT_DESIGN.md §2 连接阶梯，里程碑 C4 连接质量 + C5 打洞）。
 /// 局域网直连与公网直连对上层而言无区别，合并为 `Direct`；`Punch` 是打洞成功后升级
@@ -163,6 +163,36 @@ pub enum CoreEvent {
         done: u32,
         total: u32,
     },
+
+    /// 知识库摄入进度（V0.5 里程碑 AI4，ARCHIVE_DESIGN.md §6）：单个来源目录内
+    /// 逐文档嵌入，每处理完一个文档发一次，语义同 `AiSuggestProgress`
+    /// （`done == total` 即这个来源摄入完成，不单独发"完成"事件）。
+    #[serde(rename_all = "camelCase")]
+    KbIngestProgress {
+        source_id: String,
+        done: u32,
+        total: u32,
+    },
+
+    /// 知识库问答流式增量（V0.5 里程碑 AI4，ARCHIVE_DESIGN.md §6）：对话槽位
+    /// SSE 转发，`request_id` 供前端关联到发起的那次提问（同一时刻只支持一个
+    /// 进行中的问答，`request_id` 仍然带上是为了让前端能安全丢弃过期请求的
+    /// 迟到增量，不是为了支持真正的并发问答）。
+    #[serde(rename_all = "camelCase")]
+    KbAnswerDelta {
+        request_id: String,
+        delta: String,
+    },
+
+    /// 知识库问答结束：附带引用来源列表（去重后的文件路径）。引擎失败/超时
+    /// 时 `error` 非空，`sources` 为空数组。
+    #[serde(rename_all = "camelCase")]
+    KbAnswerDone {
+        request_id: String,
+        sources: Vec<KbAnswerSource>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        error: Option<String>,
+    },
 }
 
 impl CoreEvent {
@@ -187,6 +217,9 @@ impl CoreEvent {
             Self::ArchiveApplied { .. } => "archive_applied",
             Self::AiEngineState { .. } => "ai_engine_state",
             Self::AiSuggestProgress { .. } => "ai_suggest_progress",
+            Self::KbIngestProgress { .. } => "kb_ingest_progress",
+            Self::KbAnswerDelta { .. } => "kb_answer_delta",
+            Self::KbAnswerDone { .. } => "kb_answer_done",
         }
     }
 }
@@ -318,6 +351,47 @@ mod tests {
         assert_eq!(json["data"]["done"], 2);
         assert_eq!(json["data"]["total"], 5);
         assert_eq!(event.event_name(), "ai_suggest_progress");
+
+        let back: CoreEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(back, event);
+    }
+
+    /// 里程碑 AI4：知识库摄入进度事件的 JSON 形状。
+    #[test]
+    fn kb_ingest_progress_json_shape() {
+        let event = CoreEvent::KbIngestProgress {
+            source_id: "src-1".into(),
+            done: 3,
+            total: 10,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "kb_ingest_progress");
+        assert_eq!(json["data"]["sourceId"], "src-1");
+        assert_eq!(json["data"]["done"], 3);
+        assert_eq!(json["data"]["total"], 10);
+        assert_eq!(event.event_name(), "kb_ingest_progress");
+
+        let back: CoreEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(back, event);
+    }
+
+    /// 里程碑 AI4：问答完成事件——`error` 缺省不出现在 JSON 里，同其余
+    /// `skip_serializing_if` 字段的既有约定。
+    #[test]
+    fn kb_answer_done_json_shape_omits_absent_error() {
+        let event = CoreEvent::KbAnswerDone {
+            request_id: "req-1".into(),
+            sources: vec![KbAnswerSource {
+                path: "/tmp/notes/a.md".into(),
+            }],
+            error: None,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "kb_answer_done");
+        assert_eq!(json["data"]["requestId"], "req-1");
+        assert_eq!(json["data"]["sources"][0]["path"], "/tmp/notes/a.md");
+        assert!(json["data"].get("error").is_none());
+        assert_eq!(event.event_name(), "kb_answer_done");
 
         let back: CoreEvent = serde_json::from_value(json).unwrap();
         assert_eq!(back, event);

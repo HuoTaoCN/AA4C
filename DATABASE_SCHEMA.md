@@ -406,7 +406,7 @@ CREATE TABLE archive_log (            -- 移动历史，供撤销（ARCHIVE_DESI
 - `match_json`/`action_json` 用 JSON 存而不是拆列——匹配条件的字段组合随规则类型变化（是否有
   扩展名集合/glob/大小范围），同 `settings` KV 的一贯做法，避免大量可空列。
 
-## 4h. V0.5 表结构（本地知识库，里程碑 AI4，设计定稿未实现）
+## 4h. V0.5 表结构（本地知识库，里程碑 AI4，已实现）
 
 > 对应 ARCHIVE_DESIGN.md §6。迁移文件 `010_knowledge.sql`（user_version=10，AI1 之后独立一次迁移，
 > 不与 `009_archive.sql` 合并——两个里程碑之间隔着 AI2/AI3，先做的表不该等后做的表一起才落地）。

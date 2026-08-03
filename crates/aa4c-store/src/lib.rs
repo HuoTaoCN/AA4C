@@ -16,9 +16,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aa4c_types::{
     Aa4cError, ArchiveCategory, ArchiveEntry, ArchiveLogEntry, ArchiveRule, ArchiveTag, DeviceId,
-    DownloadKind, DownloadStatus, DownloadTask, ModelMeta, RemoteIndexEntry, Result, ScopeKind,
-    Share, ShareAccess, SyncConflict, SyncFileEntry, SyncScope, TagSource, TaskId, TransferFile,
-    TransferStatus, TransferTask, TrustLevel,
+    DownloadKind, DownloadStatus, DownloadTask, KbDocStatus, KbDocument, KbSource, KbSourceSummary,
+    ModelMeta, RemoteIndexEntry, Result, ScopeKind, Share, ShareAccess, SyncConflict,
+    SyncFileEntry, SyncScope, TagSource, TaskId, TransferFile, TransferStatus, TransferTask,
+    TrustLevel,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -26,6 +27,18 @@ use migrate::db_err;
 pub use record::DeviceRecord;
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
+
+/// 一条知识库 chunk 连同它所属文档/来源的路径信息（`list_kb_chunks_for_search`
+/// 的返回行）——不进 `aa4c-types`：带 embedding 向量的行从不跨越 Command 边界，
+/// 只在 `aa4c-store`/`aa4c-ai::kb` 之间传递（`aa4c-core` 转手时按需只取路径）。
+#[derive(Debug, Clone)]
+pub struct KbChunkRow {
+    pub doc_id: String,
+    pub source_path: String,
+    pub rel_path: String,
+    pub text: String,
+    pub embedding: Vec<f32>,
+}
 
 /// SQLite 存储句柄。可廉价 Clone；所有句柄共享同一条专职连接线程。
 #[derive(Clone)]
@@ -1360,6 +1373,300 @@ impl Store {
         })
         .await
     }
+
+    // —— 本地知识库（ARCHIVE_DESIGN.md §6/§4h，里程碑 AI4）——
+
+    /// 新增一个知识库来源目录。`id` 由调用方生成（core 侧 uuid，同 `insert_archive_entry`
+    /// 的既有模式）。
+    pub async fn insert_kb_source(&self, id: &str, path: &str) -> Result<KbSource> {
+        let id = id.to_string();
+        let path = path.to_string();
+        self.call(move |conn| {
+            let now = now_ms();
+            conn.execute(
+                "INSERT INTO kb_sources (id, path, created_at) VALUES (?1, ?2, ?3)",
+                params![id, path, now],
+            )
+            .map_err(db_err)?;
+            Ok(KbSource {
+                id,
+                path,
+                created_at: now,
+            })
+        })
+        .await
+    }
+
+    /// 删除一个来源（级联删除其下全部 `kb_documents`/`kb_chunks`）。
+    pub async fn delete_kb_source(&self, id: &str) -> Result<()> {
+        let id = id.to_string();
+        self.call(move |conn| {
+            conn.execute("DELETE FROM kb_sources WHERE id = ?1", params![id])
+                .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 按 id 查单个来源（`kb_reindex` 编排要在扫描前先拿到 `path`）。
+    pub async fn get_kb_source(&self, id: &str) -> Result<Option<KbSource>> {
+        let id = id.to_string();
+        self.call(move |conn| {
+            conn.query_row(
+                "SELECT id, path, created_at FROM kb_sources WHERE id = ?1",
+                params![id],
+                row_to_kb_source,
+            )
+            .optional()
+            .map_err(db_err)
+        })
+        .await
+    }
+
+    pub async fn list_kb_sources(&self) -> Result<Vec<KbSource>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, path, created_at FROM kb_sources ORDER BY created_at ASC")
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], row_to_kb_source)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 每个来源的摄入状态摘要（`kb_list_sources` Command 直接返回这个，前端不用
+    /// 再单独查文档列表才能显示进度，见 `KbSourceSummary` 文档）。
+    pub async fn list_kb_source_summaries(&self) -> Result<Vec<KbSourceSummary>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT s.id, s.path, s.created_at,
+                            COUNT(d.id),
+                            COALESCE(SUM(d.status = 'indexed'), 0),
+                            COALESCE(SUM(d.status = 'failed'), 0)
+                     FROM kb_sources s
+                     LEFT JOIN kb_documents d ON d.source_id = s.id
+                     GROUP BY s.id
+                     ORDER BY s.created_at ASC",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(KbSourceSummary {
+                        id: row.get(0)?,
+                        path: row.get(1)?,
+                        created_at: row.get(2)?,
+                        doc_count: get_u32(row, 3)?,
+                        indexed_count: get_u32(row, 4)?,
+                        failed_count: get_u32(row, 5)?,
+                    })
+                })
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 扫描增量判断用：同一来源下按相对路径查已有文档记录（`None` = 首次见到这个文件）。
+    pub async fn get_kb_document_by_rel_path(
+        &self,
+        source_id: &str,
+        rel_path: &str,
+    ) -> Result<Option<KbDocument>> {
+        let source_id = source_id.to_string();
+        let rel_path = rel_path.to_string();
+        self.call(move |conn| {
+            conn.query_row(
+                "SELECT id, source_id, rel_path, mtime, hash, status, updated_at
+                 FROM kb_documents WHERE source_id = ?1 AND rel_path = ?2",
+                params![source_id, rel_path],
+                row_to_kb_document,
+            )
+            .optional()
+            .map_err(db_err)
+        })
+        .await
+    }
+
+    /// 一个来源目录下全部文档（扫描时用来找出"数据库里有、这次扫描没扫到"的
+    /// 已删除文件，见 `aa4c-ai::kb` 的增量扫描逻辑）。
+    pub async fn list_kb_documents(&self, source_id: &str) -> Result<Vec<KbDocument>> {
+        let source_id = source_id.to_string();
+        self.call(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, source_id, rel_path, mtime, hash, status, updated_at
+                     FROM kb_documents WHERE source_id = ?1",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map(params![source_id], row_to_kb_document)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 插入或更新一条文档记录（`id` 首次插入由调用方生成 uuid，之后按同一 `id`
+    /// 更新——调用方在插入前先 `get_kb_document_by_rel_path` 拿到既有 id，同
+    /// `upsert_archive_rule` 的既有模式）。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_kb_document(
+        &self,
+        id: &str,
+        source_id: &str,
+        rel_path: &str,
+        mtime: i64,
+        hash: &str,
+        status: KbDocStatus,
+    ) -> Result<KbDocument> {
+        let id = id.to_string();
+        let source_id = source_id.to_string();
+        let rel_path = rel_path.to_string();
+        let hash = hash.to_string();
+        self.call(move |conn| {
+            let now = now_ms();
+            conn.execute(
+                "INSERT INTO kb_documents (id, source_id, rel_path, mtime, hash, status, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                   rel_path = excluded.rel_path,
+                   mtime = excluded.mtime,
+                   hash = excluded.hash,
+                   status = excluded.status,
+                   updated_at = excluded.updated_at",
+                params![id, source_id, rel_path, mtime, hash, status.as_str(), now],
+            )
+            .map_err(db_err)?;
+            Ok(KbDocument {
+                id,
+                source_id,
+                rel_path,
+                mtime,
+                hash,
+                status,
+                updated_at: now,
+            })
+        })
+        .await
+    }
+
+    /// 摄入成功/失败后单独刷新状态，不用重新传一遍全部字段。
+    pub async fn set_kb_document_status(&self, id: &str, status: KbDocStatus) -> Result<()> {
+        let id = id.to_string();
+        self.call(move |conn| {
+            conn.execute(
+                "UPDATE kb_documents SET status = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, status.as_str(), now_ms()],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 删除一条文档记录（级联删除其 `kb_chunks`；文件在磁盘上消失或来源被移除时用）。
+    pub async fn delete_kb_document(&self, id: &str) -> Result<()> {
+        let id = id.to_string();
+        self.call(move |conn| {
+            conn.execute("DELETE FROM kb_documents WHERE id = ?1", params![id])
+                .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 用新分块整体替换一个文档的全部 chunk（重新摄入=先清空旧的再插入新的，
+    /// 不做逐条 diff——分块边界随内容变化，没有稳定的"这块对应哪块"关系，同
+    /// `finish_move` 一类"整体替换比增量对比更简单也更不容易出 bug"的既有取舍）。
+    /// `chunks` 是 `(text, embedding)` 对，`seq` 按切片顺序从 0 开始编号。
+    /// 删除+批量插入包在一个事务里，不会出现"删了旧的但新的还没插完"的中间态。
+    pub async fn replace_kb_chunks(
+        &self,
+        doc_id: &str,
+        chunks: &[(String, Vec<f32>)],
+    ) -> Result<()> {
+        let doc_id = doc_id.to_string();
+        let chunks = chunks.to_vec();
+        self.call(move |conn| {
+            let tx = conn.transaction().map_err(db_err)?;
+            tx.execute("DELETE FROM kb_chunks WHERE doc_id = ?1", params![doc_id])
+                .map_err(db_err)?;
+            for (seq, (text, embedding)) in chunks.iter().enumerate() {
+                let dims = i64::try_from(embedding.len()).unwrap_or(i64::MAX);
+                let blob = encode_embedding(embedding);
+                tx.execute(
+                    "INSERT INTO kb_chunks (doc_id, seq, text, embedding, dims)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        doc_id,
+                        i64::try_from(seq).unwrap_or(i64::MAX),
+                        text,
+                        blob,
+                        dims
+                    ],
+                )
+                .map_err(db_err)?;
+            }
+            tx.commit().map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 暴力余弦检索用：读出全部 chunk 连同各自文档所属来源的绝对路径拼接件
+    /// （`source_path`/`rel_path` 分开返回，由调用方用 `Path::join` 拼——SQL 里
+    /// 用 `||` 拼字符串对 Windows 反斜杠路径不安全，见 ARCHIVE_DESIGN §6）。
+    /// 个人规模（数万 chunk）一次性读入内存后在 Rust 里算，见 §6 的既定取舍。
+    pub async fn list_kb_chunks_for_search(&self) -> Result<Vec<KbChunkRow>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT c.doc_id, s.path, d.rel_path, c.text, c.embedding
+                     FROM kb_chunks c
+                     JOIN kb_documents d ON d.id = c.doc_id
+                     JOIN kb_sources s ON s.id = d.source_id
+                     WHERE d.status = 'indexed'",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let embedding_blob: Vec<u8> = row.get(4)?;
+                    Ok(KbChunkRow {
+                        doc_id: row.get(0)?,
+                        source_path: row.get(1)?,
+                        rel_path: row.get(2)?,
+                        text: row.get(3)?,
+                        embedding: decode_embedding(&embedding_blob),
+                    })
+                })
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 知识库总 chunk 数（§6 "5 万 chunk 起提示知识库偏大"，前端拿这个数字判断
+    /// 要不要显示警告，不用把全部 chunk 都读回来才能数数）。
+    pub async fn count_kb_chunks(&self) -> Result<u64> {
+        self.call(|conn| {
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM kb_chunks", [], |r| r.get(0))
+                .map_err(db_err)?;
+            Ok(u64::try_from(n).unwrap_or(0))
+        })
+        .await
+    }
 }
 
 fn open_and_migrate(path: &Path) -> Result<Connection> {
@@ -1543,6 +1850,45 @@ fn row_to_archive_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArchiveLogEnt
     })
 }
 
+fn row_to_kb_source(row: &rusqlite::Row<'_>) -> rusqlite::Result<KbSource> {
+    Ok(KbSource {
+        id: row.get(0)?,
+        path: row.get(1)?,
+        created_at: row.get(2)?,
+    })
+}
+
+fn row_to_kb_document(row: &rusqlite::Row<'_>) -> rusqlite::Result<KbDocument> {
+    Ok(KbDocument {
+        id: row.get(0)?,
+        source_id: row.get(1)?,
+        rel_path: row.get(2)?,
+        mtime: row.get(3)?,
+        hash: row.get(4)?,
+        status: parse_col(row, 5)?,
+        updated_at: row.get(6)?,
+    })
+}
+
+/// `kb_chunks.embedding` 的编码：f32 LE 逐个拼接（ARCHIVE_DESIGN §6），不引入
+/// `byteorder` 依赖——`f32::to_le_bytes`/`from_le_bytes` 就是这四行代码。
+fn encode_embedding(v: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(v.len() * 4);
+    for x in v {
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out
+}
+
+/// 长度不是 4 的倍数的坏 BLOB（不应该发生，只有这一处写入）忽略尾部余量，
+/// 不 panic——同项目一贯"解析外部/持久化数据时容错优先"的惯例。
+fn decode_embedding(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
 /// 解析存成 TEXT 的 JSON 列（`match_json`/`action_json`/`model_meta_json`）；解析失败
 /// 视为列类型错误，同 `parse_col` 对非法枚举值的既有处理方式。
 fn parse_json_col<T: serde::de::DeserializeOwned>(idx: usize, raw: &str) -> rusqlite::Result<T> {
@@ -1570,4 +1916,9 @@ fn parse_col<T: std::str::FromStr>(row: &rusqlite::Row<'_>, idx: usize) -> rusql
 fn get_u64(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<u64> {
     let v: i64 = row.get(idx)?;
     Ok(u64::try_from(v).unwrap_or(0))
+}
+
+fn get_u32(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<u32> {
+    let v: i64 = row.get(idx)?;
+    Ok(u32::try_from(v).unwrap_or(0))
 }

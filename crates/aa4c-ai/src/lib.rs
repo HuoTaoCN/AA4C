@@ -12,12 +12,14 @@
 #![forbid(unsafe_code)]
 
 mod client;
+mod kb;
 mod process;
 mod service;
 mod suggest;
 mod util;
 
 pub use client::LlamaClient;
+pub use kb::KbService;
 pub use process::{LlamaProcess, SlotKind};
 pub use service::{AiConfig, AiService};
 pub use suggest::{SuggestEngine, SuggestInput};

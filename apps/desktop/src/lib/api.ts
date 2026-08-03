@@ -10,6 +10,8 @@ import type {
   CommandError,
   DeviceInfo,
   DownloadTask,
+  KbSource,
+  KbSourceSummary,
   LocalModel,
   Settings,
   Share,
@@ -107,6 +109,12 @@ export const api = {
       adopt,
       targetDir: targetDir ?? null,
     }),
+
+  kbAddSource: (path: string) => invoke<KbSource>("kb_add_source", { path }),
+  kbRemoveSource: (id: string) => invoke<void>("kb_remove_source", { id }),
+  kbListSources: () => invoke<KbSourceSummary[]>("kb_list_sources"),
+  kbReindex: (sourceId: string) => invoke<void>("kb_reindex", { sourceId }),
+  kbAsk: (question: string) => invoke<string>("kb_ask", { question }),
 };
 
 /** 把任意 reject 值收敛为 CommandError（兜底未知错误）。 */

@@ -2,9 +2,9 @@
 
 use aa4c_store::{DeviceRecord, Store};
 use aa4c_types::{
-    ArchiveAction, ArchiveCategory, ArchiveMatch, ArchiveRule, Direction, FileStatus, ModelMeta,
-    Platform, RemoteIndexEntry, ScopeKind, SyncFileEntry, TagSource, TransferFile, TransferStatus,
-    TransferTask, TrustLevel,
+    ArchiveAction, ArchiveCategory, ArchiveMatch, ArchiveRule, Direction, FileStatus, KbDocStatus,
+    ModelMeta, Platform, RemoteIndexEntry, ScopeKind, SyncFileEntry, TagSource, TransferFile,
+    TransferStatus, TransferTask, TrustLevel,
 };
 
 fn sample_device(id: &str, trusted: bool) -> DeviceRecord {
@@ -65,7 +65,7 @@ async fn migration_is_idempotent_across_reopens() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 9); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares + 008_downloads + 009_archive
+    assert_eq!(version, 10); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares + 008_downloads + 009_archive + 010_knowledge
 }
 
 #[tokio::test]
@@ -794,4 +794,173 @@ async fn archive_entry_tags_and_log_roundtrip() {
     store.delete_archive_entry("e1").await.unwrap();
     assert!(store.get_archive_entry("e1").await.unwrap().is_none());
     assert_eq!(store.list_archive_tags("e1").await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn kb_source_crud_and_summary_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    let src = store.insert_kb_source("s1", "/notes").await.unwrap();
+    assert_eq!(src.path, "/notes");
+    assert!(src.created_at > 0, "created_at 由 Store 写入");
+
+    store.insert_kb_source("s2", "/docs").await.unwrap();
+    let sources = store.list_kb_sources().await.unwrap();
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0].id, "s1", "按 created_at 升序返回");
+
+    // 摘要：空来源 doc_count/indexed_count/failed_count 均为 0，不是 SQL NULL 崩溃
+    let summaries = store.list_kb_source_summaries().await.unwrap();
+    assert_eq!(summaries.len(), 2);
+    let s1_summary = summaries.iter().find(|s| s.id == "s1").unwrap();
+    assert_eq!(s1_summary.doc_count, 0);
+    assert_eq!(s1_summary.indexed_count, 0);
+    assert_eq!(s1_summary.failed_count, 0);
+
+    store
+        .upsert_kb_document("d1", "s1", "a.md", 100, "hash-a", KbDocStatus::Indexed)
+        .await
+        .unwrap();
+    store
+        .upsert_kb_document("d2", "s1", "b.md", 200, "hash-b", KbDocStatus::Failed)
+        .await
+        .unwrap();
+    store
+        .upsert_kb_document("d3", "s1", "c.md", 300, "hash-c", KbDocStatus::Pending)
+        .await
+        .unwrap();
+
+    let summaries = store.list_kb_source_summaries().await.unwrap();
+    let s1_summary = summaries.iter().find(|s| s.id == "s1").unwrap();
+    assert_eq!(s1_summary.doc_count, 3);
+    assert_eq!(s1_summary.indexed_count, 1);
+    assert_eq!(s1_summary.failed_count, 1);
+
+    // 删除来源级联删除其文档
+    store.delete_kb_source("s1").await.unwrap();
+    assert_eq!(store.list_kb_documents("s1").await.unwrap().len(), 0);
+    assert_eq!(store.list_kb_sources().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn kb_document_upsert_and_incremental_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+    store.insert_kb_source("s1", "/notes").await.unwrap();
+
+    // 首次见到这个文件：按 (source_id, rel_path) 查不到
+    assert!(store
+        .get_kb_document_by_rel_path("s1", "a.md")
+        .await
+        .unwrap()
+        .is_none());
+
+    let doc = store
+        .upsert_kb_document("d1", "s1", "a.md", 100, "hash-v1", KbDocStatus::Pending)
+        .await
+        .unwrap();
+    assert_eq!(doc.status, KbDocStatus::Pending);
+
+    // 增量扫描命中：同一 id，内容变化时更新 mtime/hash/status
+    let found = store
+        .get_kb_document_by_rel_path("s1", "a.md")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.id, "d1");
+    assert_eq!(found.hash, "hash-v1");
+
+    store
+        .upsert_kb_document("d1", "s1", "a.md", 150, "hash-v2", KbDocStatus::Pending)
+        .await
+        .unwrap();
+    let updated = store
+        .get_kb_document_by_rel_path("s1", "a.md")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.mtime, 150);
+    assert_eq!(updated.hash, "hash-v2");
+
+    // 单独刷新状态（摄入成功/失败后用，不用重传全部字段）
+    store
+        .set_kb_document_status("d1", KbDocStatus::Indexed)
+        .await
+        .unwrap();
+    let indexed = store
+        .get_kb_document_by_rel_path("s1", "a.md")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(indexed.status, KbDocStatus::Indexed);
+    // set_kb_document_status 不该动 hash/mtime
+    assert_eq!(indexed.hash, "hash-v2");
+
+    store.delete_kb_document("d1").await.unwrap();
+    assert!(store
+        .get_kb_document_by_rel_path("s1", "a.md")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn kb_chunks_replace_search_and_cascade_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+    store.insert_kb_source("s1", "/notes").await.unwrap();
+    store
+        .upsert_kb_document("d1", "s1", "a.md", 100, "hash-a", KbDocStatus::Indexed)
+        .await
+        .unwrap();
+
+    assert_eq!(store.count_kb_chunks().await.unwrap(), 0);
+
+    store
+        .replace_kb_chunks(
+            "d1",
+            &[
+                ("第一段".to_string(), vec![1.0, 0.0, 0.0]),
+                ("第二段".to_string(), vec![0.0, 1.0, 0.0]),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.count_kb_chunks().await.unwrap(), 2);
+
+    let rows = store.list_kb_chunks_for_search().await.unwrap();
+    assert_eq!(rows.len(), 2);
+    let first = rows.iter().find(|r| r.text == "第一段").unwrap();
+    assert_eq!(first.doc_id, "d1");
+    assert_eq!(first.source_path, "/notes");
+    assert_eq!(first.rel_path, "a.md");
+    // embedding 编解码往返：f32 精度应完全保留
+    assert_eq!(first.embedding, vec![1.0, 0.0, 0.0]);
+
+    // 未 indexed 的文档不出现在检索结果里（避免拿失败/待处理文档的陈旧 chunk 去答题）
+    store
+        .upsert_kb_document("d2", "s1", "b.md", 200, "hash-b", KbDocStatus::Pending)
+        .await
+        .unwrap();
+    store
+        .replace_kb_chunks("d2", &[("待处理".to_string(), vec![0.0, 0.0, 1.0])])
+        .await
+        .unwrap();
+    let rows = store.list_kb_chunks_for_search().await.unwrap();
+    assert_eq!(rows.len(), 2, "pending 文档的 chunk 不应进入检索结果");
+
+    // 整体替换：重新摄入后旧 chunk 被清空，不是追加
+    store
+        .replace_kb_chunks("d1", &[("新内容".to_string(), vec![0.5, 0.5, 0.0])])
+        .await
+        .unwrap();
+    let rows = store.list_kb_chunks_for_search().await.unwrap();
+    let d1_rows: Vec<_> = rows.iter().filter(|r| r.doc_id == "d1").collect();
+    assert_eq!(d1_rows.len(), 1);
+    assert_eq!(d1_rows[0].text, "新内容");
+
+    // 级联：删除文档时 chunk 一并清掉
+    store.delete_kb_document("d1").await.unwrap();
+    assert_eq!(store.count_kb_chunks().await.unwrap(), 1);
 }
