@@ -124,6 +124,13 @@ jobs:
           # 的 GPU 后端）——文件名集合取并集，两边都有的才 lipo 合并，只有一边有
           # 的（目前只有 libggml-metal 这一个）直接原样拷贝，不需要（也没法）
           # 合并一个不存在的架构切片。
+          #
+          # **真机 CI 踩到的坑（v0.5.0-preview 首次真实发布）**：这个目录里不是
+          # 只有 dylib——llama.cpp release 包里还带了一份 `LICENSE` 纯文本文件，
+          # 两个架构下内容相同但都不是 Mach-O，直接对着它 `lipo -create` 会报
+          # "can't figure out the architecture type" 中断整个 job。用 `lipo -info`
+          # 探测"两边都有的文件是不是真的 Mach-O"，不是 Mach-O 的（文本文件等）
+          # 直接当"内容天然一致"处理，只拷贝一份，不试图合并。
           mkdir -p "$BIN_DIR/llama-server-universal-apple-darwin-libs"
           (cd "$BIN_DIR/llama-server-aarch64-apple-darwin-libs" && find . -type f -o -type l) | sed 's|^\./||' > /tmp/arm64_libs.txt
           (cd "$BIN_DIR/llama-server-x86_64-apple-darwin-libs" && find . -type f -o -type l) | sed 's|^\./||' > /tmp/x64_libs.txt
@@ -131,7 +138,7 @@ jobs:
             arm64_f="$BIN_DIR/llama-server-aarch64-apple-darwin-libs/$name"
             x64_f="$BIN_DIR/llama-server-x86_64-apple-darwin-libs/$name"
             out="$BIN_DIR/llama-server-universal-apple-darwin-libs/$name"
-            if [[ -f "$arm64_f" && -f "$x64_f" ]]; then
+            if [[ -f "$arm64_f" && -f "$x64_f" ]] && lipo -info "$arm64_f" >/dev/null 2>&1; then
               lipo -create -output "$out" "$arm64_f" "$x64_f"
             elif [[ -f "$arm64_f" ]]; then
               cp -P "$arm64_f" "$out"
