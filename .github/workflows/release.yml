@@ -17,14 +17,18 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            args: ""
+            # --verbose：AppImage 打包这条腿已经两次真实 tag push 里报过语焉不详
+            # 的 "failed to run linuxdeploy"（同 D2 教训），留着 verbose 输出让
+            # 下次万一再炸能直接看到 linuxdeploy 自己的报错，不用先按："改回不
+            # verbose 再触发一次" 才能看见真因——这一步不减慢构建，只是话多。
+            args: "--verbose"
           - os: macos-latest
             # engines.yml 已跑通验证（SHA256SUMS 已填进 scripts/fetch-engines.sh），
             # 恢复 universal 双架构构建；v0.4.0-preview/v0.4.0-preview.1 曾因
             # engines.yml 还没验证过，临时改成只出 arm64。
-            args: "--target universal-apple-darwin"
+            args: "--target universal-apple-darwin --verbose"
           - os: windows-latest
-            args: ""
+            args: "--verbose"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -166,14 +170,25 @@ jobs:
           # ELF 段会让 strip 失败（上游 tauri-apps/tauri#14796/#15106），跳过它。
           APPIMAGE_EXTRACT_AND_RUN: "1"
           NO_STRIP: "true"
+          # v0.5.0-preview 第二次真实 tag push 里 Linux 腿又报了一次同一句
+          # "failed to run linuxdeploy"——libssl3/libgomp1 那两个 apt 包解决的是
+          # llama-server 二进制自身的系统级依赖，但 `libggml*.so`/`libllama.so`
+          # 是我们自己塞进 `binaries/llama-server-*-libs/` 的资源库，从来就没有
+          # 对应的 apt 包能把它们装到系统路径——linuxdeploy 打包阶段扫描
+          # usr/bin/ 下每个可执行文件的 ELF 依赖时，找不到这两个库天经地义
+          # （ARCHIVE_DESIGN.md §3.4 规划阶段就预警过这个风险，这是它第一次
+          # 真实 CI 复现）。给 linuxdeploy 自己的进程注入 `LD_LIBRARY_PATH`
+          # 指向这个目录，让它的依赖扫描能找到——同运行时 `download_spawner.rs`
+          # 给 llama-server 子进程注入的是同一个目录，只是这里服务的是打包阶段
+          # 而不是运行阶段，两处注入互不冲突、职责不同。只在 Linux 腿有意义，
+          # macOS/Windows 上这个变量是空字符串，等价于不设置。
+          LD_LIBRARY_PATH: ${{ matrix.os == 'ubuntu-latest' && format('{0}/apps/desktop/src-tauri/binaries/llama-server-x86_64-unknown-linux-gnu-libs', github.workspace) || '' }}
         with:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: "AA4C ${{ github.ref_name }}"
-          # TODO(Linux AppImage CI 环境问题查清楚后恢复 ".AppImage" 措辞)：这次
-          # 发布 Linux 只出 .deb/.rpm，见上方 ubuntu-latest args 的注释。
           releaseBody: |
-            桌面安装包（.dmg / .msi / .deb / .rpm）与 Android APK（arm64，实验版）见下方 Assets。安装与防火墙说明见 README。
+            桌面安装包（.dmg / .msi / .deb / .rpm / .AppImage）与 Android APK（arm64，实验版）见下方 Assets。安装与防火墙说明见 README。
 
             ${{ contains(github.ref_name, '-') && '⚠️ 预览版，详细变更见 CHANGELOG.md。' || '' }}
           releaseDraft: false
