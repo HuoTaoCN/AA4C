@@ -1,6 +1,6 @@
 # AA4C 开发交接（换机指南）
 
-> 最后更新：2026-08-03（**`v0.5.0-preview` 已正式发布**——V0.5「AI」五个里程碑（AI1 规则式归档、AI2 llama-server 引擎接入、AI3 AI 标签/分类建议、AI4 本地知识库、AI5 收尾）全部完成并随这个 tag 打包发出。发布过程真实踩了两个 CI 坑（均为规划阶段 ARCHIVE_DESIGN.md 就预警过、必须真实 CI 验证的风险，这次首次真实复现并修复）：①macOS universal 二进制合并时 `lipo` 遇到 llama.cpp release 包里非 Mach-O 的 `LICENSE` 文本文件报错中断；②Linux AppImage 打包时 `linuxdeploy` 的系统级 ELF 依赖扫描找不到 llama-server 自带、没有对应 apt 包的 `libggml`/`libllama` 资源库，需要显式注入 `LD_LIBRARY_PATH`。三轮真实 tag push 后 5 个 job（macOS/Windows/Ubuntu 构建 + Android APK + aa4c-server 二进制）全绿，Release 9 个资产齐全（**含 AppImage，V0.5 DoD 第 6 条最后一块拼图，首次真实随发布验证通过**）。`cargo test --workspace`/`cargo clippy --workspace --all-targets -- -D warnings`/`cargo fmt --all --check`/`pnpm build` 全部通过。**仍未做**：真机 `pnpm tauri dev` 点击走查（本环境无 GUI 自动化工具，历次里程碑同一限制）。全部细节见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md) §11"AI5 补记"。下一步见第四节。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
+> 最后更新：2026-08-04（**V0.5「AI」已随 `v0.5.0-preview` 正式发布**（细节见下方 V0.5 记录）；**V0.6「Touch/Direct」设计稿已定稿，尚未开始实现**——新增 [TOUCH_DESIGN.md](TOUCH_DESIGN.md) + [V0.6_IMPLEMENTATION_PLAN.md](V0.6_IMPLEMENTATION_PLAN.md)。关键结论（用官方文档源核实，不是凭记忆写的）：Android 经典 NFC P2P（Android Beam）已在 Android 10 弃用/Android 14 移除，"碰一碰"必须走 HCE（需要自定义原生插件，官方 `tauri-plugin-nfc` 不支持）；**AA Touch 与 AA Direct 的 WiFi Direct 分支仅限 Android**（桌面三平台无可用第三方 API，iOS 对第三方 App 的 HCE 限定于受监管的支付/门禁类场景、不支持通用配对）；蓝牙分支 Android 双向对等、桌面仅 central（`btleplug` 明确不支持 peripheral 角色）；蓝牙 Mesh 无操作系统级 API，明确后置不进 V0.6。**本环境没有任何 NFC/WiFi Direct/蓝牙硬件，也没有真实 Android 设备**——V0.6 的执行模式与此前所有里程碑不同：Agent 能验证代码编译/单元测试/纯逻辑，但核心功能（碰一碰真的能配对、断网真的能连上）**只能由用户在真机上验证**，这条写进了 V0.6_IMPLEMENTATION_PLAN.md 的执行纪律第 2 条。下一步见第四节。用途：在新电脑上 `git clone` 后按本文档配置环境，即可无缝继续开发。
 > 给 AI Agent：开工前先读本文档"当前进度"与"下一步"，再按 [AGENTS.md](AGENTS.md) 的必读清单工作。
 
 ## 一、当前进度
@@ -169,7 +169,7 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：AI4 已完成，从 AI5（收尾 + `v0.5.0-preview` 发布）继续
+## 四、下一步：V0.6 设计稿已定稿，从 T1（AA Touch）的前置实证开始
 
 **V0.3「AA Connect」六个里程碑（C1–C6）全部实现完毕并测试通过，且已打包发布 `v0.3.0-preview`**：连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档贯通，外加脱离配对关系的能力型分享，随三平台安装包 + Android arm64 APK + `aa4c-server` Linux 二进制一起发出（GitHub Release，prerelease）。设计见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（§12 已确认决策清单）、实现拆解见 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)。
 
@@ -201,7 +201,14 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 
 **仍未做**：真机 `pnpm tauri dev`（含真实 Tauri 后端 + 真实模型）点击走查——受限于本环境没有原生 GUI 自动化工具，历次里程碑均同一限制，目前只验证了纯前端 dev 模式与真实进程集成测试两层。
 
-**下一步**：V0.6「Touch/Direct」（碰一碰/脱网连接）；或用户指定方向。也可穿插补 V0.3 其余已知缺口（见下）。
+**V0.6「Touch/Direct」设计稿 v1 已定稿，尚未开始实现**：新增 [TOUCH_DESIGN.md](TOUCH_DESIGN.md) + [V0.6_IMPLEMENTATION_PLAN.md](V0.6_IMPLEMENTATION_PLAN.md)（里程碑 **T1–T4**）。这次设计阶段做了充分的平台事实调研（用 WebSearch/WebFetch 核实官方文档源，不是凭记忆写的），几条关键结论直接决定了范围：
+- **Android 经典 NFC P2P（Android Beam）已在 Android 10 弃用、Android 14 彻底移除**——"碰一碰"不能走那条最直觉的路径，必须用 HCE（`HostApduService`），而官方 `tauri-plugin-nfc` 明确不支持 HCE/设备对设备模式，意味着 AA Touch 的广播端需要一个全新的自定义 Android 原生插件（本项目至今没写过正式 Tauri 插件，`MainActivity.kt` 里的 `MulticastLock` 定制是更简单的生命周期钩子，不适用）。
+- **AA Touch 与 AA Direct 的 WiFi Direct 分支范围收紧到仅 Android**：桌面三平台没有可用的第三方 NFC/WiFi Direct API；iOS 对第三方 App 的 HCE 从 iOS 17.4 起虽然开放，但严格限定于 EEA 地区 + 需要 Apple 单独审批 entitlement + 只覆盖支付/交通卡/门禁/车钥匙这类受监管场景，通用设备配对不在支持用例列表里——不过这本来也不影响本项目，因为 iOS 至今从未真正落地过（只在 PROJECT_VISION 里是远期方向）。
+- **蓝牙分支 Android 双向对等，桌面仅 central**：Rust 生态成熟的跨平台库 `btleplug` 明确"host/central mode only"，peripheral（广播）角色需要另找库且桌面平台成熟度不足，第一阶段桌面只做"扫描 Android 广播源并连接"，不能反向被发现。
+- **蓝牙 Mesh 明确后置，不进 V0.6**——无论 Android 还是 iOS 都没有操作系统级 Mesh API，需要自建配网/路由/安全协议栈，工作量与本里程碑其余全部内容相当。
+- **执行模式与此前所有里程碑不同**：本环境没有任何 NFC/WiFi Direct/蓝牙硬件、也没有真实 Android 设备，Agent 只能验证到"代码编译通过 + 单元测试覆盖纯逻辑部分"，**核心功能（碰一碰真的能配对、断网真的能连上）必须由用户在真机上验证**——这条写进了 V0.6_IMPLEMENTATION_PLAN.md 执行纪律第 2 条，每个里程碑的验收判定也逐条标注了"需要用户真机验证"。
+
+**下一步**：开始 T1.0（AA Touch 前置实证——需要用户配合真实 Android 设备跑通 HCE 广播+官方 NFC 插件读取的最小闭环，见 TOUCH_DESIGN.md §10 第 1-2 条）；或用户指定方向。也可穿插补 V0.3 其余已知缺口（见下）。
 
 **V0.3 范围内其余已知的、有意缩小的缺口**（不阻塞任何已完成里程碑，可随时单独补）：
 - 分享链接：`aa4c://` deep-link 系统级注册（桌面三平台 + Android intent）未做，首版只支持粘贴链接打开；二维码生成未做。

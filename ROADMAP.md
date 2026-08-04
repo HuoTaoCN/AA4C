@@ -107,11 +107,12 @@
 
 功能：
 
-- **AA Touch（碰一碰）**：NFC —— 设备 A 碰设备 B → 自动连接配对
-- **AA Direct（脱网连接）**：WiFi Direct、蓝牙、蓝牙 Mesh —— 没有互联网、没有基站也能连
+- **AA Touch（碰一碰）**：NFC —— 设备 A 碰设备 B → 自动配对（**仅 Android**，桌面三平台与 iOS 缺乏可用的第三方 NFC API，见 TOUCH_DESIGN.md §1.1）
+- **AA Direct（脱网连接）**：WiFi Direct（**仅 Android**）+ 蓝牙（Android 双向对等，桌面仅扫描/接收）—— 没有互联网、没有基站也能连
 - 面向 Device-to-Device（D2D）设备直连的演进（手机↔手机/电脑/NAS/车机/无人机）
+- 蓝牙 Mesh 明确后置，不在本里程碑范围内（无操作系统级 API，见 TOUCH_DESIGN.md §1.4/§10）
 
-> 不做社区 / 资源平台 / 中心化云盘——见 [PROJECT_VISION.md](PROJECT_VISION.md) 产品边界。
+> 设计详见 [TOUCH_DESIGN.md](TOUCH_DESIGN.md)（v1 设计稿，关键平台能力事实已用官方文档源核实——本环境无真实 NFC/WiFi Direct/蓝牙硬件，真机验证责任在用户）；实现计划见 [V0.6_IMPLEMENTATION_PLAN.md](V0.6_IMPLEMENTATION_PLAN.md)（里程碑 T1–T4）。不做社区 / 资源平台 / 中心化云盘——见 [PROJECT_VISION.md](PROJECT_VISION.md) 产品边界。
 
 ---
 
