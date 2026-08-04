@@ -330,6 +330,74 @@ async fn task_resumes_across_service_restart_with_same_gid() {
     svc2.shutdown().await;
 }
 
+/// "同时下载数"（`DownloadLimits::concurrency`）真的会限制 aria2 实际并发跑
+/// 的任务数，不是只写进 conf 文件摆设：起 3 个慢速下载、把并发数设成 1，全程
+/// 轮询 `list_downloads()`，断言任意时刻 `Active` 的任务数都不超过 1（其余
+/// 排在 `Waiting`），最终三个都能跑完——`max-concurrent-downloads` 是 aria2
+/// 自己的全局限流，AA4C 这边只是把设置页的数字原样透传（见 `conf.rs`），这条
+/// 测试验证的是"透传之后 aria2 真的照办"，不是 AA4C 自己实现了限流。
+#[tokio::test]
+async fn download_concurrency_limit_caps_simultaneous_active_tasks() {
+    let dir = tempfile::tempdir().unwrap();
+    let download_dir = dir.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+    let spawner = Arc::new(ProcessSpawner::new(require_aria2c()));
+    let (events, _rx) = broadcast::channel(64);
+    let svc = DownloadService::start(
+        spawner,
+        None,
+        store.clone(),
+        events,
+        dir.path().to_path_buf(),
+        download_dir.clone(),
+        DownloadLimits {
+            concurrency: Some(1),
+            ..DownloadLimits::default()
+        },
+    )
+    .await;
+
+    let body = vec![13u8; 512 * 1024];
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        let addr = spawn_slow_http_server(body.clone(), Duration::from_millis(60)).await;
+        let id = svc.add(format!("http://{addr}/file{i}.bin")).await.unwrap();
+        ids.push(id);
+    }
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut max_active_seen = 0usize;
+    loop {
+        let tasks = store.list_downloads().await.unwrap();
+        let active = tasks
+            .iter()
+            .filter(|t| ids.contains(&t.id) && t.status == DownloadStatus::Active)
+            .count();
+        max_active_seen = max_active_seen.max(active);
+        assert!(
+            active <= 1,
+            "concurrency=1 but saw {active} tasks Active at once"
+        );
+        if ids.iter().all(|id| {
+            tasks
+                .iter()
+                .any(|t| &t.id == id && t.status == DownloadStatus::Complete)
+        }) {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("not all downloads completed within the deadline: {tasks:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // 三个任务分三批跑（并发=1），至少要真的观察到"同时有一个在跑"过，否则
+    // 上面 `active <= 1` 的断言就是空转——确认这条测试真的锻炼到了限流路径。
+    assert_eq!(max_active_seen, 1);
+
+    svc.shutdown().await;
+}
+
 /// 通过命令行匹配（含本次测试独占的 `data_dir` 路径，天然唯一）找到刚才拉起的
 /// aria2c 子进程并 SIGKILL——模拟"进程本身崩溃退出"而不是"连接断开"，两者对
 /// `actor_loop` 触发的路径不同（见 `crates/aa4c-download/src/lib.rs`

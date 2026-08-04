@@ -28,7 +28,7 @@ struct Node {
     _dir: tempfile::TempDir,
 }
 
-async fn spawn_node(name: &str) -> Node {
+async fn spawn_node(name: &str, max_concurrent_tasks: usize) -> Node {
     let dir = tempfile::tempdir().unwrap();
     let identity = Arc::new(Identity::load_or_generate(dir.path()).unwrap());
     let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
@@ -42,6 +42,7 @@ async fn spawn_node(name: &str) -> Node {
         TransferConfig {
             default_save_dir: save_dir.clone(),
             timeout: Duration::from_secs(8),
+            max_concurrent_tasks,
             ..TransferConfig::default()
         },
     );
@@ -175,8 +176,8 @@ fn assert_no_part_files(dir: &Path) {
 
 #[tokio::test]
 async fn single_file_roundtrip_with_hash_and_store() {
-    let a = spawn_node("发送方").await;
-    let b = spawn_node("接收方").await;
+    let a = spawn_node("发送方", 4).await;
+    let b = spawn_node("接收方", 4).await;
     pair_nodes(&a, &b).await;
     auto_accept(&b);
 
@@ -196,8 +197,8 @@ async fn single_file_roundtrip_with_hash_and_store() {
 
 #[tokio::test]
 async fn empty_file_transfers() {
-    let a = spawn_node("发送方").await;
-    let b = spawn_node("接收方").await;
+    let a = spawn_node("发送方", 4).await;
+    let b = spawn_node("接收方", 4).await;
     pair_nodes(&a, &b).await;
     auto_accept(&b);
 
@@ -212,8 +213,8 @@ async fn empty_file_transfers() {
 
 #[tokio::test]
 async fn folder_structure_is_preserved_and_duplicates_renamed() {
-    let a = spawn_node("发送方").await;
-    let b = spawn_node("接收方").await;
+    let a = spawn_node("发送方", 4).await;
+    let b = spawn_node("接收方", 4).await;
     pair_nodes(&a, &b).await;
     auto_accept(&b);
 
@@ -239,8 +240,8 @@ async fn folder_structure_is_preserved_and_duplicates_renamed() {
 
 #[tokio::test]
 async fn medium_file_hash_matches() {
-    let a = spawn_node("发送方").await;
-    let b = spawn_node("接收方").await;
+    let a = spawn_node("发送方", 4).await;
+    let b = spawn_node("接收方", 4).await;
     pair_nodes(&a, &b).await;
     auto_accept(&b);
 
@@ -255,8 +256,8 @@ async fn medium_file_hash_matches() {
 #[tokio::test]
 #[ignore = "1GB 大文件，本地手动运行：cargo test -p aa4c-transfer -- --ignored"]
 async fn gigabyte_file_hash_matches() {
-    let a = spawn_node("发送方").await;
-    let b = spawn_node("接收方").await;
+    let a = spawn_node("发送方", 4).await;
+    let b = spawn_node("接收方", 4).await;
     pair_nodes(&a, &b).await;
     auto_accept(&b);
 
@@ -281,8 +282,8 @@ async fn gigabyte_file_hash_matches() {
 
 #[tokio::test]
 async fn receiver_rejecting_marks_both_sides() {
-    let a = spawn_node("发送方").await;
-    let b = spawn_node("接收方").await;
+    let a = spawn_node("发送方", 4).await;
+    let b = spawn_node("接收方", 4).await;
     pair_nodes(&a, &b).await;
 
     // 手动拒绝
@@ -313,8 +314,8 @@ async fn receiver_rejecting_marks_both_sides() {
 
 #[tokio::test]
 async fn sender_cancel_mid_transfer_cleans_up() {
-    let a = spawn_node("发送方").await;
-    let b = spawn_node("接收方").await;
+    let a = spawn_node("发送方", 4).await;
+    let b = spawn_node("接收方", 4).await;
     pair_nodes(&a, &b).await;
     auto_accept(&b);
 
@@ -394,8 +395,8 @@ async fn cutting_proxy(target: SocketAddr, cut_after: u64) -> SocketAddr {
 
 #[tokio::test]
 async fn mid_transfer_disconnect_fails_both_sides() {
-    let a = spawn_node("发送方").await;
-    let b = spawn_node("接收方").await;
+    let a = spawn_node("发送方", 4).await;
+    let b = spawn_node("接收方", 4).await;
     pair_nodes(&a, &b).await;
     auto_accept(&b);
 
@@ -433,8 +434,8 @@ async fn mid_transfer_disconnect_fails_both_sides() {
 
 #[tokio::test]
 async fn unpaired_sender_is_refused() {
-    let a = spawn_node("发送方").await;
-    let b = spawn_node("接收方").await;
+    let a = spawn_node("发送方", 4).await;
+    let b = spawn_node("接收方", 4).await;
     // 只有 A 信任 B；B 不认识 A（未配对）
     trust(&a, &b).await;
 
@@ -450,4 +451,116 @@ async fn unpaired_sender_is_refused() {
     // 接收端没有任何落盘
     assert_no_part_files(&b.save_dir);
     assert!(b.store.list_tasks(10, 0).await.unwrap().is_empty());
+}
+
+/// `TransferConfig::max_concurrent_tasks` 真的限流，不是摆设：`send()` 立刻
+/// 返回 task_id（DB 行、事件订阅都马上就绪），真正的网络工作在后台任务里排队
+/// 等 `send_permits` 信号量——这条测试验证的正是那个信号量，不是"两个任务
+/// 最终都成功"（这点其他测试已经覆盖）。
+///
+/// 用事件顺序断言而不是掐时间点：不管两个任务谁先抢到许可证（不保证 FIFO），
+/// 只要「后拿到许可证开始连接的那个」的 `TransferConnected` 严格晚于「先开始
+/// 的那个」的终态事件，就证明同一时刻只有一个任务在真正跑传输。
+#[tokio::test]
+async fn max_concurrent_tasks_serializes_transfers() {
+    let a = spawn_node("发送方", 1).await;
+    let b = spawn_node("接收方", 1).await;
+    pair_nodes(&a, &b).await;
+    auto_accept(&b);
+
+    let src1 = a._dir.path().join("one.bin");
+    let src2 = a._dir.path().join("two.bin");
+    write_patterned(&src1, 2 * 1024 * 1024);
+    write_patterned(&src2, 2 * 1024 * 1024);
+
+    let mut rx = a.events.subscribe();
+    let task1 = a.svc.send(&b.device, vec![src1]).await.unwrap();
+    let task2 = a.svc.send(&b.device, vec![src2]).await.unwrap();
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Kind {
+        Connected,
+        Terminal,
+    }
+    let mut seen: Vec<(String, Kind)> = Vec::new();
+    let mut terminal_count = 0;
+    timeout(WAIT, async {
+        while terminal_count < 2 {
+            match rx.recv().await.expect("event bus open") {
+                CoreEvent::TransferConnected { task_id, .. }
+                    if task_id == task1 || task_id == task2 =>
+                {
+                    seen.push((task_id, Kind::Connected));
+                }
+                CoreEvent::TransferDone { task_id } if task_id == task1 || task_id == task2 => {
+                    seen.push((task_id, Kind::Terminal));
+                    terminal_count += 1;
+                }
+                CoreEvent::TransferFailed { task_id, .. }
+                    if task_id == task1 || task_id == task2 =>
+                {
+                    seen.push((task_id, Kind::Terminal));
+                    terminal_count += 1;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("both tasks should reach a terminal state in time");
+
+    let connected_idx = |id: &str| {
+        seen.iter()
+            .position(|(t, k)| t == id && *k == Kind::Connected)
+    };
+    let terminal_idx = |id: &str| {
+        seen.iter()
+            .position(|(t, k)| t == id && *k == Kind::Terminal)
+    };
+    let (first, second) = if connected_idx(&task1) < connected_idx(&task2) {
+        (task1.clone(), task2.clone())
+    } else {
+        (task2.clone(), task1.clone())
+    };
+    assert!(
+        connected_idx(&second).unwrap() > terminal_idx(&first).unwrap(),
+        "second task started connecting before the first task reached a terminal state \
+         — max_concurrent_tasks=1 did not serialize the two sends: {seen:?}"
+    );
+
+    assert_eq!(task_status(&a.store, &task1).await, TransferStatus::Done);
+    assert_eq!(task_status(&a.store, &task2).await, TransferStatus::Done);
+}
+
+/// 大批量小文件：单文件/双文件场景之外，验证 `transfer_files` 逐文件循环在
+/// 几十个文件规模下依然逐个正确落盘、无漏发无串号（`file_index` 靠数组下标
+/// 隐式对应，文件一多最容易在这类"差一"错误上翻车）。
+#[tokio::test]
+async fn many_small_files_all_land_correctly() {
+    let a = spawn_node("发送方", 4).await;
+    let b = spawn_node("接收方", 4).await;
+    pair_nodes(&a, &b).await;
+    auto_accept(&b);
+
+    const COUNT: usize = 50;
+    let root = a._dir.path().join("批量");
+    std::fs::create_dir_all(&root).unwrap();
+    for i in 0..COUNT {
+        write_patterned(&root.join(format!("file_{i:03}.bin")), 37 + i);
+    }
+
+    let rx = a.events.subscribe();
+    let task_id = a.svc.send(&b.device, vec![root.clone()]).await.unwrap();
+    assert!(wait_terminal(rx, &task_id).await);
+
+    for i in 0..COUNT {
+        let name = format!("file_{i:03}.bin");
+        assert_eq!(
+            hash_file(&root.join(&name)),
+            hash_file(&b.save_dir.join("批量").join(&name)),
+            "content mismatch for {name}"
+        );
+    }
+    assert_no_part_files(&b.save_dir);
+    assert_eq!(task_status(&a.store, &task_id).await, TransferStatus::Done);
 }
