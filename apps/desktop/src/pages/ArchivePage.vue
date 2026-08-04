@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
+import TabBar from "../components/TabBar.vue";
 import { useAiStore } from "../stores/ai";
 import { useArchiveStore } from "../stores/archive";
 import { useDownloadStore } from "../stores/download";
@@ -25,6 +26,14 @@ onMounted(() => {
   void archive.loadSuggestions();
   void kb.loadSources();
 });
+
+// —— 页内分区（原先 5 个纵向堆叠区块合成一页太长，按用户任务拆成 3 组）——
+const ARCHIVE_TABS = [
+  { key: "rules", label: "规则与记录" },
+  { key: "suggestions", label: "AI 建议" },
+  { key: "models", label: "模型与知识库" },
+];
+const activeTab = ref<"rules" | "suggestions" | "models">("rules");
 
 const CATEGORY_LABELS: Record<ArchiveCategory, string> = {
   model: "模型",
@@ -190,7 +199,7 @@ async function selectModel(kind: "chat" | "embedding", path: string) {
         : { ...settings.settings, aiEmbeddingModel: path };
     await settings.save(next);
     await ai.loadStatus();
-    toast.push("success", kind === "chat" ? "已设为对话模型" : "已设为嵌入模型");
+    toast.push("success", kind === "chat" ? "已设为对话模型" : "已设为知识库模型");
   } catch (e) {
     toast.push("error", asCommandError(e).message);
   }
@@ -215,7 +224,7 @@ const RECOMMENDED_MODELS = [
   },
   {
     key: "embedding",
-    label: "嵌入模型 · Qwen3-Embedding-0.6B（Q8_0，约 0.6GB，中英双强）",
+    label: "知识库模型 · Qwen3-Embedding-0.6B（Q8_0，约 0.6GB，中英双强）",
     hfUrl:
       "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
     msUrl:
@@ -316,264 +325,271 @@ async function openKbSourcePath(path: string) {
       按规则自动把下载完成的文件分类归位（模型、图片、文档……）；AI 建议辅助打标签/分类，本地知识库可以对自己的文件提问。
     </p>
 
-    <h3>AI 建议</h3>
-    <p class="hint muted">
-      选几个文件让对话模型给出分类/标签建议——建议只会进这个待确认列表，不会自己改动文件（规则自动、AI 建议）。
-    </p>
-    <div class="card banner">
-      <span v-if="archive.suggestRunning">
-        正在生成建议…（{{ archive.suggestDone }}/{{ archive.suggestTotal }}）
-      </span>
-      <span v-else-if="!ai.status?.chat.configured">
-        还没有配置对话模型——先在下面的模型库选一个。
-      </span>
-      <span v-else>选中文件，AI 会给出分类和标签，采纳前不会移动任何文件。</span>
-      <button
-        class="btn btn-primary small"
-        :disabled="archive.suggestRunning || !ai.status?.chat.configured"
-        @click="pickFilesForSuggest"
-      >
-        选择文件生成建议
-      </button>
-    </div>
-    <div v-if="archive.suggestions.length" class="card list">
-      <div v-for="s in archive.suggestions" :key="s.id" class="srow">
-        <div class="sinfo">
-          <div class="sname">{{ baseName(s.path) }}</div>
-          <div v-if="s.error" class="smeta error">建议失败：{{ s.error }}</div>
-          <div v-else class="smeta muted">
-            {{ CATEGORY_LABELS[s.category] }}
-            <template v-if="s.tags.length"> · {{ s.tags.join("、") }}</template>
-            <template v-if="s.reason"> · {{ s.reason }}</template>
+    <TabBar v-model="activeTab" :tabs="ARCHIVE_TABS" />
+
+    <section v-show="activeTab === 'rules'">
+      <h3>最近动作</h3>
+      <div v-if="recentLog.length" class="card list">
+        <div v-for="entry in recentLog" :key="entry.id" class="lrow">
+          <div class="linfo">
+            <div class="lname">{{ baseName(entry.toPath) }}</div>
+            <div class="lmeta muted">
+              {{ ruleName(entry.ruleId) }} · {{ timeText(entry.at) }}
+            </div>
           </div>
+          <button class="btn btn-ghost small" @click="openEntryFolder(entry.toPath)">
+            打开位置
+          </button>
+          <button class="btn btn-ghost small" @click="undoLog(entry.id)">撤销</button>
         </div>
-        <button
-          class="btn btn-primary small"
-          :disabled="!!s.error"
-          @click="adoptSuggestion(s.id)"
-        >
-          采纳
+      </div>
+      <div v-else class="empty card muted">还没有归档动作。</div>
+
+      <h3>规则</h3>
+      <p class="hint muted">
+        按顺序取第一条命中的启用规则；新装规则默认停用，需要手动打开或一键启用。
+      </p>
+      <div v-if="allDisabled" class="card banner">
+        <span>还没有启用任何归档规则，下载完成后不会自动归档。</span>
+        <button class="btn btn-primary small" @click="enableAllRecommended">
+          一键启用推荐规则
         </button>
-        <button class="btn btn-ghost small" @click="ignoreSuggestion(s.id)">忽略</button>
       </div>
-    </div>
-    <div v-else-if="!archive.suggestRunning" class="empty card muted">还没有待确认的建议。</div>
 
-    <h3>最近动作</h3>
-    <div v-if="recentLog.length" class="card list">
-      <div v-for="entry in recentLog" :key="entry.id" class="lrow">
-        <div class="linfo">
-          <div class="lname">{{ baseName(entry.toPath) }}</div>
-          <div class="lmeta muted">
-            {{ ruleName(entry.ruleId) }} · {{ timeText(entry.at) }}
-          </div>
-        </div>
-        <button class="btn btn-ghost small" @click="openEntryFolder(entry.toPath)">
-          打开位置
-        </button>
-        <button class="btn btn-ghost small" @click="undoLog(entry.id)">撤销</button>
-      </div>
-    </div>
-    <div v-else class="empty card muted">还没有归档动作。</div>
-
-    <h3>规则</h3>
-    <p class="hint muted">
-      按顺序取第一条命中的启用规则；新装规则默认停用，需要手动打开或一键启用。
-    </p>
-    <div v-if="allDisabled" class="card banner">
-      <span>还没有启用任何归档规则，下载完成后不会自动归档。</span>
-      <button class="btn btn-primary small" @click="enableAllRecommended">
-        一键启用推荐规则
-      </button>
-    </div>
-
-    <div v-if="archive.rules.length" class="card list">
-      <div v-for="rule in archive.rules" :key="rule.id" class="rrow">
-        <label class="switch small">
-          <input type="checkbox" :checked="rule.enabled" @change="toggleRule(rule)" />
-          <span class="slider"></span>
-        </label>
-        <div class="rinfo">
-          <div class="rname">
-            {{ rule.name }}
-            <span class="cats muted">
-              {{ rule.matcher.categories.map((c) => CATEGORY_LABELS[c]).join("、") }}
-            </span>
-          </div>
-          <input
-            class="rtemplate"
-            type="text"
-            :value="rule.action.targetTemplate"
-            placeholder="目标目录模板，如 {类别}/{年}/{月}"
-            @change="saveTemplate(rule, ($event.target as HTMLInputElement).value)"
-          />
-          <input
-            class="rtags"
-            type="text"
-            :value="rule.action.tags.join(', ')"
-            placeholder="标签（逗号分隔）"
-            @change="saveTags(rule, ($event.target as HTMLInputElement).value)"
-          />
-        </div>
-        <button class="btn btn-danger small" @click="deleteRule(rule.id)">删除</button>
-      </div>
-    </div>
-    <div v-else class="empty card muted">还没有归档规则。</div>
-
-    <div v-if="!showNewRule" class="new-rule-toggle">
-      <button class="btn btn-ghost small" @click="showNewRule = true">+ 新建规则</button>
-    </div>
-    <div v-else class="card form">
-      <div class="field">
-        <label>规则名称</label>
-        <input v-model="newRule.name" type="text" placeholder="例如：字幕归位" />
-      </div>
-      <div class="field">
-        <label>匹配类别</label>
-        <div class="cat-checks">
-          <label v-for="c in ALL_CATEGORIES" :key="c" class="cat-check">
-            <input type="checkbox" :value="c" v-model="newRule.categories" />
-            {{ CATEGORY_LABELS[c] }}
+      <div v-if="archive.rules.length" class="card list">
+        <div v-for="rule in archive.rules" :key="rule.id" class="rrow">
+          <label class="switch small">
+            <input type="checkbox" :checked="rule.enabled" @change="toggleRule(rule)" />
+            <span class="slider"></span>
           </label>
+          <div class="rinfo">
+            <div class="rname">
+              {{ rule.name }}
+              <span class="cats muted">
+                {{ rule.matcher.categories.map((c) => CATEGORY_LABELS[c]).join("、") }}
+              </span>
+            </div>
+            <input
+              class="rtemplate"
+              type="text"
+              :value="rule.action.targetTemplate"
+              placeholder="目标目录模板，如 {类别}/{年}/{月}"
+              @change="saveTemplate(rule, ($event.target as HTMLInputElement).value)"
+            />
+            <input
+              class="rtags"
+              type="text"
+              :value="rule.action.tags.join(', ')"
+              placeholder="标签（逗号分隔）"
+              @change="saveTags(rule, ($event.target as HTMLInputElement).value)"
+            />
+          </div>
+          <button class="btn btn-danger small" @click="deleteRule(rule.id)">删除</button>
         </div>
       </div>
-      <div class="field">
-        <label>目标目录模板</label>
-        <input v-model="newRule.targetTemplate" type="text" placeholder="{类别}/{年}/{月}" />
-      </div>
-      <div class="field">
-        <label>标签（逗号分隔，可留空）</label>
-        <input v-model="newRule.tags" type="text" placeholder="如：字幕" />
-      </div>
-      <div class="actions">
-        <button class="btn btn-ghost small" @click="resetNewRule">取消</button>
-        <button class="btn btn-primary small" @click="createRule">新建</button>
-      </div>
-    </div>
+      <div v-else class="empty card muted">还没有归档规则。</div>
 
-    <h3>模型库</h3>
-    <p class="hint muted">
-      扫描模型目录（设置页可更改）下的模型文件；下载的模型经归档规则移入这里后会自动出现。
-    </p>
-    <div class="card list rec-list">
-      <div v-for="rec in RECOMMENDED_MODELS" :key="rec.key" class="krow">
-        <div class="kinfo">
-          <div class="kname">{{ rec.label }}</div>
-        </div>
-        <button class="btn btn-ghost small" @click="downloadRecommendedModel(rec.hfUrl)">
-          HF 下载
-        </button>
-        <button class="btn btn-ghost small" @click="downloadRecommendedModel(rec.msUrl)">
-          ModelScope 下载
-        </button>
+      <div v-if="!showNewRule" class="new-rule-toggle">
+        <button class="btn btn-ghost small" @click="showNewRule = true">+ 新建规则</button>
       </div>
-    </div>
-    <div v-if="ai.models.length" class="card list">
-      <div v-for="model in ai.models" :key="model.path" class="mrow">
-        <div class="minfo">
-          <div class="mname">{{ modelFileName(model.path) }}</div>
-          <div class="mmeta muted">{{ modelSummary(model) }}</div>
+      <div v-else class="card form">
+        <div class="field">
+          <label>规则名称</label>
+          <input v-model="newRule.name" type="text" placeholder="例如：字幕归位" />
         </div>
-        <button
-          class="btn small"
-          :class="isSelected('chat', model.path) ? 'btn-primary' : 'btn-ghost'"
-          @click="selectModel('chat', model.path)"
-        >
-          {{ isSelected("chat", model.path) ? "对话模型 ✓" : "设为对话模型" }}
-        </button>
-        <button
-          class="btn small"
-          :class="isSelected('embedding', model.path) ? 'btn-primary' : 'btn-ghost'"
-          @click="selectModel('embedding', model.path)"
-        >
-          {{ isSelected("embedding", model.path) ? "嵌入模型 ✓" : "设为嵌入模型" }}
-        </button>
-      </div>
-    </div>
-    <div v-else class="empty card muted">
-      还没有模型文件——下载一个 .gguf 模型，归档后会出现在这里。
-    </div>
-    <p v-if="ai.status" class="hint muted">
-      对话引擎：{{ ai.status.chat.running ? "运行中" : ai.status.chat.configured ? "待命" : "未配置" }}
-      · 嵌入引擎：{{ ai.status.embedding.running ? "运行中" : ai.status.embedding.configured ? "待命" : "未配置" }}
-    </p>
-
-    <h3>知识库</h3>
-    <p class="hint muted">
-      添加一个文本文件目录作为来源，摄入后可以直接提问——回答只依据摄入的内容，并会带上参考的文件。
-    </p>
-    <div class="card banner">
-      <span v-if="kb.activeIngest">
-        正在摄入…（{{ kb.activeIngest.done }}/{{ kb.activeIngest.total }}）
-      </span>
-      <span v-else-if="!ai.status?.embedding.configured">
-        还没有配置嵌入模型——先在上面的模型库选一个。
-      </span>
-      <span v-else>选一个目录作为知识库来源，会扫描其中的文本/代码文件。</span>
-      <button
-        class="btn btn-primary small"
-        :disabled="!ai.status?.embedding.configured"
-        @click="pickKbSourceDir"
-      >
-        添加来源
-      </button>
-    </div>
-    <div v-if="kb.sources.length" class="card list">
-      <div v-for="source in kb.sources" :key="source.id" class="krow">
-        <div class="kinfo">
-          <div class="kname">{{ source.path }}</div>
-          <div class="kmeta muted">
-            已索引 {{ source.indexedCount }} / {{ source.docCount }}
-            <template v-if="source.failedCount"> · 失败 {{ source.failedCount }}</template>
+        <div class="field">
+          <label>匹配类别</label>
+          <div class="cat-checks">
+            <label v-for="c in ALL_CATEGORIES" :key="c" class="cat-check">
+              <input type="checkbox" :value="c" v-model="newRule.categories" />
+              {{ CATEGORY_LABELS[c] }}
+            </label>
           </div>
         </div>
-        <button
-          class="btn btn-ghost small"
-          :disabled="!!kb.activeIngest"
-          @click="reindexKbSource(source.id)"
-        >
-          摄入
-        </button>
-        <button class="btn btn-ghost small" @click="openKbSourcePath(source.path)">
-          打开位置
-        </button>
-        <button class="btn btn-danger small" @click="removeKbSource(source.id)">删除</button>
+        <div class="field">
+          <label>目标目录模板</label>
+          <input v-model="newRule.targetTemplate" type="text" placeholder="{类别}/{年}/{月}" />
+        </div>
+        <div class="field">
+          <label>标签（逗号分隔，可留空）</label>
+          <input v-model="newRule.tags" type="text" placeholder="如：字幕" />
+        </div>
+        <div class="actions">
+          <button class="btn btn-ghost small" @click="resetNewRule">取消</button>
+          <button class="btn btn-primary small" @click="createRule">新建</button>
+        </div>
       </div>
-    </div>
-    <div v-else class="empty card muted">还没有知识库来源。</div>
+    </section>
 
-    <div class="card kb-ask">
-      <div class="ask-row">
-        <input
-          v-model="kbQuestion"
-          type="text"
-          placeholder="向知识库提问……"
-          @keyup.enter="askKb"
-        />
+    <section v-show="activeTab === 'suggestions'">
+      <p class="hint muted">
+        选几个文件让对话模型给出分类/标签建议——建议只会进这个待确认列表，不会自己改动文件（规则自动、AI 建议）。
+      </p>
+      <div class="card banner">
+        <span v-if="archive.suggestRunning">
+          正在生成建议…（{{ archive.suggestDone }}/{{ archive.suggestTotal }}）
+        </span>
+        <span v-else-if="!ai.status?.chat.configured">
+          还没有配置对话模型——先在「模型与知识库」选一个。
+        </span>
+        <span v-else>选中文件，AI 会给出分类和标签，采纳前不会移动任何文件。</span>
         <button
           class="btn btn-primary small"
-          :disabled="kb.asking || !ai.status?.chat.configured || !ai.status?.embedding.configured"
-          @click="askKb"
+          :disabled="archive.suggestRunning || !ai.status?.chat.configured"
+          @click="pickFilesForSuggest"
         >
-          {{ kb.asking ? "回答中…" : "提问" }}
+          选择文件生成建议
         </button>
       </div>
-      <div v-if="kb.answer || kb.answerError" class="answer">
-        <p v-if="kb.answerError" class="answer-error">{{ kb.answerError }}</p>
-        <p v-else class="answer-text">{{ kb.answer }}</p>
-        <div v-if="kb.answerSources.length" class="answer-sources">
-          <span class="muted">引用：</span>
+      <div v-if="archive.suggestions.length" class="card list">
+        <div v-for="s in archive.suggestions" :key="s.id" class="srow">
+          <div class="sinfo">
+            <div class="sname">{{ baseName(s.path) }}</div>
+            <div v-if="s.error" class="smeta error">建议失败：{{ s.error }}</div>
+            <div v-else class="smeta muted">
+              {{ CATEGORY_LABELS[s.category] }}
+              <template v-if="s.tags.length"> · {{ s.tags.join("、") }}</template>
+              <template v-if="s.reason"> · {{ s.reason }}</template>
+            </div>
+          </div>
           <button
-            v-for="s in kb.answerSources"
-            :key="s.path"
-            class="btn btn-ghost small"
-            @click="openKbSourcePath(s.path)"
+            class="btn btn-primary small"
+            :disabled="!!s.error"
+            @click="adoptSuggestion(s.id)"
           >
-            {{ baseName(s.path) }}
+            采纳
+          </button>
+          <button class="btn btn-ghost small" @click="ignoreSuggestion(s.id)">忽略</button>
+        </div>
+      </div>
+      <div v-else-if="!archive.suggestRunning" class="empty card muted">还没有待确认的建议。</div>
+    </section>
+
+    <section v-show="activeTab === 'models'">
+      <h3>模型库</h3>
+      <p class="hint muted">
+        扫描模型目录（设置页可更改）下的模型文件；下载的模型经归档规则移入这里后会自动出现。
+      </p>
+      <div class="card list rec-list">
+        <div v-for="rec in RECOMMENDED_MODELS" :key="rec.key" class="krow">
+          <div class="kinfo">
+            <div class="kname">{{ rec.label }}</div>
+          </div>
+          <button class="btn btn-ghost small" @click="downloadRecommendedModel(rec.hfUrl)">
+            HF 下载
+          </button>
+          <button class="btn btn-ghost small" @click="downloadRecommendedModel(rec.msUrl)">
+            ModelScope 下载
           </button>
         </div>
       </div>
-    </div>
+      <div v-if="ai.models.length" class="card list">
+        <div v-for="model in ai.models" :key="model.path" class="mrow">
+          <div class="minfo">
+            <div class="mname">{{ modelFileName(model.path) }}</div>
+            <div class="mmeta muted">{{ modelSummary(model) }}</div>
+          </div>
+          <button
+            class="btn small"
+            :class="isSelected('chat', model.path) ? 'btn-primary' : 'btn-ghost'"
+            @click="selectModel('chat', model.path)"
+          >
+            {{ isSelected("chat", model.path) ? "对话模型 ✓" : "设为对话模型" }}
+          </button>
+          <button
+            class="btn small"
+            :class="isSelected('embedding', model.path) ? 'btn-primary' : 'btn-ghost'"
+            @click="selectModel('embedding', model.path)"
+          >
+            {{ isSelected("embedding", model.path) ? "知识库模型 ✓" : "设为知识库模型" }}
+          </button>
+        </div>
+      </div>
+      <div v-else class="empty card muted">
+        还没有模型文件——下载一个模型，归档后会出现在这里。
+      </div>
+      <p v-if="ai.status" class="hint muted">
+        对话引擎：{{ ai.status.chat.running ? "运行中" : ai.status.chat.configured ? "待命" : "未配置" }}
+        · 知识库引擎：{{ ai.status.embedding.running ? "运行中" : ai.status.embedding.configured ? "待命" : "未配置" }}
+      </p>
+
+      <h3>知识库</h3>
+      <p class="hint muted">
+        添加一个文本文件目录作为来源，摄入后可以直接提问——回答只依据摄入的内容，并会带上参考的文件。
+      </p>
+      <div class="card banner">
+        <span v-if="kb.activeIngest">
+          正在摄入…（{{ kb.activeIngest.done }}/{{ kb.activeIngest.total }}）
+        </span>
+        <span v-else-if="!ai.status?.embedding.configured">
+          还没有配置知识库模型——先在上面选一个。
+        </span>
+        <span v-else>选一个目录作为知识库来源，会扫描其中的文本/代码文件。</span>
+        <button
+          class="btn btn-primary small"
+          :disabled="!ai.status?.embedding.configured"
+          @click="pickKbSourceDir"
+        >
+          添加来源
+        </button>
+      </div>
+      <div v-if="kb.sources.length" class="card list">
+        <div v-for="source in kb.sources" :key="source.id" class="krow">
+          <div class="kinfo">
+            <div class="kname">{{ source.path }}</div>
+            <div class="kmeta muted">
+              已索引 {{ source.indexedCount }} / {{ source.docCount }}
+              <template v-if="source.failedCount"> · 失败 {{ source.failedCount }}</template>
+            </div>
+          </div>
+          <button
+            class="btn btn-ghost small"
+            :disabled="!!kb.activeIngest"
+            @click="reindexKbSource(source.id)"
+          >
+            摄入
+          </button>
+          <button class="btn btn-ghost small" @click="openKbSourcePath(source.path)">
+            打开位置
+          </button>
+          <button class="btn btn-danger small" @click="removeKbSource(source.id)">删除</button>
+        </div>
+      </div>
+      <div v-else class="empty card muted">还没有知识库来源。</div>
+
+      <div class="card kb-ask">
+        <div class="ask-row">
+          <input
+            v-model="kbQuestion"
+            type="text"
+            placeholder="向知识库提问……"
+            @keyup.enter="askKb"
+          />
+          <button
+            class="btn btn-primary small"
+            :disabled="kb.asking || !ai.status?.chat.configured || !ai.status?.embedding.configured"
+            @click="askKb"
+          >
+            {{ kb.asking ? "回答中…" : "提问" }}
+          </button>
+        </div>
+        <div v-if="kb.answer || kb.answerError" class="answer">
+          <p v-if="kb.answerError" class="answer-error">{{ kb.answerError }}</p>
+          <p v-else class="answer-text">{{ kb.answer }}</p>
+          <div v-if="kb.answerSources.length" class="answer-sources">
+            <span class="muted">引用：</span>
+            <button
+              v-for="s in kb.answerSources"
+              :key="s.path"
+              class="btn btn-ghost small"
+              @click="openKbSourcePath(s.path)"
+            >
+              {{ baseName(s.path) }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -588,6 +604,9 @@ h2 {
 h3 {
   font-size: 0.85rem;
   margin: 22px 0 8px;
+}
+h3:first-child {
+  margin-top: 0;
 }
 .intro {
   font-size: 0.85rem;

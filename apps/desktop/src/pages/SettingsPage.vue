@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watchEffect } from "vue";
+import TabBar from "../components/TabBar.vue";
 import { useDeviceStore } from "../stores/devices";
 import { useSettingsStore } from "../stores/settings";
 import { useToastStore } from "../stores/toast";
@@ -10,6 +11,17 @@ import type { Settings, SyncScope, TrustLevel } from "../lib/types";
 const devices = useDeviceStore();
 const settings = useSettingsStore();
 const toast = useToastStore();
+
+// —— 页内分区（原先 6 个纵向堆叠区块合成一页太长，按用户任务分组；
+// 一个 `form` 对应一次完整保存，所以只留一个全局「保存」按钮，不是每区块一个）——
+const SETTINGS_TABS = [
+  { key: "general", label: "通用" },
+  { key: "remote", label: "远程连接" },
+  { key: "download", label: "下载" },
+  { key: "archive-ai", label: "归档与 AI" },
+  { key: "devices", label: "已配对设备" },
+];
+const activeTab = ref<"general" | "remote" | "download" | "archive-ai" | "devices">("general");
 
 // 本地编辑副本，从 store 同步
 const form = reactive<Settings>({
@@ -161,215 +173,201 @@ async function unpair(id: string) {
   <div class="settings">
     <h2>设置</h2>
 
-    <div class="card form">
-      <div class="field">
-        <label>设备名称</label>
-        <input v-model="form.deviceName" type="text" maxlength="40" />
-      </div>
+    <TabBar v-model="activeTab" :tabs="SETTINGS_TABS" />
 
-      <div class="field">
-        <label>接收文件保存到</label>
-        <div class="dir">
-          <span class="path">{{ form.saveDir || "默认接收目录" }}</span>
-          <button class="btn btn-ghost small" @click="changeDir">更改</button>
+    <section v-show="activeTab === 'general'">
+      <div class="card form">
+        <div class="field">
+          <label>设备名称</label>
+          <input v-model="form.deviceName" type="text" maxlength="40" />
         </div>
-      </div>
 
-      <div class="field row">
-        <label>信任设备来的文件自动接收</label>
-        <label class="switch">
-          <input type="checkbox" v-model="form.autoAcceptFromTrusted" />
-          <span class="slider"></span>
-        </label>
-      </div>
+        <div class="field">
+          <label>接收文件保存到</label>
+          <div class="dir">
+            <span class="path">{{ form.saveDir || "默认接收目录" }}</span>
+            <button class="btn btn-ghost small" @click="changeDir">更改</button>
+          </div>
+        </div>
 
-      <div class="actions">
-        <button class="btn btn-primary" :disabled="settings.saving" @click="save">
-          {{ settings.saving ? "保存中…" : "保存" }}
-        </button>
-      </div>
-      <p class="lock muted">🔒 所有传输均已加密</p>
-    </div>
+        <div class="field row">
+          <label>信任设备来的文件自动接收</label>
+          <label class="switch">
+            <input type="checkbox" v-model="form.autoAcceptFromTrusted" />
+            <span class="slider"></span>
+          </label>
+        </div>
 
-    <h3>远程连接</h3>
-    <div class="card form">
-      <div class="field">
-        <label>自建服务器地址</label>
-        <input
-          v-model="serverUrlInput"
-          type="text"
-          placeholder="aa4c://your-server:42420#指纹"
-        />
-        <p class="hint muted">
-          填自己搭的 <code>aa4c-server</code> 地址后，不在同一局域网的已配对设备也能互相找到、
-          经中继收发文件——没有服务器不影响局域网内的正常使用。
-        </p>
+        <p class="lock muted">🔒 所有传输均已加密</p>
       </div>
+    </section>
 
-      <div class="field row">
-        <label>开启远程连接</label>
-        <label class="switch">
+    <section v-show="activeTab === 'remote'">
+      <div class="card form">
+        <div class="field">
+          <label>自建服务器地址</label>
           <input
-            type="checkbox"
-            v-model="form.enableRemote"
-            :disabled="!form.serverUrl"
+            v-model="serverUrlInput"
+            type="text"
+            placeholder="aa4c://your-server:42420#指纹"
           />
-          <span class="slider"></span>
-        </label>
-      </div>
-      <p v-if="!form.serverUrl" class="hint muted">先填服务器地址才能打开这个开关。</p>
-
-      <div class="actions">
-        <button class="btn btn-primary" :disabled="settings.saving" @click="save">
-          {{ settings.saving ? "保存中…" : "保存" }}
-        </button>
-      </div>
-    </div>
-
-    <h3>下载</h3>
-    <div class="card form">
-      <div class="field">
-        <label>下载目录</label>
-        <div class="dir">
-          <span class="path">{{ form.downloadDir || "默认下载目录" }}</span>
-          <button class="btn btn-ghost small" @click="changeDownloadDir">更改</button>
+          <p class="hint muted">
+            填自己搭的 <code>aa4c-server</code> 地址后，不在同一局域网的已配对设备也能互相找到、
+            经中继收发文件——没有服务器不影响局域网内的正常使用。
+          </p>
         </div>
-        <p v-if="downloadDirWarningScope" class="hint warn">
-          ⚠️ 这个目录在共享范围「{{
-            downloadDirWarningScope.kind === "inbox" ? "收到的" : downloadDirWarningScope.localPath
-          }}」内，保存到这里的文件会被同步给完全信任设备。
-        </p>
-      </div>
 
-      <div class="field">
-        <label>下载限速（KB/s）</label>
-        <input v-model="speedLimitInput" type="number" min="0" placeholder="不限速" />
+        <div class="field row">
+          <label>开启远程连接</label>
+          <label class="switch">
+            <input
+              type="checkbox"
+              v-model="form.enableRemote"
+              :disabled="!form.serverUrl"
+            />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <p v-if="!form.serverUrl" class="hint muted">先填服务器地址才能打开这个开关。</p>
       </div>
+    </section>
 
-      <div class="field">
-        <label>同时下载数</label>
-        <input v-model="concurrencyInput" type="number" min="1" placeholder="使用默认值" />
+    <section v-show="activeTab === 'download'">
+      <div class="card form">
+        <div class="field">
+          <label>下载目录</label>
+          <div class="dir">
+            <span class="path">{{ form.downloadDir || "默认下载目录" }}</span>
+            <button class="btn btn-ghost small" @click="changeDownloadDir">更改</button>
+          </div>
+          <p v-if="downloadDirWarningScope" class="hint warn">
+            ⚠️ 这个目录在共享范围「{{
+              downloadDirWarningScope.kind === "inbox" ? "收到的" : downloadDirWarningScope.localPath
+            }}」内，保存到这里的文件会被同步给完全信任设备。
+          </p>
+        </div>
+
+        <div class="field">
+          <label>下载限速（KB/s）</label>
+          <input v-model="speedLimitInput" type="number" min="0" placeholder="不限速" />
+        </div>
+
+        <div class="field">
+          <label>同时下载数</label>
+          <input v-model="concurrencyInput" type="number" min="1" placeholder="使用默认值" />
+        </div>
+
+        <div class="field">
+          <label>BT 分享率上限</label>
+          <input v-model="ratioLimitInput" type="number" min="0" step="0.1" placeholder="不限" />
+        </div>
+
+        <div class="field">
+          <label>BT 空闲做种超时（分钟）</label>
+          <input v-model="idleSeedingLimitInput" type="number" min="1" placeholder="不限" />
+          <p class="hint muted">
+            指没有上传活动多久后自动停止做种，不是"下载完成后固定做种这么久"。
+          </p>
+        </div>
+
+        <p class="hint muted">改动需要重启应用后生效。</p>
       </div>
+    </section>
 
-      <div class="field">
-        <label>BT 分享率上限</label>
-        <input v-model="ratioLimitInput" type="number" min="0" step="0.1" placeholder="不限" />
-      </div>
+    <section v-show="activeTab === 'archive-ai'">
+      <h3>归档</h3>
+      <div class="card form">
+        <div class="field">
+          <label>归档根目录</label>
+          <div class="dir">
+            <span class="path">{{ form.archiveRoot || "默认归档目录" }}</span>
+            <button class="btn btn-ghost small" @click="changeArchiveRoot">更改</button>
+          </div>
+          <p v-if="archiveRootWarningScope" class="hint warn">
+            ⚠️ 这个目录在共享范围「{{
+              archiveRootWarningScope.kind === "inbox"
+                ? "收到的"
+                : archiveRootWarningScope.localPath
+            }}」内，归档到这里的文件会被同步给完全信任设备。
+          </p>
+        </div>
 
-      <div class="field">
-        <label>BT 空闲做种超时（分钟）</label>
-        <input v-model="idleSeedingLimitInput" type="number" min="1" placeholder="不限" />
+        <div class="field row">
+          <label>下载完成后自动归档</label>
+          <label class="switch">
+            <input type="checkbox" v-model="form.archiveAutoEnabled" />
+            <span class="slider"></span>
+          </label>
+        </div>
         <p class="hint muted">
-          指没有上传活动多久后自动停止做种，不是"下载完成后固定做种这么久"。
+          总开关；具体归到哪、要不要打标签由「归档」页里逐条规则决定，新规则默认停用。
         </p>
       </div>
 
-      <p class="hint muted">改动需要重启应用后生效。</p>
-
-      <div class="actions">
-        <button class="btn btn-primary" :disabled="settings.saving" @click="save">
-          {{ settings.saving ? "保存中…" : "保存" }}
-        </button>
-      </div>
-    </div>
-
-    <h3>归档</h3>
-    <div class="card form">
-      <div class="field">
-        <label>归档根目录</label>
-        <div class="dir">
-          <span class="path">{{ form.archiveRoot || "默认归档目录" }}</span>
-          <button class="btn btn-ghost small" @click="changeArchiveRoot">更改</button>
+      <h3>AI</h3>
+      <div class="card form">
+        <div class="field">
+          <label>模型文件目录</label>
+          <div class="dir">
+            <span class="path">{{ form.aiModelsDir || "默认模型目录" }}</span>
+            <button class="btn btn-ghost small" @click="changeAiModelsDir">更改</button>
+          </div>
+          <p class="hint muted">
+            下载的模型文件归档到这里后会自动出现在「归档」页的模型库分区。
+          </p>
         </div>
-        <p v-if="archiveRootWarningScope" class="hint warn">
-          ⚠️ 这个目录在共享范围「{{
-            archiveRootWarningScope.kind === "inbox"
-              ? "收到的"
-              : archiveRootWarningScope.localPath
-          }}」内，归档到这里的文件会被同步给完全信任设备。
-        </p>
-      </div>
 
-      <div class="field row">
-        <label>下载完成后自动归档</label>
-        <label class="switch">
-          <input type="checkbox" v-model="form.archiveAutoEnabled" />
-          <span class="slider"></span>
-        </label>
+        <div class="field">
+          <label>空闲多久后自动释放内存（分钟）</label>
+          <input type="number" min="1" v-model.number="form.aiIdleTimeoutMinutes" />
+          <p class="hint muted">
+            本地 AI 只在需要时才加载模型，用完这么久没有新请求就自动退出释放内存。
+          </p>
+        </div>
       </div>
+    </section>
+
+    <section v-show="activeTab === 'devices'">
+      <div v-if="paired.length" class="card list">
+        <div v-for="d in paired" :key="d.id" class="prow">
+          <span class="ico">{{ platformIcon(d.platform) }}</span>
+          <div class="pinfo">
+            <div class="pname">
+              <span class="nm">{{ d.name }}</span>
+              <span class="online-dot" :class="{ off: !d.online }"></span>
+            </div>
+            <!-- 信任分级（预览）：我的设备 ⇄ 朋友 -->
+            <div class="seg">
+              <button
+                class="seg-btn"
+                :class="{ on: tierOf(d) === 'full' }"
+                @click="setTier(d.id, 'full')"
+              >
+                我的设备
+              </button>
+              <button
+                class="seg-btn"
+                :class="{ on: tierOf(d) === 'friend' }"
+                @click="setTier(d.id, 'friend')"
+              >
+                朋友
+              </button>
+            </div>
+          </div>
+          <button class="btn btn-danger small" @click="unpair(d.id)">解除配对</button>
+        </div>
+      </div>
+      <div v-else class="empty card muted">还没有已配对的设备。</div>
       <p class="hint muted">
-        总开关；具体归到哪、要不要打标签由「归档」页里逐条规则决定，新规则默认停用。
+        标记为「我的设备」的，V0.2 起会和本机同步文件（绿/黄/红 状态见「同步」页）；「朋友」只收发、不同步。
       </p>
+    </section>
 
-      <div class="actions">
-        <button class="btn btn-primary" :disabled="settings.saving" @click="save">
-          {{ settings.saving ? "保存中…" : "保存" }}
-        </button>
-      </div>
+    <div class="save-bar">
+      <button class="btn btn-primary" :disabled="settings.saving" @click="save">
+        {{ settings.saving ? "保存中…" : "保存设置" }}
+      </button>
     </div>
-
-    <h3>AI</h3>
-    <div class="card form">
-      <div class="field">
-        <label>模型文件目录</label>
-        <div class="dir">
-          <span class="path">{{ form.aiModelsDir || "默认模型目录" }}</span>
-          <button class="btn btn-ghost small" @click="changeAiModelsDir">更改</button>
-        </div>
-        <p class="hint muted">
-          下载的模型文件（.gguf）归档到这里后会自动出现在「归档」页的模型库分区。
-        </p>
-      </div>
-
-      <div class="field">
-        <label>空闲多久后自动释放内存（分钟）</label>
-        <input type="number" min="1" v-model.number="form.aiIdleTimeoutMinutes" />
-        <p class="hint muted">
-          本地 AI 只在需要时才加载模型，用完这么久没有新请求就自动退出释放内存。
-        </p>
-      </div>
-
-      <div class="actions">
-        <button class="btn btn-primary" :disabled="settings.saving" @click="save">
-          {{ settings.saving ? "保存中…" : "保存" }}
-        </button>
-      </div>
-    </div>
-
-    <h3>已配对设备</h3>
-    <div v-if="paired.length" class="card list">
-      <div v-for="d in paired" :key="d.id" class="prow">
-        <span class="ico">{{ platformIcon(d.platform) }}</span>
-        <div class="pinfo">
-          <div class="pname">
-            <span class="nm">{{ d.name }}</span>
-            <span class="online-dot" :class="{ off: !d.online }"></span>
-          </div>
-          <!-- 信任分级（预览）：我的设备 ⇄ 朋友 -->
-          <div class="seg">
-            <button
-              class="seg-btn"
-              :class="{ on: tierOf(d) === 'full' }"
-              @click="setTier(d.id, 'full')"
-            >
-              我的设备
-            </button>
-            <button
-              class="seg-btn"
-              :class="{ on: tierOf(d) === 'friend' }"
-              @click="setTier(d.id, 'friend')"
-            >
-              朋友
-            </button>
-          </div>
-        </div>
-        <button class="btn btn-danger small" @click="unpair(d.id)">解除配对</button>
-      </div>
-    </div>
-    <div v-else class="empty card muted">还没有已配对的设备。</div>
-    <p class="hint muted">
-      标记为「我的设备」的，V0.2 起会和本机同步文件（绿/黄/红 状态见「同步」页）；「朋友」只收发、不同步。
-    </p>
   </div>
 </template>
 
@@ -383,7 +381,10 @@ h2 {
 }
 h3 {
   font-size: 0.85rem;
-  margin: 26px 0 10px;
+  margin: 0 0 10px;
+}
+h3:not(:first-child) {
+  margin-top: 26px;
 }
 .form {
   padding: 18px 20px;
@@ -430,9 +431,12 @@ input[type="number"] {
   min-height: 32px;
   font-size: 0.8rem;
 }
-.actions {
+.save-bar {
   display: flex;
   justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--aa-border);
 }
 .lock {
   font-size: 0.78rem;

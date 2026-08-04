@@ -1,7 +1,7 @@
 // 导航与功能模块配置（整体 UI 架构，PROJECT_VISION §五/§六）。
 //
 // AA连接（AA4C）是跨平台设备连接平台：连接之上的五大能力（传输 / 同步 / 分享 / 下载 / 归档）。
-// V0.1 仅实现「传输」，其余标记为建设中并注明计划版本。
+// 五大能力至 V0.5 均已实现；仍未实现的模块（V0.6+）标记为建设中并注明计划版本。
 // 记录 / 设置为次级入口（PC 侧栏底部分组、移动端「我的」聚合）。
 
 export interface NavItem {
@@ -39,7 +39,7 @@ export const CAPABILITIES: NavItem[] = [
     path: "/sync",
     name: "同步",
     icon: "🔄",
-    built: false,
+    built: true,
     version: "V0.2",
     desc: "文件夹持续同步，支持单向 / 双向 / 增量",
   },
@@ -47,7 +47,7 @@ export const CAPABILITIES: NavItem[] = [
     path: "/share",
     name: "分享",
     icon: "🔗",
-    built: false,
+    built: true,
     version: "V0.3",
     desc: "生成分享，把文件远程分享给好友、家庭、团队",
   },
