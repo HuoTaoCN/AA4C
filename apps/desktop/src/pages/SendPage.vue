@@ -163,7 +163,12 @@ h2 {
 }
 .steps {
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  /* 裸 `1fr` 轨道的隐式最小宽度是内容的 min-content，不是 0——设备名一旦不换行
+     （见下面 .nm 的单行省略号截断），未截断的整串文本会把这个轨道的 min-content
+     撑到自己的全长，级联把整个三栏布局顶爆出横向滚动。`minmax(0, 1fr)` 才是
+     "占 1fr 份额，但允许缩到 0"的写法，让轨道宽度真正由 1fr 分配决定，
+     子元素内部的 overflow/ellipsis 才有意义。 */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 18px;
   align-items: start;
 }
@@ -249,8 +254,12 @@ h2 {
 }
 .nm {
   flex: 1;
+  min-width: 0;
   font-weight: 600;
   font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .check {
   color: var(--aa-primary);

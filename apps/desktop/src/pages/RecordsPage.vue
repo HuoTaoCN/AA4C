@@ -136,16 +136,22 @@ li + li {
   display: flex;
   gap: 10px;
   align-items: baseline;
+  min-width: 0;
 }
 .peer {
   font-weight: 600;
   font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 .files {
   font-size: 0.85rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 .line2 {
   font-size: 0.78rem;
