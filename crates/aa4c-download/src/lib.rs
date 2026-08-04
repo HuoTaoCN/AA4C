@@ -189,7 +189,17 @@ impl DownloadService {
                 reconcile(&store, &events, &connected.client).await;
                 tracing::info!(port = connected.port, "download engine (aria2c) connected");
                 let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-                tokio::spawn(actor_loop(store.clone(), events.clone(), connected, cmd_rx));
+                tokio::spawn(actor_loop(
+                    store.clone(),
+                    events.clone(),
+                    connected,
+                    cmd_rx,
+                    spawner.clone(),
+                    data_dir.clone(),
+                    download_dir.clone(),
+                    limits.speed_limit_kbps,
+                    limits.concurrency,
+                ));
                 Some(cmd_tx)
             }
             Err(e) => {
@@ -520,11 +530,17 @@ async fn reconnect_with_retries(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn actor_loop(
     store: Store,
     events: EventSender,
     mut connected: Connected,
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
+    spawner: Arc<dyn SidecarSpawner>,
+    data_dir: PathBuf,
+    download_dir: PathBuf,
+    speed_limit_kbps: Option<u32>,
+    concurrency: Option<u32>,
 ) {
     let mut poll = tokio::time::interval(RECONCILE_INTERVAL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -541,11 +557,43 @@ async fn actor_loop(
                         reconcile(&store, &events, &connected.client).await;
                     }
                     None => {
-                        tracing::error!(
-                            "aria2 rpc reconnect exhausted; download capability unavailable for the rest of this session"
+                        // 重连耗尽通常意味着进程本身已经崩溃退出（不只是连接断），
+                        // 光重连是救不回来的——尝试完整重新拉起一个 aria2c 子进程。
+                        // `spawn_and_connect_with_retries` 内部会在 `data_dir` 发现
+                        // 上次的 session 文件并通过 `--input-file` 续上（同
+                        // `task_resumes_across_service_restart_with_same_gid` 验证的
+                        // 整服务重启续传路径，这里只是把它接到「同一次会话内自愈」
+                        // 上，不是新逻辑）。
+                        tracing::warn!(
+                            "aria2 rpc reconnect exhausted, process likely crashed; attempting full respawn"
                         );
                         connected.child.kill().await;
-                        return;
+                        match spawn_and_connect_with_retries(
+                            spawner.as_ref(),
+                            &data_dir,
+                            &download_dir,
+                            speed_limit_kbps,
+                            concurrency,
+                        )
+                        .await
+                        {
+                            Ok(fresh) => {
+                                connected = fresh;
+                                tracing::info!(
+                                    port = connected.port,
+                                    "aria2 respawned after crash, download capability restored"
+                                );
+                                reconcile(&store, &events, &connected.client).await;
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    "aria2 respawn failed; download capability unavailable for the rest of this session"
+                                );
+                                fail_active_http_downloads(&store, &events).await;
+                                return;
+                            }
+                        }
                     }
                 }
             }
@@ -766,6 +814,32 @@ fn broadcast_for_status(events: &EventSender, gid: &str, status: DownloadStatus,
         },
     };
     let _ = events.send(event);
+}
+
+/// aria2 崩溃后重连、完整重新拉起子进程都失败——引擎在本次会话剩余时间内彻底
+/// 不可用（`actor_loop` 即将退出，`cmd_tx.send` 之后会天然失败并让调用方看到
+/// `Aa4cError::Unavailable`，见 `DownloadService::unavailable`）。但已经在跑的
+/// 任务不会自己触发那条路径——不主动标一下的话，它们会在 UI 上永远停在
+/// "进行中"、静默卡住，用户只会觉得下载不动了却看不到任何提示。这里只处理
+/// aria2（HTTP/HTTPS/FTP）任务（`!is_bt_task_id`）——BT 走独立的 Transmission
+/// actor，互不影响。
+async fn fail_active_http_downloads(store: &Store, events: &EventSender) {
+    let Ok(tasks) = store.list_unfinished_downloads().await else {
+        return;
+    };
+    for task in tasks.into_iter().filter(|t| !is_bt_task_id(&t.id)) {
+        let error = "下载引擎异常退出且无法重新启动，请重启应用后重试".to_string();
+        if store
+            .update_download_status(&task.id, DownloadStatus::Error, Some(&error), None)
+            .await
+            .is_ok()
+        {
+            let _ = events.send(CoreEvent::DownloadFailed {
+                task_id: task.id,
+                error: error.clone(),
+            });
+        }
+    }
 }
 
 /// 启动时 / WS 重连后 / 收到通知 / 每个轮询节拍都跑这一套（DOWNLOAD_DESIGN.md

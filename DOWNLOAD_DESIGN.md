@@ -106,6 +106,7 @@ v1 没有回答"应用退出再启动，进行中的下载怎么办"。答案分
 - **`EngineChild`/`SidecarSpawner` 拆两个 trait**：设计稿把"拉起子进程"当一个整体职责；实现里拆成 `SidecarSpawner::spawn()`（拿到句柄）与 `EngineChild::kill()`（终止），因为 Tauri 的 `CommandChild`（同步 `kill()`）与 `tokio::process::Child`（异步 `kill()`）接口形状不同，拆开后两种壳层实现都能干净适配。
 - **`Core.download` 是 `Option`，不是必然存在**：`CoreConfig.download_spawner: Option<Arc<dyn SidecarSpawner>>`，桌面壳层注入、Android 等未接入平台留 `None`——`None` 与"注入了但 aria2c 启动失败"是两种不同的不可用，前端统一收到 `Unavailable` 错误码，不需要区分。
 - **人工走查中发现并验证**（V0.4_IMPLEMENTATION_PLAN.md D1 步骤 9）：Tauri capability 权限配置（`shell:allow-execute` + `sidecar:true` + 参数 `validator` 正则）与设计一致、真实跑通；`stop-with-process` 在真实的 `tauri dev` 热重载场景下（进程被替换三次）均正确避免了 aria2c 孤儿进程累积；顺带发现一个真实 bug——`aa4c-core` 的下载端到端测试没有隔离下载目录，实际下载文件落进了开发机真实的系统 Downloads 目录，已修复（测试改为 `Core::start` 之前预置隔离的 `download_dir` 到 settings 表）。
+- **aria2 子进程崩溃后自动重新拉起**（打磨阶段补的，原设计稿只覆盖"WS 连接掉线重连"，没覆盖"进程本身没了"）：`reconnect_with_retries` 耗尽（进程大概率已经崩溃退出，不只是连接断）不再直接放弃，改成对同一个 `data_dir` 再跑一次 `spawn_and_connect_with_retries`——新进程照常靠 `--input-file` 捡回 session（同 §3.4 整服务重启那条路径，这里只是把它接到"同一次会话内自愈"，不是新逻辑）。respawn 也失败才真正判定"本次会话下载能力不可用"，此时会把仍处于 active/waiting/paused 的 aria2 任务（BT 任务不受影响，两个引擎独立）统一标 `error`，不再让它们无提示地悬在"进行中"。集成测试见 `crates/aa4c-download/tests/download.rs` 的 `aria2_crash_mid_download_recovers_and_new_downloads_still_work`（真杀 aria2c 进程，不 mock）。
 
 ### 3.6 Transmission 集成（D2，v3 设计稿）
 
@@ -312,4 +313,4 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 
 ## 仍待实现 / 后续
 
-下载失败的自动重试策略；子进程崩溃后的自动重启策略；`.torrent` 文件输入（D2 只接 magnet，文件输入留给插件阶段）；引擎版本升级的操作流程文档化（engines release 的产出步骤，做进 CONTRIBUTING 或脚本注释）；Lua 插件系统的独立设计文档 + 安全评审（§10，D4）；Android 平台的下载能力方案（很可能是完全不同的技术路径，比如系统 DownloadManager，而不是 bundled 二进制，需要单独评估）；S3 协议支持（PROJECT_VISION.md 提到但未细化，大概率需要凭证管理，单独评估，不在 D1–D3 范围内）。
+下载失败的自动重试策略（子进程崩溃后的自动重启策略已在打磨阶段补上，见 §3.5）；`.torrent` 文件输入（D2 只接 magnet，文件输入留给插件阶段）；引擎版本升级的操作流程文档化（engines release 的产出步骤，做进 CONTRIBUTING 或脚本注释）；Lua 插件系统的独立设计文档 + 安全评审（§10，D4）；Android 平台的下载能力方案（很可能是完全不同的技术路径，比如系统 DownloadManager，而不是 bundled 二进制，需要单独评估）；S3 协议支持（PROJECT_VISION.md 提到但未细化，大概率需要凭证管理，单独评估，不在 D1–D3 范围内）。

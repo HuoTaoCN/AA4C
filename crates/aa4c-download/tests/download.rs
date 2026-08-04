@@ -330,6 +330,103 @@ async fn task_resumes_across_service_restart_with_same_gid() {
     svc2.shutdown().await;
 }
 
+/// 通过命令行匹配（含本次测试独占的 `data_dir` 路径，天然唯一）找到刚才拉起的
+/// aria2c 子进程并 SIGKILL——模拟"进程本身崩溃退出"而不是"连接断开"，两者对
+/// `actor_loop` 触发的路径不同（见 `crates/aa4c-download/src/lib.rs`
+/// `connected.client.closed()` 分支）。只在 unix 上实现：Windows 上按命令行
+/// 匹配进程需要额外依赖（`sysinfo` 之类），这个 crate 的测试基础设施一贯手写、
+/// 不为测试引入依赖（见文件头注释），跨平台匹配值得单开一次评估，不在这次
+/// 顺带解决。
+#[cfg(unix)]
+fn kill_process_matching(pattern: &str) {
+    let out = std::process::Command::new("pgrep")
+        .arg("-f")
+        .arg(pattern)
+        .output()
+        .expect("pgrep must be available on unix test runners");
+    let pids: Vec<&str> = std::str::from_utf8(&out.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert!(
+        !pids.is_empty(),
+        "no process matched {pattern:?} — aria2c may not have started yet"
+    );
+    for pid in pids {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", pid])
+            .status();
+    }
+}
+
+/// 对应 DOWNLOAD_DESIGN.md「仍待实现/后续」里点名的缺口："子进程崩溃后的
+/// 自动重启策略"。杀掉 aria2c 真实进程（不是断连接），断言：①原任务不会永远
+/// 卡在 Active/Waiting（无论是续上完成还是因 session 未及时保存被对账标失败，
+/// 都要有一个终态，不能悄悄挂住）；②服务本身自愈——崩溃之后新建的下载任务
+/// 依然能正常跑完，证明 `actor_loop` 真的重新拉起了一个可用的 aria2c，而不是
+/// 从此在本次会话里永久不可用。
+#[cfg(unix)]
+#[tokio::test]
+async fn aria2_crash_mid_download_recovers_and_new_downloads_still_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let download_dir = dir.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    let body = vec![11u8; 4 * 1024 * 1024];
+    let addr = spawn_slow_http_server(body, Duration::from_millis(80)).await;
+    let (svc, _rx, store, _spawner) = start_service(dir.path(), &download_dir).await;
+
+    let id = svc.add(format!("http://{addr}/file.bin")).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let data_dir_str = dir.path().to_string_lossy().into_owned();
+    kill_process_matching(&format!("aria2c.*{data_dir_str}"));
+
+    // 原任务最终必须有一个终态，不能永远悬在 Active/Waiting——不关心具体是
+    // 哪个终态（取决于 aria2 session 上次自动保存的时间点，见
+    // `save-session-interval` 的 30 秒周期，跟这次崩溃时机无关，不是这个
+    // 测试要断言的东西）。重连退避（5 次，最长到 8 秒一次）+ respawn 健康检查
+    // 一整套跑下来留足余量。
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+    loop {
+        let task = store.get_download(&id).await.unwrap().unwrap();
+        if !matches!(
+            task.status,
+            DownloadStatus::Active | DownloadStatus::Waiting
+        ) {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("original task never left Active/Waiting after aria2c crash");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // 真正的重点：崩溃之后，服务还能不能正常收新任务——这才是区分"自愈"和
+    // "本次会话下载能力永久报废"的地方。文件名故意跟上面那个不同
+    // （`file2.bin` vs `file.bin`）——两个任务共用同一个 `download_dir`，撞同名
+    // 会让 aria2 把这次全新下载误当成对前一个中断任务遗留的 `.aria2` 控制文件
+    // 续传，服务器返回的内容对不上导致 aria2 直接 abort（排查过：这是测试本身
+    // 的假阳性，不是 respawn 逻辑的问题）。
+    let body2 = b"post-crash recovery payload".repeat(200);
+    let addr2 = spawn_fast_http_server(body2.clone()).await;
+    let id2 = svc
+        .add(format!("http://{addr2}/file2.bin"))
+        .await
+        .expect("service must still accept new downloads after respawn");
+    let task2 = wait_for_status(
+        &store,
+        &id2,
+        DownloadStatus::Complete,
+        Duration::from_secs(20),
+    )
+    .await;
+    let content2 = std::fs::read(task2.save_path.unwrap()).unwrap();
+    assert_eq!(content2, body2);
+
+    svc.shutdown().await;
+}
+
 /// §3.4 对账逻辑：session 文件丢失（损坏/被手动删）→ 表里遗留的未完态记录
 /// 标记为失败，而不是永远卡在"传输中"。
 #[tokio::test]
