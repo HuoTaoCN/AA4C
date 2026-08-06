@@ -27,6 +27,7 @@ mod util;
 
 pub use aa4c_engine::{EngineChild, KillFuture, ProcessSpawner, SidecarSpawner, SpawnFuture};
 pub use rpc::{Aria2Client, Aria2Notification};
+pub use transmission_conf::BtOptions;
 pub use transmission_process::TransmissionProcess;
 pub use transmission_rpc::TransmissionClient;
 
@@ -36,7 +37,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aa4c_store::Store;
-use aa4c_types::{Aa4cError, CoreEvent, DownloadKind, DownloadStatus, Result, TaskId};
+use aa4c_types::{
+    Aa4cError, CoreEvent, DownloadKind, DownloadOptions, DownloadStatus, Result, TaskId,
+};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -73,9 +76,52 @@ const BT_FAILURE_THRESHOLD: u32 = 5;
 
 type EventSender = broadcast::Sender<CoreEvent>;
 
+/// 一条下载任务的来源。`.torrent` 文件传**路径**而不是字节：Tauri IPC 传大块
+/// 二进制很别扭，前端选完文件把路径交过来、由这一层读盘更简单，也顺带让
+/// "文件读不出来"这类错误落在 Rust 侧统一处理。
+#[derive(Debug, Clone)]
+pub enum DownloadSource {
+    /// HTTP/HTTPS/FTP 直链，或 `magnet:` 磁力链接。
+    Uri(String),
+    /// 本地 `.torrent` 文件路径（DOWNLOAD_DESIGN.md「仍待实现」里列的那一项）。
+    TorrentFile(PathBuf),
+}
+
+/// 引擎无关的下载请求描述——DOWNLOAD_DESIGN.md §5/§10 明确预留的那层中间结构
+/// （"任务添加路径保留引擎无关的请求描述中间层"，既是接第二个引擎本来就要做的
+/// 抽象，也是将来 Lua 插件 `on_before_add` 钩子的挂点）。这次把每任务选项
+/// （保存位置/文件名/Referer/Cookie，对标 Motrix 新建任务对话框）落进来，
+/// 那层预留正式兑现。
+#[derive(Debug, Clone)]
+pub struct DownloadRequest {
+    pub source: DownloadSource,
+    /// 每任务自定义选项；`DownloadOptions::is_empty()` 时等同没有选项。
+    pub options: DownloadOptions,
+}
+
+impl DownloadRequest {
+    /// 最常见的形态：一条链接，没有任何自定义选项。
+    pub fn uri(url: impl Into<String>) -> Self {
+        Self {
+            source: DownloadSource::Uri(url.into()),
+            options: DownloadOptions::default(),
+        }
+    }
+
+    /// 落库用的 `url` 字段——`.torrent` 文件没有 URL，退化用文件路径占位
+    /// （同 `bt_reconcile` 补插孤儿记录时用 `magnet:?xt=urn:btih:<hash>` 占位的
+    /// 既有取舍：不影响任务可操作性，只影响标题的显示形态）。
+    fn display_url(&self) -> String {
+        match &self.source {
+            DownloadSource::Uri(u) => u.clone(),
+            DownloadSource::TorrentFile(p) => p.display().to_string(),
+        }
+    }
+}
+
 enum Cmd {
     Add {
-        url: String,
+        req: DownloadRequest,
         reply: oneshot::Sender<Result<TaskId>>,
     },
     Pause {
@@ -88,6 +134,8 @@ enum Cmd {
     },
     Cancel {
         id: TaskId,
+        /// 见 `DownloadService::cancel` 文档。
+        delete_local: bool,
         reply: oneshot::Sender<Result<()>>,
     },
     /// 批量操作"清除已完成记录"（D3）专用——只让引擎忘掉这个已完成任务（不删
@@ -103,10 +151,10 @@ enum Cmd {
     },
 }
 
-/// BT（Transmission）actor 的命令——形状同 `Cmd`，`Add` 换成接收 magnet URI。
+/// BT（Transmission）actor 的命令——形状同 `Cmd`。
 enum BtCmd {
     Add {
-        magnet: String,
+        req: DownloadRequest,
         reply: oneshot::Sender<Result<TaskId>>,
     },
     Pause {
@@ -119,6 +167,8 @@ enum BtCmd {
     },
     Cancel {
         id: TaskId,
+        /// 见 `DownloadService::cancel` 文档。
+        delete_local: bool,
         reply: oneshot::Sender<Result<()>>,
     },
     /// 同 `Cmd::ForgetCompleted`：只让引擎忘掉这个任务，不碰 DB。
@@ -156,9 +206,48 @@ pub struct DownloadService {
 #[derive(Debug, Clone, Default)]
 pub struct DownloadLimits {
     pub speed_limit_kbps: Option<u32>,
+    /// 上传限速（KB/s），两个引擎都透传。
+    pub upload_limit_kbps: Option<u32>,
     pub concurrency: Option<u32>,
+    /// 单文件最大连接数（分段下载加速，aria2 专属——BT 协议本身就是多 peer 并发，
+    /// 不适用这个概念）。`None` 不代表"不限"，见 `conf::write_conf` 文档：会落到
+    /// 一个比 aria2 默认值更合理的兜底值。
+    pub max_connections_per_file: Option<u32>,
+    /// HTTP 下载 User-Agent（aria2 专属）。`None` 同样不代表"用引擎默认值"，
+    /// 见 `conf::DEFAULT_USER_AGENT` 文档。
+    pub user_agent: Option<String>,
+    /// 下载代理（aria2 `all-proxy`）+ 绕过列表（`no-proxy`）。BT 不透传。
+    pub proxy: Option<String>,
+    pub proxy_bypass: Option<String>,
     pub bt_ratio_limit: Option<f64>,
     pub bt_idle_seeding_limit_minutes: Option<u32>,
+    /// BT 追加 tracker 列表（一行一个，Transmission `default-trackers`）。
+    pub bt_trackers: Option<String>,
+}
+
+impl DownloadLimits {
+    fn aria(&self) -> conf::AriaOptions {
+        conf::AriaOptions {
+            speed_limit_kbps: self.speed_limit_kbps,
+            upload_limit_kbps: self.upload_limit_kbps,
+            concurrency: self.concurrency,
+            max_connections_per_file: self.max_connections_per_file,
+            user_agent: self.user_agent.clone(),
+            proxy: self.proxy.clone(),
+            proxy_bypass: self.proxy_bypass.clone(),
+        }
+    }
+
+    fn bt(&self) -> transmission_conf::BtOptions {
+        transmission_conf::BtOptions {
+            speed_limit_kbps: self.speed_limit_kbps,
+            upload_limit_kbps: self.upload_limit_kbps,
+            concurrency: self.concurrency,
+            ratio_limit: self.bt_ratio_limit,
+            idle_seeding_limit_minutes: self.bt_idle_seeding_limit_minutes,
+            trackers: self.bt_trackers.clone(),
+        }
+    }
 }
 
 impl DownloadService {
@@ -176,12 +265,12 @@ impl DownloadService {
         download_dir: PathBuf,
         limits: DownloadLimits,
     ) -> Arc<Self> {
+        let aria_opts = limits.aria();
         let cmd_tx = match spawn_and_connect_with_retries(
             spawner.as_ref(),
             &data_dir,
             &download_dir,
-            limits.speed_limit_kbps,
-            limits.concurrency,
+            &aria_opts,
         )
         .await
         {
@@ -197,8 +286,7 @@ impl DownloadService {
                     spawner.clone(),
                     data_dir.clone(),
                     download_dir.clone(),
-                    limits.speed_limit_kbps,
-                    limits.concurrency,
+                    aria_opts.clone(),
                 ));
                 Some(cmd_tx)
             }
@@ -218,10 +306,7 @@ impl DownloadService {
                     bt_spawner.as_ref(),
                     &data_dir,
                     &download_dir,
-                    limits.speed_limit_kbps,
-                    limits.concurrency,
-                    limits.bt_ratio_limit,
-                    limits.bt_idle_seeding_limit_minutes,
+                    &limits.bt(),
                 )
                 .await
                 {
@@ -257,21 +342,33 @@ impl DownloadService {
         Aa4cError::Unavailable("download engine not available".into())
     }
 
-    /// 新建一条下载任务：`magnet:` 链接路由给 Transmission（D2），其余（HTTP/
-    /// HTTPS/FTP 直链，D1）路由给 aria2——调用方不需要自己判断该走哪个引擎。
-    pub async fn add(&self, url: String) -> Result<TaskId> {
-        if url.starts_with("magnet:") {
-            let tx = self.bt_cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
-            let (reply, rx) = oneshot::channel();
-            tx.send(BtCmd::Add { magnet: url, reply })
-                .map_err(|_| Self::unavailable())?;
-            return rx.await.map_err(|_| Self::unavailable())?;
+    /// 新建一条下载任务：`magnet:` 链接与 `.torrent` 文件路由给 Transmission
+    /// （D2），其余（HTTP/HTTPS/FTP 直链，D1）路由给 aria2——调用方不需要自己
+    /// 判断该走哪个引擎。
+    pub async fn add(&self, req: DownloadRequest) -> Result<TaskId> {
+        match &req.source {
+            DownloadSource::Uri(url) if url.starts_with("magnet:") => {
+                let tx = self.bt_cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
+                let (reply, rx) = oneshot::channel();
+                tx.send(BtCmd::Add { req, reply })
+                    .map_err(|_| Self::unavailable())?;
+                rx.await.map_err(|_| Self::unavailable())?
+            }
+            DownloadSource::TorrentFile(_) => {
+                let tx = self.bt_cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
+                let (reply, rx) = oneshot::channel();
+                tx.send(BtCmd::Add { req, reply })
+                    .map_err(|_| Self::unavailable())?;
+                rx.await.map_err(|_| Self::unavailable())?
+            }
+            DownloadSource::Uri(_) => {
+                let tx = self.cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
+                let (reply, rx) = oneshot::channel();
+                tx.send(Cmd::Add { req, reply })
+                    .map_err(|_| Self::unavailable())?;
+                rx.await.map_err(|_| Self::unavailable())?
+            }
         }
-        let tx = self.cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
-        let (reply, rx) = oneshot::channel();
-        tx.send(Cmd::Add { url, reply })
-            .map_err(|_| Self::unavailable())?;
-        rx.await.map_err(|_| Self::unavailable())?
     }
 
     pub async fn pause(&self, id: TaskId) -> Result<()> {
@@ -304,19 +401,60 @@ impl DownloadService {
         rx.await.map_err(|_| Self::unavailable())?
     }
 
-    pub async fn cancel(&self, id: TaskId) -> Result<()> {
+    /// 取消任务。`delete_local`——同时删除已下载的本地文件（对标 FDM/Motrix 的
+    /// "取消并删除文件"，区别于默认的"仅从列表移除，文件保留"）：BT 任务原生走
+    /// `torrent-remove` 的 `delete-local-data` 参数；HTTP 任务由 aria2 侧
+    /// `handle_command` 在 RPC 移除后手动删本地文件（`aria2.remove`/`forceRemove`
+    /// 本身不删文件，这是二者行为的既有差异）。
+    pub async fn cancel(&self, id: TaskId, delete_local: bool) -> Result<()> {
         if is_bt_task_id(&id) {
             let tx = self.bt_cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
             let (reply, rx) = oneshot::channel();
-            tx.send(BtCmd::Cancel { id, reply })
-                .map_err(|_| Self::unavailable())?;
+            tx.send(BtCmd::Cancel {
+                id,
+                delete_local,
+                reply,
+            })
+            .map_err(|_| Self::unavailable())?;
             return rx.await.map_err(|_| Self::unavailable())?;
         }
         let tx = self.cmd_tx.as_ref().ok_or_else(Self::unavailable)?;
         let (reply, rx) = oneshot::channel();
-        tx.send(Cmd::Cancel { id, reply })
-            .map_err(|_| Self::unavailable())?;
+        tx.send(Cmd::Cancel {
+            id,
+            delete_local,
+            reply,
+        })
+        .map_err(|_| Self::unavailable())?;
         rx.await.map_err(|_| Self::unavailable())?
+    }
+
+    /// 重试一个失败的任务（对标 FDM/Motrix 的"重试"按钮）：BT 任务的种子/已下载
+    /// 分片仍在 Transmission 手上，重试等价于 `resume`（`torrent-start` 会重新
+    /// 连接 tracker/peer）；HTTP 任务 aria2 没有"复活同一个 GID"的能力，重试
+    /// 退化成"删旧记录 + 用原 URL 重新添加"，前端收到的是一个新 task id
+    /// （同 `clear_completed` 的既有取舍：不强行伪装成同一条记录）。
+    pub async fn retry(&self, id: TaskId) -> Result<TaskId> {
+        if is_bt_task_id(&id) {
+            self.resume(id.clone()).await?;
+            return Ok(id);
+        }
+        let task = self
+            .store
+            .get_download(&id)
+            .await?
+            .ok_or_else(|| Aa4cError::Protocol(format!("unknown download task: {id}")))?;
+        self.store
+            .delete_completed_downloads(std::slice::from_ref(&id))
+            .await?;
+        // 带上原任务的每任务选项——重试一个失败的下载恰恰最需要 referer/cookie
+        // （站点就是因为缺这些才拒的），丢了等于必然再失败一次。这也正是那些
+        // 选项要落库的原因（迁移 011）。
+        self.add(DownloadRequest {
+            source: DownloadSource::Uri(task.url),
+            options: task.options.unwrap_or_default(),
+        })
+        .await
     }
 
     /// 按创建时间倒序列出全部下载任务（D1+D2 同一张表，同一个列表——D3「统一
@@ -437,19 +575,12 @@ async fn spawn_and_connect_with_retries(
     spawner: &dyn SidecarSpawner,
     data_dir: &std::path::Path,
     download_dir: &std::path::Path,
-    speed_limit_kbps: Option<u32>,
-    concurrency: Option<u32>,
+    opts: &conf::AriaOptions,
 ) -> Result<Connected> {
     let host_pid = std::process::id();
     let mut last_err = None;
     for attempt in 0..SPAWN_ATTEMPTS {
-        let aria_conf = match conf::write_conf(
-            data_dir,
-            download_dir,
-            host_pid,
-            speed_limit_kbps,
-            concurrency,
-        ) {
+        let aria_conf = match conf::write_conf(data_dir, download_dir, host_pid, opts) {
             Ok(c) => c,
             Err(e) => {
                 last_err = Some(e);
@@ -539,8 +670,7 @@ async fn actor_loop(
     spawner: Arc<dyn SidecarSpawner>,
     data_dir: PathBuf,
     download_dir: PathBuf,
-    speed_limit_kbps: Option<u32>,
-    concurrency: Option<u32>,
+    aria_opts: conf::AriaOptions,
 ) {
     let mut poll = tokio::time::interval(RECONCILE_INTERVAL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -572,8 +702,7 @@ async fn actor_loop(
                             spawner.as_ref(),
                             &data_dir,
                             &download_dir,
-                            speed_limit_kbps,
-                            concurrency,
+                            &aria_opts,
                         )
                         .await
                         {
@@ -633,8 +762,8 @@ async fn actor_loop(
 
 async fn handle_command(client: &Aria2Client, store: &Store, cmd: Cmd) {
     match cmd {
-        Cmd::Add { url, reply } => {
-            let result = add_download(client, store, url).await;
+        Cmd::Add { req, reply } => {
+            let result = add_download(client, store, req).await;
             let _ = reply.send(result);
         }
         Cmd::Pause { id, reply } => {
@@ -651,13 +780,28 @@ async fn handle_command(client: &Aria2Client, store: &Store, cmd: Cmd) {
                 .map(|_| ());
             let _ = reply.send(result);
         }
-        Cmd::Cancel { id, reply } => {
+        Cmd::Cancel {
+            id,
+            delete_local,
+            reply,
+        } => {
             // 活跃/等待态用 remove；已停止/出错态 remove 会报错，forceRemove 兜底——
             // 两次尝试都不关心谁成功了，落库状态才是最终事实来源。
             let _ = client.call("aria2.remove", vec![json!(id.clone())]).await;
             let _ = client
                 .call("aria2.forceRemove", vec![json!(id.clone())])
                 .await;
+            // `aria2.remove`/`forceRemove` 本身不删本地文件——`delete_local` 要
+            // 手动删。存在性/权限错误一律忽略（best-effort，同 aria2 侧一贯的
+            // "落库状态才是最终事实来源"取舍，删文件失败不该让取消这个动作本身失败）。
+            if delete_local {
+                if let Ok(Some(task)) = store.get_download(&id).await {
+                    if let Some(path) = task.save_path {
+                        let _ = tokio::fs::remove_file(&path).await;
+                        let _ = tokio::fs::remove_file(format!("{path}.aria2")).await;
+                    }
+                }
+            }
             let result = store
                 .update_download_status(&id, DownloadStatus::Removed, None, None)
                 .await;
@@ -680,16 +824,46 @@ async fn handle_command(client: &Aria2Client, store: &Store, cmd: Cmd) {
     }
 }
 
-async fn add_download(client: &Aria2Client, store: &Store, url: String) -> Result<TaskId> {
+/// 把每任务选项翻译成 `aria2.addUri` 的第二个参数（options dict）。键名就是
+/// aria2 conf 里的选项名去掉 `--`（官方 RPC 约定），四个都在 aria2 1.37.0
+/// `--help=#all` 里核实过存在：`dir`/`out`/`referer`/`header`。
+fn aria_task_options(opts: &DownloadOptions) -> Value {
+    let mut map = serde_json::Map::new();
+    if let Some(dir) = opts.save_dir.as_deref().filter(|s| !s.trim().is_empty()) {
+        map.insert("dir".into(), json!(dir));
+    }
+    if let Some(out) = opts.out.as_deref().filter(|s| !s.trim().is_empty()) {
+        map.insert("out".into(), json!(out));
+    }
+    if let Some(referer) = opts.referer.as_deref().filter(|s| !s.trim().is_empty()) {
+        map.insert("referer".into(), json!(referer));
+    }
+    // Cookie 没有专属选项，走通用的 `header`（数组形式，aria2 允许多个 header）。
+    if let Some(cookie) = opts.cookie.as_deref().filter(|s| !s.trim().is_empty()) {
+        map.insert("header".into(), json!([format!("Cookie: {cookie}")]));
+    }
+    Value::Object(map)
+}
+
+async fn add_download(client: &Aria2Client, store: &Store, req: DownloadRequest) -> Result<TaskId> {
+    let DownloadSource::Uri(url) = &req.source else {
+        // 路由在 `DownloadService::add` 就已经分流过，走到这里必然是 URI。
+        return Err(Aa4cError::Protocol(
+            "torrent file must be routed to the BT engine".into(),
+        ));
+    };
     let result = client
-        .call("aria2.addUri", vec![json!([url.clone()])])
+        .call(
+            "aria2.addUri",
+            vec![json!([url.clone()]), aria_task_options(&req.options)],
+        )
         .await?;
     let gid = result
         .as_str()
         .ok_or_else(|| Aa4cError::Network("aria2.addUri did not return a gid".into()))?
         .to_string();
     store
-        .insert_download(&gid, DownloadKind::Http, &url)
+        .insert_download(&gid, DownloadKind::Http, url, Some(&req.options))
         .await?;
     Ok(gid)
 }
@@ -858,7 +1032,12 @@ async fn reconcile(store: &Store, events: &EventSender, client: &Aria2Client) {
         match remaining.remove(gid) {
             None => {
                 if store
-                    .insert_download(gid, DownloadKind::Http, info.url.as_deref().unwrap_or(""))
+                    .insert_download(
+                        gid,
+                        DownloadKind::Http,
+                        info.url.as_deref().unwrap_or(""),
+                        None,
+                    )
                     .await
                     .is_ok()
                 {
@@ -945,24 +1124,11 @@ async fn spawn_and_connect_bt_with_retries(
     spawner: &dyn SidecarSpawner,
     data_dir: &std::path::Path,
     download_dir: &std::path::Path,
-    speed_limit_kbps: Option<u32>,
-    concurrency: Option<u32>,
-    ratio_limit: Option<f64>,
-    idle_seeding_limit_minutes: Option<u32>,
+    opts: &transmission_conf::BtOptions,
 ) -> Result<BtConnected> {
     let mut last_err = None;
     for attempt in 0..SPAWN_ATTEMPTS {
-        let proc = match TransmissionProcess::spawn(
-            spawner,
-            data_dir,
-            download_dir,
-            speed_limit_kbps,
-            concurrency,
-            ratio_limit,
-            idle_seeding_limit_minutes,
-        )
-        .await
-        {
+        let proc = match TransmissionProcess::spawn(spawner, data_dir, download_dir, opts).await {
             Ok(p) => p,
             Err(e) => {
                 last_err = Some(e);
@@ -1066,8 +1232,8 @@ async fn bt_actor_loop(
 
 async fn handle_bt_command(client: &TransmissionClient, store: &Store, cmd: BtCmd) {
     match cmd {
-        BtCmd::Add { magnet, reply } => {
-            let result = add_bt_download(client, store, magnet).await;
+        BtCmd::Add { req, reply } => {
+            let result = add_bt_download(client, store, req).await;
             let _ = reply.send(result);
         }
         BtCmd::Pause { id, reply } => {
@@ -1084,13 +1250,19 @@ async fn handle_bt_command(client: &TransmissionClient, store: &Store, cmd: BtCm
                 .map(|_| ());
             let _ = reply.send(result);
         }
-        BtCmd::Cancel { id, reply } => {
+        BtCmd::Cancel {
+            id,
+            delete_local,
+            reply,
+        } => {
             // 同 aria2 侧的取舍：不关心 RPC 调用本身成不成功，落库状态才是
             // 最终事实来源（引擎可能已经不在了，取消动作也该在本地生效）。
+            // 与 aria2 不同：Transmission 的 `torrent-remove` 原生支持
+            // `delete-local-data`，不需要额外手动删文件。
             let _ = client
                 .call(
                     "torrent-remove",
-                    json!({ "ids": [id.clone()], "delete-local-data": false }),
+                    json!({ "ids": [id.clone()], "delete-local-data": delete_local }),
                 )
                 .await;
             let result = store
@@ -1119,14 +1291,38 @@ async fn handle_bt_command(client: &TransmissionClient, store: &Store, cmd: BtCm
 async fn add_bt_download(
     client: &TransmissionClient,
     store: &Store,
-    magnet: String,
+    req: DownloadRequest,
 ) -> Result<TaskId> {
-    let result = client
-        .call(
-            "torrent-add",
-            json!({ "filename": magnet, "paused": false }),
-        )
-        .await?;
+    // `torrent-add` 二选一：magnet/URL 走 `filename`，`.torrent` 文件走
+    // `metainfo`（base64 编码的文件内容）——这是 Transmission RPC 的既定形状，
+    // 不是我们的选择。
+    let mut params = match &req.source {
+        DownloadSource::Uri(magnet) => json!({ "filename": magnet, "paused": false }),
+        DownloadSource::TorrentFile(path) => {
+            use base64::Engine as _;
+            let bytes = tokio::fs::read(path).await.map_err(|e| {
+                Aa4cError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("读取种子文件失败（{}）：{e}", path.display()),
+                ))
+            })?;
+            let metainfo = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            json!({ "metainfo": metainfo, "paused": false })
+        }
+    };
+    // 每任务保存位置：BT 侧只有这一项有意义——`out`（自定义文件名）对种子不成立
+    // （一个种子可能含多个文件，名字由种子自己决定），`referer`/`cookie` 是
+    // HTTP 概念，BT 的 peer 协议里没有对应物。故意只透传 save_dir。
+    if let Some(dir) = req
+        .options
+        .save_dir
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        params["download-dir"] = json!(dir);
+    }
+
+    let result = client.call("torrent-add", params).await?;
     // 已经存在的 magnet 会走 `torrent-duplicate` 分支而不是 `torrent-added`——
     // 两种情况都要接受（用户重复粘贴同一个链接不该报错，同 aria2 侧幂等取舍）。
     let hash = result["torrent-added"]["hashString"]
@@ -1137,7 +1333,12 @@ async fn add_bt_download(
         })?
         .to_string();
     store
-        .insert_download(&hash, DownloadKind::Bt, &magnet)
+        .insert_download(
+            &hash,
+            DownloadKind::Bt,
+            &req.display_url(),
+            Some(&req.options),
+        )
         .await?;
     Ok(hash)
 }
@@ -1295,6 +1496,7 @@ async fn bt_reconcile(
                         hash,
                         DownloadKind::Bt,
                         &format!("magnet:?xt=urn:btih:{hash}"),
+                        None,
                     )
                     .await
                     .is_ok()

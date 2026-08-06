@@ -265,15 +265,38 @@ impl Core {
                     PathBuf::from(&current.download_dir),
                     aa4c_download::DownloadLimits {
                         speed_limit_kbps: current.download_speed_limit_kbps,
+                        upload_limit_kbps: current.download_upload_limit_kbps,
                         concurrency: current.download_concurrency,
+                        max_connections_per_file: current.download_max_connections_per_file,
+                        user_agent: current.download_user_agent.clone(),
+                        proxy: current.download_proxy.clone(),
+                        proxy_bypass: current.download_proxy_bypass.clone(),
                         bt_ratio_limit: current.bt_ratio_limit,
                         bt_idle_seeding_limit_minutes: current.bt_idle_seeding_limit_minutes,
+                        bt_trackers: current.bt_trackers.clone(),
                     },
                 )
                 .await,
             ),
             None => None,
         };
+
+        // 11b. 启动时自动继续未完成的下载（对标 Motrix 的 `resume-all-when-app-launched`，
+        //      默认关闭）。放在 `DownloadService::start` 之后——那里面已经跑完了首轮
+        //      对账（`reconcile`），此刻库里的状态才是引擎的真实状态，直接 `resume_all`
+        //      不会去恢复一个引擎根本不认识的任务。后台 spawn 而不是 `.await`：逐个
+        //      任务发 RPC 在任务多时不该拖慢 Core 启动（同其余可选能力"不阻塞启动"
+        //      的一贯设计）。
+        if current.download_resume_on_start {
+            if let Some(svc) = download.clone() {
+                tokio::spawn(async move {
+                    let n = svc.resume_all().await;
+                    if n > 0 {
+                        tracing::info!(count = n, "resumed unfinished downloads on startup");
+                    }
+                });
+            }
+        }
 
         // 12. 归档（ARCHIVE_DESIGN.md，里程碑 AI1）：首次启动写入五条停用的预设规则，
         //     再起下载完成钩子（DownloadDone → 跑规则引擎，见 archive 模块文档）。

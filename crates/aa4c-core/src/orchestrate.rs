@@ -523,9 +523,35 @@ impl Core {
         })
     }
 
-    /// 新建一条下载任务（D1 只接受 HTTP/HTTPS/FTP 直链）。
-    pub async fn add_download(&self, url: String) -> Result<TaskId> {
-        self.download_service()?.add(url).await
+    /// 新建一条下载任务：HTTP/HTTPS/FTP 直链、`magnet:` 磁力链接都走这里，
+    /// `options` 是每任务的自定义选项（保存位置/文件名/Referer/Cookie），
+    /// 不需要时传 `None`。
+    pub async fn add_download(
+        &self,
+        url: String,
+        options: Option<aa4c_types::DownloadOptions>,
+    ) -> Result<TaskId> {
+        self.download_service()?
+            .add(aa4c_download::DownloadRequest {
+                source: aa4c_download::DownloadSource::Uri(url),
+                options: options.unwrap_or_default(),
+            })
+            .await
+    }
+
+    /// 从本地 `.torrent` 文件新建一条 BT 任务（DOWNLOAD_DESIGN.md「仍待实现」
+    /// 里列的那一项，这次补上）。传路径而不是文件内容，读盘在下载层做。
+    pub async fn add_torrent_file(
+        &self,
+        path: PathBuf,
+        options: Option<aa4c_types::DownloadOptions>,
+    ) -> Result<TaskId> {
+        self.download_service()?
+            .add(aa4c_download::DownloadRequest {
+                source: aa4c_download::DownloadSource::TorrentFile(path),
+                options: options.unwrap_or_default(),
+            })
+            .await
     }
 
     pub async fn pause_download(&self, id: TaskId) -> Result<()> {
@@ -536,8 +562,16 @@ impl Core {
         self.download_service()?.resume(id).await
     }
 
-    pub async fn cancel_download(&self, id: TaskId) -> Result<()> {
-        self.download_service()?.cancel(id).await
+    /// `delete_local`——同时删除已下载的本地文件（对标 FDM/Motrix 的"取消并删除
+    /// 文件"），见 `DownloadService::cancel` 文档。
+    pub async fn cancel_download(&self, id: TaskId, delete_local: bool) -> Result<()> {
+        self.download_service()?.cancel(id, delete_local).await
+    }
+
+    /// 重试一个失败的任务，返回值是最终生效的 task id（HTTP 任务重试会产生一个
+    /// 新 id，BT 任务保持原 id——见 `DownloadService::retry` 文档）。
+    pub async fn retry_download(&self, id: TaskId) -> Result<TaskId> {
+        self.download_service()?.retry(id).await
     }
 
     /// 按创建时间倒序列出全部下载任务。

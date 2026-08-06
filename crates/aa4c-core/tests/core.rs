@@ -1380,7 +1380,7 @@ async fn download_capability_absent_without_spawner_reports_unavailable() {
 
     let err = node
         .core
-        .add_download("http://example.invalid/file".into())
+        .add_download("http://example.invalid/file".into(), None)
         .await
         .unwrap_err();
     assert_eq!(err.code(), "unavailable");
@@ -1388,7 +1388,11 @@ async fn download_capability_absent_without_spawner_reports_unavailable() {
     assert!(node.core.list_downloads().await.is_err());
     assert!(node.core.pause_download("gid".into()).await.is_err());
     assert!(node.core.resume_download("gid".into()).await.is_err());
-    assert!(node.core.cancel_download("gid".into()).await.is_err());
+    assert!(node
+        .core
+        .cancel_download("gid".into(), false)
+        .await
+        .is_err());
 
     node.core.shutdown().await.unwrap();
 }
@@ -1486,7 +1490,7 @@ async fn download_end_to_end_through_core_orchestration() {
 
     let mut rx = core.subscribe();
     let id = core
-        .add_download(format!("http://{http_addr}/file.bin"))
+        .add_download(format!("http://{http_addr}/file.bin"), None)
         .await
         .unwrap();
 
@@ -1571,7 +1575,7 @@ async fn bt_download_routes_through_core_orchestration() {
 
     let magnet =
         "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=aa4c-core-e2e-test";
-    let id = core.add_download(magnet.into()).await.unwrap();
+    let id = core.add_download(magnet.into(), None).await.unwrap();
     assert_eq!(id.len(), 40, "BT task id should be the 40-hex infohash");
 
     let listed = core.list_downloads().await.unwrap();
@@ -1583,7 +1587,7 @@ async fn bt_download_routes_through_core_orchestration() {
 
     core.pause_download(id.clone()).await.unwrap();
     core.resume_download(id.clone()).await.unwrap();
-    core.cancel_download(id.clone()).await.unwrap();
+    core.cancel_download(id.clone(), false).await.unwrap();
 
     let listed = core.list_downloads().await.unwrap();
     let task = listed

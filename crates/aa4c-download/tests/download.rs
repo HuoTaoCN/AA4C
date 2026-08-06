@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aa4c_download::{DownloadLimits, DownloadService, ProcessSpawner};
+use aa4c_download::{DownloadLimits, DownloadRequest, DownloadService, ProcessSpawner};
 use aa4c_store::Store;
 use aa4c_types::{CoreEvent, DownloadStatus, DownloadTask};
 use tokio::sync::broadcast;
@@ -181,6 +181,58 @@ async fn wait_for_status(
     }
 }
 
+/// 每任务选项真的传到了 aria2（不是只落了库）：自定义保存目录 + 自定义文件名
+/// 走完整条 `addUri` options 链路后，文件应该真的落在指定目录、用指定的名字。
+/// 顺带验证选项被持久化（迁移 011——`retry()` 靠这个不丢 referer/cookie）。
+#[tokio::test]
+async fn per_task_options_change_where_and_how_the_file_lands() {
+    use aa4c_types::DownloadOptions;
+
+    let dir = tempfile::tempdir().unwrap();
+    let download_dir = dir.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+    // 每任务保存目录：故意跟全局下载目录不同，才能证明是 per-task 生效
+    let custom_dir = dir.path().join("custom-target");
+    let body = b"per-task options payload".repeat(100);
+    let addr = spawn_fast_http_server(body.clone()).await;
+    let (svc, _rx, store, _spawner) = start_service(dir.path(), &download_dir).await;
+
+    let options = DownloadOptions {
+        save_dir: Some(custom_dir.display().to_string()),
+        out: Some("renamed-by-user.bin".into()),
+        referer: Some("https://example.com/from-page".into()),
+        cookie: Some("session=abc123".into()),
+    };
+    let id = svc
+        .add(DownloadRequest {
+            source: aa4c_download::DownloadSource::Uri(format!("http://{addr}/original-name.bin")),
+            options: options.clone(),
+        })
+        .await
+        .unwrap();
+
+    let task = wait_for_status(
+        &store,
+        &id,
+        DownloadStatus::Complete,
+        Duration::from_secs(20),
+    )
+    .await;
+
+    let save_path = PathBuf::from(task.save_path.expect("save_path set on completion"));
+    assert_eq!(
+        save_path,
+        custom_dir.join("renamed-by-user.bin"),
+        "dir + out 都该生效：文件落在自定义目录、用自定义文件名"
+    );
+    assert_eq!(std::fs::read(&save_path).unwrap(), body);
+    // referer/cookie 没法从落盘结果反推（服务器不校验），但至少要确认它们被
+    // 落库了——`retry()` 就是从这里读回去的。
+    assert_eq!(task.options.as_ref(), Some(&options));
+
+    svc.shutdown().await;
+}
+
 #[tokio::test]
 async fn full_download_completes_with_correct_content() {
     let dir = tempfile::tempdir().unwrap();
@@ -190,7 +242,10 @@ async fn full_download_completes_with_correct_content() {
     let addr = spawn_fast_http_server(body.clone()).await;
     let (svc, _rx, store, _spawner) = start_service(dir.path(), &download_dir).await;
 
-    let id = svc.add(format!("http://{addr}/file.bin")).await.unwrap();
+    let id = svc
+        .add(DownloadRequest::uri(format!("http://{addr}/file.bin")))
+        .await
+        .unwrap();
     let task = wait_for_status(
         &store,
         &id,
@@ -217,7 +272,10 @@ async fn pause_then_resume_reaches_complete() {
     let addr = spawn_slow_http_server(body.clone(), Duration::from_millis(80)).await;
     let (svc, _rx, store, _spawner) = start_service(dir.path(), &download_dir).await;
 
-    let id = svc.add(format!("http://{addr}/file.bin")).await.unwrap();
+    let id = svc
+        .add(DownloadRequest::uri(format!("http://{addr}/file.bin")))
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(400)).await;
     svc.pause(id.clone()).await.unwrap();
     wait_for_status(&store, &id, DownloadStatus::Paused, Duration::from_secs(10)).await;
@@ -245,9 +303,12 @@ async fn cancel_marks_removed_and_engine_does_not_resurrect_it() {
     let addr = spawn_slow_http_server(body, Duration::from_millis(80)).await;
     let (svc, _rx, store, _spawner) = start_service(dir.path(), &download_dir).await;
 
-    let id = svc.add(format!("http://{addr}/file.bin")).await.unwrap();
+    let id = svc
+        .add(DownloadRequest::uri(format!("http://{addr}/file.bin")))
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
-    svc.cancel(id.clone()).await.unwrap();
+    svc.cancel(id.clone(), false).await.unwrap();
 
     let task = store.get_download(&id).await.unwrap().unwrap();
     assert_eq!(task.status, DownloadStatus::Removed);
@@ -268,7 +329,10 @@ async fn missing_url_transitions_to_error_with_human_readable_message() {
     let addr = spawn_fast_http_server(b"unused".to_vec()).await;
     let (svc, _rx, store, _spawner) = start_service(dir.path(), &download_dir).await;
 
-    let id = svc.add(format!("http://{addr}/missing")).await.unwrap();
+    let id = svc
+        .add(DownloadRequest::uri(format!("http://{addr}/missing")))
+        .await
+        .unwrap();
     let task = wait_for_status(&store, &id, DownloadStatus::Error, Duration::from_secs(15)).await;
     assert!(task.error.is_some());
 
@@ -299,7 +363,10 @@ async fn task_resumes_across_service_restart_with_same_gid() {
         DownloadLimits::default(),
     )
     .await;
-    let id = svc.add(format!("http://{addr}/file.bin")).await.unwrap();
+    let id = svc
+        .add(DownloadRequest::uri(format!("http://{addr}/file.bin")))
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     svc.shutdown().await; // 触发一次 session 保存 + 干净关闭子进程
 
@@ -362,7 +429,10 @@ async fn download_concurrency_limit_caps_simultaneous_active_tasks() {
     let mut ids = Vec::new();
     for i in 0..3 {
         let addr = spawn_slow_http_server(body.clone(), Duration::from_millis(60)).await;
-        let id = svc.add(format!("http://{addr}/file{i}.bin")).await.unwrap();
+        let id = svc
+            .add(DownloadRequest::uri(format!("http://{addr}/file{i}.bin")))
+            .await
+            .unwrap();
         ids.push(id);
     }
 
@@ -444,7 +514,10 @@ async fn aria2_crash_mid_download_recovers_and_new_downloads_still_work() {
     let addr = spawn_slow_http_server(body, Duration::from_millis(80)).await;
     let (svc, _rx, store, _spawner) = start_service(dir.path(), &download_dir).await;
 
-    let id = svc.add(format!("http://{addr}/file.bin")).await.unwrap();
+    let id = svc
+        .add(DownloadRequest::uri(format!("http://{addr}/file.bin")))
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let data_dir_str = dir.path().to_string_lossy().into_owned();
@@ -479,7 +552,7 @@ async fn aria2_crash_mid_download_recovers_and_new_downloads_still_work() {
     let body2 = b"post-crash recovery payload".repeat(200);
     let addr2 = spawn_fast_http_server(body2.clone()).await;
     let id2 = svc
-        .add(format!("http://{addr2}/file2.bin"))
+        .add(DownloadRequest::uri(format!("http://{addr2}/file2.bin")))
         .await
         .expect("service must still accept new downloads after respawn");
     let task2 = wait_for_status(
@@ -519,7 +592,10 @@ async fn missing_session_file_marks_orphaned_task_as_error() {
         DownloadLimits::default(),
     )
     .await;
-    let id = svc.add(format!("http://{addr}/file.bin")).await.unwrap();
+    let id = svc
+        .add(DownloadRequest::uri(format!("http://{addr}/file.bin")))
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     svc.shutdown().await;
 

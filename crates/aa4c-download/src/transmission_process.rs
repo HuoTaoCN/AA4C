@@ -36,27 +36,16 @@ impl TransmissionProcess {
     ///    `ProcessSpawner` 时已经在 spawn 那一步经 `pre_exec` 装好了
     ///    `PR_SET_PDEATHSIG`（见 `spawner.rs`），这里不用再做什么；macOS
     ///    以及 Tauri 路径下的 Linux 靠这次新写的 PID 文件兜底。
-    #[allow(clippy::too_many_arguments)]
     pub async fn spawn(
         spawner: &dyn SidecarSpawner,
         data_dir: &Path,
         download_dir: &Path,
-        speed_limit_kbps: Option<u32>,
-        concurrency: Option<u32>,
-        ratio_limit: Option<f64>,
-        idle_seeding_limit_minutes: Option<u32>,
+        opts: &transmission_conf::BtOptions,
     ) -> Result<Self> {
         let pidfile = OrphanPidfile::new(pidfile_path(data_dir));
         pidfile.sweep();
 
-        let conf = transmission_conf::write_settings(
-            &config_dir(data_dir),
-            download_dir,
-            speed_limit_kbps,
-            concurrency,
-            ratio_limit,
-            idle_seeding_limit_minutes,
-        )?;
+        let conf = transmission_conf::write_settings(&config_dir(data_dir), download_dir, opts)?;
         let args = transmission_conf::spawn_args(&conf.config_dir);
         let child = spawner.spawn(&args, &[]).await?;
 
@@ -136,10 +125,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let download_dir = dir.path().join("downloads");
 
-        let proc =
-            TransmissionProcess::spawn(&spawner, dir.path(), &download_dir, None, None, None, None)
-                .await
-                .expect("transmission-daemon should spawn");
+        let proc = TransmissionProcess::spawn(
+            &spawner,
+            dir.path(),
+            &download_dir,
+            &transmission_conf::BtOptions::default(),
+        )
+        .await
+        .expect("transmission-daemon should spawn");
         assert!(proc.pid() > 0);
         assert!(proc.port > 0);
         assert!(!proc.username.is_empty());
@@ -180,9 +173,13 @@ mod tests {
         // 成不成功，只关心它触发的 sweep 是否清理了上面伪造的孤儿。
         let spawner = ProcessSpawner::new("aa4c-does-not-exist-binary");
         let download_dir = dir.path().join("downloads");
-        let _ =
-            TransmissionProcess::spawn(&spawner, dir.path(), &download_dir, None, None, None, None)
-                .await;
+        let _ = TransmissionProcess::spawn(
+            &spawner,
+            dir.path(),
+            &download_dir,
+            &transmission_conf::BtOptions::default(),
+        )
+        .await;
 
         std::thread::sleep(std::time::Duration::from_millis(300));
         let still_alive = orphan.try_wait().unwrap().is_none();

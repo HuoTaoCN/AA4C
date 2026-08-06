@@ -92,6 +92,13 @@ mod tests {
             download_dir: dir.path().join("downloads").to_string_lossy().into_owned(),
             download_speed_limit_kbps: None,
             download_concurrency: None,
+            download_max_connections_per_file: None,
+            download_upload_limit_kbps: None,
+            download_user_agent: None,
+            download_proxy: None,
+            download_proxy_bypass: None,
+            bt_trackers: None,
+            download_resume_on_start: false,
             bt_ratio_limit: None,
             bt_idle_seeding_limit_minutes: None,
             archive_root: archive_root.to_string_lossy().into_owned(),
@@ -134,7 +141,12 @@ mod tests {
         )
         .unwrap();
         store
-            .insert_download("gid1", DownloadKind::Http, "https://example.com/model.gguf")
+            .insert_download(
+                "gid1",
+                DownloadKind::Http,
+                "https://example.com/model.gguf",
+                None,
+            )
             .await
             .unwrap();
 
@@ -199,6 +211,13 @@ mod tests {
             download_dir: dir.path().join("downloads").to_string_lossy().into_owned(),
             download_speed_limit_kbps: None,
             download_concurrency: None,
+            download_max_connections_per_file: None,
+            download_upload_limit_kbps: None,
+            download_user_agent: None,
+            download_proxy: None,
+            download_proxy_bypass: None,
+            bt_trackers: None,
+            download_resume_on_start: false,
             bt_ratio_limit: None,
             bt_idle_seeding_limit_minutes: None,
             archive_root: dir.path().join("archive").to_string_lossy().into_owned(),

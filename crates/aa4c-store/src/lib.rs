@@ -16,10 +16,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aa4c_types::{
     Aa4cError, ArchiveCategory, ArchiveEntry, ArchiveLogEntry, ArchiveRule, ArchiveTag, DeviceId,
-    DownloadKind, DownloadStatus, DownloadTask, KbDocStatus, KbDocument, KbSource, KbSourceSummary,
-    ModelMeta, RemoteIndexEntry, Result, ScopeKind, Share, ShareAccess, SyncConflict,
-    SyncFileEntry, SyncScope, TagSource, TaskId, TransferFile, TransferStatus, TransferTask,
-    TrustLevel,
+    DownloadKind, DownloadOptions, DownloadStatus, DownloadTask, KbDocStatus, KbDocument, KbSource,
+    KbSourceSummary, ModelMeta, RemoteIndexEntry, Result, ScopeKind, Share, ShareAccess,
+    SyncConflict, SyncFileEntry, SyncScope, TagSource, TaskId, TransferFile, TransferStatus,
+    TransferTask, TrustLevel,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -892,21 +892,33 @@ impl Store {
 
     /// 新建一条下载任务。`id` 由调用方传入（引擎原生任务号，如 aria2 GID），
     /// 不由 Store 生成——这是"GID 直接当任务 id"决定的直接体现。
+    /// `options` 为 `None` 或全空时 `options` 列写 NULL——绝大多数任务没有任何
+    /// 自定义选项，不该在库里留一行 `{}`（迁移 011）。
     pub async fn insert_download(
         &self,
         id: &str,
         kind: DownloadKind,
         url: &str,
+        options: Option<&DownloadOptions>,
     ) -> Result<DownloadTask> {
         let id = id.to_string();
         let url = url.to_string();
+        let options = options.filter(|o| !o.is_empty()).cloned();
         self.call(move |conn| {
             let now = now_ms();
+            let options_json =
+                match &options {
+                    Some(o) => Some(serde_json::to_string(o).map_err(|e| {
+                        Aa4cError::Db(format!("encode download options failed: {e}"))
+                    })?),
+                    None => None,
+                };
             conn.execute(
                 "INSERT INTO download_tasks
-                   (id, kind, url, status, total_bytes, downloaded_bytes, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'waiting', 0, 0, ?4, ?4)",
-                params![id, kind.as_str(), url, now],
+                   (id, kind, url, status, total_bytes, downloaded_bytes, created_at, updated_at,
+                    options)
+                 VALUES (?1, ?2, ?3, 'waiting', 0, 0, ?4, ?4, ?5)",
+                params![id, kind.as_str(), url, now, options_json],
             )
             .map_err(db_err)?;
             Ok(DownloadTask {
@@ -919,6 +931,7 @@ impl Store {
                 downloaded_bytes: 0,
                 error: None,
                 created_at: now,
+                options,
             })
         })
         .await
@@ -929,7 +942,7 @@ impl Store {
         self.call(move |conn| {
             conn.query_row(
                 "SELECT id, kind, url, save_path, status, total_bytes, downloaded_bytes,
-                        error, created_at
+                        error, created_at, options
                  FROM download_tasks WHERE id = ?1",
                 params![id],
                 row_to_download,
@@ -946,7 +959,7 @@ impl Store {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, kind, url, save_path, status, total_bytes, downloaded_bytes,
-                            error, created_at
+                            error, created_at, options
                      FROM download_tasks ORDER BY created_at DESC",
                 )
                 .map_err(db_err)?;
@@ -967,7 +980,7 @@ impl Store {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, kind, url, save_path, status, total_bytes, downloaded_bytes,
-                            error, created_at
+                            error, created_at, options
                      FROM download_tasks
                      WHERE status IN ('active','waiting','paused')
                      ORDER BY created_at DESC",
@@ -1786,6 +1799,11 @@ fn row_to_share_access(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShareAccess>
 }
 
 fn row_to_download(row: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadTask> {
+    // 选项列是 JSON（迁移 011）；解析失败按"没有选项"处理而不是让整行读取失败——
+    // 一条坏掉的选项 JSON 不该让用户的整个下载列表打不开（同 settings 里
+    // `get_json` "非法/旧值静默退回默认"的既有取舍）。
+    let options: Option<String> = row.get(9)?;
+    let options = options.and_then(|raw| serde_json::from_str(&raw).ok());
     Ok(DownloadTask {
         id: row.get(0)?,
         kind: parse_col(row, 1)?,
@@ -1796,6 +1814,7 @@ fn row_to_download(row: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadTask> {
         downloaded_bytes: get_u64(row, 6)?,
         error: row.get(7)?,
         created_at: row.get(8)?,
+        options,
     })
 }
 

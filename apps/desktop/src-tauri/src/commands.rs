@@ -8,8 +8,9 @@ use std::sync::Arc;
 use aa4c_core::Core;
 use aa4c_types::{
     Aa4cError, AiStatus, ArchiveEntry, ArchiveLogEntry, ArchiveRule, CoreEvent, DeviceInfo,
-    DownloadTask, KbSource, KbSourceSummary, LocalModel, Settings, Share, ShareAccess, Suggestion,
-    SyncConflict, SyncFileEntry, SyncScope, TransferTask, TrustLevel, UnifiedFile,
+    DownloadOptions, DownloadTask, KbSource, KbSourceSummary, LocalModel, Settings, Share,
+    ShareAccess, Suggestion, SyncConflict, SyncFileEntry, SyncScope, TransferTask, TrustLevel,
+    UnifiedFile,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -200,8 +201,23 @@ pub async fn open_share(core: State<'_, Arc<Core>>, link: String) -> CmdResult<S
 }
 
 #[tauri::command]
-pub async fn add_download(core: State<'_, Arc<Core>>, url: String) -> CmdResult<String> {
-    Ok(core.add_download(url).await?)
+pub async fn add_download(
+    core: State<'_, Arc<Core>>,
+    url: String,
+    options: Option<DownloadOptions>,
+) -> CmdResult<String> {
+    Ok(core.add_download(url, options).await?)
+}
+
+/// 从本地 `.torrent` 文件新建 BT 任务：前端用文件选择器拿到路径传过来，
+/// 读盘在 Rust 侧做（Tauri IPC 传大块二进制不划算）。
+#[tauri::command]
+pub async fn add_torrent_file(
+    core: State<'_, Arc<Core>>,
+    path: String,
+    options: Option<DownloadOptions>,
+) -> CmdResult<String> {
+    Ok(core.add_torrent_file(PathBuf::from(path), options).await?)
 }
 
 #[tauri::command]
@@ -215,8 +231,17 @@ pub async fn resume_download(core: State<'_, Arc<Core>>, task_id: String) -> Cmd
 }
 
 #[tauri::command]
-pub async fn cancel_download(core: State<'_, Arc<Core>>, task_id: String) -> CmdResult<()> {
-    Ok(core.cancel_download(task_id).await?)
+pub async fn cancel_download(
+    core: State<'_, Arc<Core>>,
+    task_id: String,
+    delete_local: bool,
+) -> CmdResult<()> {
+    Ok(core.cancel_download(task_id, delete_local).await?)
+}
+
+#[tauri::command]
+pub async fn retry_download(core: State<'_, Arc<Core>>, task_id: String) -> CmdResult<String> {
+    Ok(core.retry_download(task_id).await?)
 }
 
 #[tauri::command]

@@ -11,6 +11,22 @@ use serde_json::json;
 
 use crate::util::{generate_secret, probe_free_port};
 
+/// Transmission 引擎级可选项（对标 Motrix 的 system config，DOWNLOAD_DESIGN.md §9）。
+/// 同 aria2 侧的 `AriaOptions`：收成结构体而不是继续堆平行 `Option` 参数——
+/// 这些参数类型高度雷同（一水儿的 `Option<u32>`），按位置传极易错位。
+/// `pub`（不是 `pub(crate)`）因为它出现在公开的 `TransmissionProcess::spawn`
+/// 签名里——集成测试与将来的外部调用方都要构造它。
+#[derive(Debug, Clone, Default)]
+pub struct BtOptions {
+    pub speed_limit_kbps: Option<u32>,
+    pub upload_limit_kbps: Option<u32>,
+    pub concurrency: Option<u32>,
+    pub ratio_limit: Option<f64>,
+    pub idle_seeding_limit_minutes: Option<u32>,
+    /// 追加的 tracker 列表（一行一个）。
+    pub trackers: Option<String>,
+}
+
 /// 本次启动实际生效的配置（供 `TransmissionClient` 连接使用，D2.3）。
 pub struct TransmissionConf {
     pub port: u16,
@@ -30,13 +46,15 @@ pub struct TransmissionConf {
 /// 不是照抄 RPC session-set 的参数名——`ratio-limit`/`ratio-limit-enabled` 与
 /// 官方 RPC spec 文档写的 `seedRatioLimit`/`seedRatioLimited` 不是同一个名字，
 /// 后者在配置文件里完全不生效，见 DOWNLOAD_DESIGN.md §9）。
+///
+/// `upload_limit_kbps`/`trackers` 是对标 Motrix 补的两项：`speed-limit-up(-enabled)`
+/// 与 `default-trackers`（后者是 Transmission 4 才有的键，本机起真实
+/// `transmission-daemon 4.1.3`——与我们打包的同一版本——看它自己生成的
+/// `settings.json` 核实过存在，不是照抄文档）。
 pub(crate) fn write_settings(
     config_dir: &Path,
     download_dir: &Path,
-    speed_limit_kbps: Option<u32>,
-    concurrency: Option<u32>,
-    ratio_limit: Option<f64>,
-    idle_seeding_limit_minutes: Option<u32>,
+    opts: &BtOptions,
 ) -> Result<TransmissionConf> {
     std::fs::create_dir_all(config_dir).map_err(Aa4cError::Io)?;
     let port = probe_free_port()?;
@@ -61,19 +79,34 @@ pub(crate) fn write_settings(
     let obj = body
         .as_object_mut()
         .expect("settings body is a JSON object");
-    if let Some(limit) = speed_limit_kbps.filter(|&n| n > 0) {
+    if let Some(limit) = opts.speed_limit_kbps.filter(|&n| n > 0) {
         obj.insert("speed-limit-down".into(), json!(limit));
         obj.insert("speed-limit-down-enabled".into(), json!(true));
     }
-    if let Some(n) = concurrency.filter(|&n| n > 0) {
+    if let Some(limit) = opts.upload_limit_kbps.filter(|&n| n > 0) {
+        obj.insert("speed-limit-up".into(), json!(limit));
+        obj.insert("speed-limit-up-enabled".into(), json!(true));
+    }
+    // 追加 tracker（`default-trackers`，Transmission 4 起）：用户填的是一行一个，
+    // Transmission 要的也是换行分隔的一整个字符串，原样传。全空白按未设置处理
+    // （同 aria2 侧 user-agent 的既有取舍）。
+    if let Some(list) = opts
+        .trackers
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        obj.insert("default-trackers".into(), json!(list));
+    }
+    if let Some(n) = opts.concurrency.filter(|&n| n > 0) {
         obj.insert("download-queue-size".into(), json!(n));
         obj.insert("download-queue-enabled".into(), json!(true));
     }
-    if let Some(ratio) = ratio_limit {
+    if let Some(ratio) = opts.ratio_limit {
         obj.insert("ratio-limit".into(), json!(ratio));
         obj.insert("ratio-limit-enabled".into(), json!(true));
     }
-    if let Some(minutes) = idle_seeding_limit_minutes {
+    if let Some(minutes) = opts.idle_seeding_limit_minutes {
         obj.insert("idle-seeding-limit".into(), json!(minutes));
         obj.insert("idle-seeding-limit-enabled".into(), json!(true));
     }
@@ -129,8 +162,8 @@ mod tests {
     #[test]
     fn generates_distinct_ports_and_credentials() {
         let dir = tempfile::tempdir().unwrap();
-        let a = write_settings(&dir.path().join("a"), dir.path(), None, None, None, None).unwrap();
-        let b = write_settings(&dir.path().join("b"), dir.path(), None, None, None, None).unwrap();
+        let a = write_settings(&dir.path().join("a"), dir.path(), &BtOptions::default()).unwrap();
+        let b = write_settings(&dir.path().join("b"), dir.path(), &BtOptions::default()).unwrap();
         assert_ne!(a.username, b.username);
         assert_ne!(a.password, b.password);
         assert!(a.username.len() >= 32);
@@ -143,10 +176,7 @@ mod tests {
         let conf = write_settings(
             &dir.path().join("cfg"),
             &download_dir,
-            None,
-            None,
-            None,
-            None,
+            &BtOptions::default(),
         )
         .unwrap();
         let body = std::fs::read_to_string(conf.config_dir.join("settings.json")).unwrap();
@@ -163,6 +193,8 @@ mod tests {
         assert!(parsed.get("ratio-limit").is_none());
         assert!(parsed.get("idle-seeding-limit").is_none());
         assert!(parsed.get("download-queue-size").is_none());
+        assert!(parsed.get("speed-limit-up").is_none());
+        assert!(parsed.get("default-trackers").is_none());
     }
 
     #[test]
@@ -171,10 +203,14 @@ mod tests {
         let conf = write_settings(
             &dir.path().join("cfg"),
             dir.path(),
-            Some(500),
-            Some(3),
-            Some(2.0),
-            Some(30),
+            &BtOptions {
+                speed_limit_kbps: Some(500),
+                upload_limit_kbps: Some(256),
+                concurrency: Some(3),
+                ratio_limit: Some(2.0),
+                idle_seeding_limit_minutes: Some(30),
+                trackers: Some("udp://tracker.example.com:6969/announce".into()),
+            },
         )
         .unwrap();
         let body = std::fs::read_to_string(conf.config_dir.join("settings.json")).unwrap();
@@ -187,6 +223,12 @@ mod tests {
         assert_eq!(parsed["ratio-limit-enabled"], true);
         assert_eq!(parsed["idle-seeding-limit"], 30);
         assert_eq!(parsed["idle-seeding-limit-enabled"], true);
+        assert_eq!(parsed["speed-limit-up"], 256);
+        assert_eq!(parsed["speed-limit-up-enabled"], true);
+        assert_eq!(
+            parsed["default-trackers"],
+            "udp://tracker.example.com:6969/announce"
+        );
     }
 
     #[test]
@@ -203,7 +245,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let conf =
-            write_settings(&dir.path().join("cfg"), dir.path(), None, None, None, None).unwrap();
+            write_settings(&dir.path().join("cfg"), dir.path(), &BtOptions::default()).unwrap();
         let mode = std::fs::metadata(conf.config_dir.join("settings.json"))
             .unwrap()
             .permissions()

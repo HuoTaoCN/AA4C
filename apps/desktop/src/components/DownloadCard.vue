@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useDownloadStore, type LiveDownloadTask } from "../stores/download";
 import { useToastStore } from "../stores/toast";
 import { asCommandError } from "../lib/api";
@@ -49,8 +50,43 @@ async function cancel() {
     toast.push("error", errorText(asCommandError(e).code));
   }
 }
-async function openFolder() {
+/** 取消并删除本地文件——不可撤销，二次确认（对标 FDM/Motrix 的"删除任务和文件"）。 */
+async function cancelAndDelete() {
+  if (!window.confirm(`确定要取消「${title.value}」并删除已下载的本地文件吗？此操作无法撤销。`)) {
+    return;
+  }
+  try {
+    await download.cancel(props.task.id, true);
+  } catch (e) {
+    toast.push("error", errorText(asCommandError(e).code));
+  }
+}
+async function retry() {
+  try {
+    await download.retry(props.task.id);
+  } catch (e) {
+    toast.push("error", errorText(asCommandError(e).code));
+  }
+}
+/** 复制原始下载链接（对标 Motrix 的"复制下载地址"）——重新添加、换个工具下、
+ *  发给别人都要用到。 */
+async function copyLink() {
+  try {
+    await writeText(props.task.url);
+    toast.push("success", "链接已复制");
+  } catch {
+    toast.push("error", "复制失败");
+  }
+}
+/** 用默认程序直接打开文件本身。 */
+async function openFile() {
   if (props.task.savePath) await openPath(props.task.savePath);
+}
+/** 在文件管理器里定位到这个文件（区别于 openFile：不是打开文件内容，是打开
+ *  它所在的文件夹并选中它）——此前误用 `openPath` 实现"打开所在文件夹"，
+ *  实际效果是直接打开文件本身，标签和行为对不上，这里一并修正。 */
+async function openFolder() {
+  if (props.task.savePath) await revealItemInDir(props.task.savePath);
 }
 </script>
 
@@ -61,6 +97,8 @@ async function openFolder() {
       <span class="actions">
         <button v-if="task.status === 'active'" title="暂停" @click="pause">⏸</button>
         <button v-if="task.status === 'paused'" title="继续" @click="resume">▶</button>
+        <button v-if="task.status === 'error'" title="重试" @click="retry">↻</button>
+        <button title="复制下载链接" @click="copyLink">🔗</button>
         <button
           v-if="task.status !== 'complete' && task.status !== 'removed'"
           class="danger"
@@ -69,6 +107,15 @@ async function openFolder() {
         >
           ✕
         </button>
+        <button
+          v-if="task.status !== 'complete' && task.status !== 'removed'"
+          class="danger"
+          title="取消并删除文件"
+          @click="cancelAndDelete"
+        >
+          🗑
+        </button>
+        <button v-if="task.status === 'complete'" title="打开文件" @click="openFile">📄</button>
         <button v-if="task.status === 'complete'" title="打开所在文件夹" @click="openFolder">
           📂
         </button>
