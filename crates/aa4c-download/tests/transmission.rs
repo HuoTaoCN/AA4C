@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use aa4c_download::{ProcessSpawner, TransmissionClient, TransmissionProcess};
+use aa4c_download::{BtOptions, ProcessSpawner, TransmissionClient, TransmissionProcess};
 use serde_json::json;
 
 fn require_transmission_daemon() -> PathBuf {
@@ -34,7 +34,7 @@ async fn spawn_daemon() -> (TransmissionProcess, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let download_dir = dir.path().join("downloads");
     let proc =
-        TransmissionProcess::spawn(&spawner, dir.path(), &download_dir, None, None, None, None)
+        TransmissionProcess::spawn(&spawner, dir.path(), &download_dir, &BtOptions::default())
             .await
             .expect("transmission-daemon should spawn");
     // 前台模式启动很快，但 RPC 端口真正开始监听还有一个短窗口——同 D1 aria2

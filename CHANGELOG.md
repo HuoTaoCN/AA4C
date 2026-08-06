@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+### Added
+
+- **下载中心对标 FDM / Motrix 的一轮横向打磨**（DOWNLOAD_DESIGN.md 新增 §11 记录对标结论与**明确不做**的项）。对标依据是直接读 Motrix 源码（`configKeys.js` 全量配置键 + `ConfigManager.js` 默认值），引擎侧键名全部在本机真实 `aria2c 1.37.0 --help=#all` 与真实 `transmission-daemon 4.1.3` 自己生成的 `settings.json` 上核实过存在，沿用「不猜键名」的既有纪律：
+  - 引擎设置补 6 项：**上传限速**（aria2 `max-overall-upload-limit` + Transmission `speed-limit-up`）、**自定义 User-Agent**、**HTTP 代理 + 绕过列表**（aria2 `all-proxy`/`no-proxy`）、**BT 追加 tracker 列表**（Transmission 4 的 `default-trackers`）、**启动时自动继续未完成下载**（默认关闭）、**单文件最大连接数**。
+  - **每任务选项**（对标 Motrix 新建任务对话框）：保存位置 / 另存文件名 / Referer / Cookie，前端收在可折叠的「高级选项」里。借这一步正式建起 DOWNLOAD_DESIGN.md §5/§10 预留已久的「引擎无关请求描述中间层」（`DownloadRequest`/`DownloadSource`），也是将来 Lua 插件 `on_before_add` 钩子的挂点。
+  - **`.torrent` 文件输入**（此前一直挂在「仍待实现」）：选本地种子文件 → Transmission `torrent-add` 的 `metainfo`（base64）。
+  - 失败任务**重试**、**取消并删除本地文件**（二次确认）、**打开文件**（区别于打开所在文件夹）、**复制下载链接**。
+  - **剪贴板自动识别下载链接**（只弹提示不自动开始，避免打扰）、**多行批量添加**（自动跳过批内与列表内重复链接）、**状态筛选 tab + 按名称搜索**、顶部总速度/进行中数量统计条。
+- 面向使用者的文档体系（此前文档全部是面向开发者的设计稿，普通用户没有任何入口）：新增 `docs/` 目录，中英双语四份——[用户手册](docs/USER_GUIDE.md)（逐功能讲清传输/同步/分享/下载/归档与 AI/设置，含三色文件状态、信任分级、"规则自动 AI 建议"边界的解释）、[常见问题与故障排查](docs/FAQ.md)（发现不到设备的完整排查链路：同网段→防火墙→组播屏蔽→Android 后台策略）、[自建服务器指南](docs/SELF_HOSTING.md)（`aa4c-server` 的二进制/systemd/Docker 三种部署方式、地址与指纹的含义、跨服务器当前限制）、[《开源 · 开放 · 安全》](docs/OPEN_AND_SECURE.md)（隐私承诺与**可自行验证的核对命令**、GPL 子进程隔离的理由、数据无锁定说明）。英文版在 `docs/en/`，各文档互相有语言切换链接。
+- 英文版 README（[README.en.md](README.en.md)），与中文 README 双向跳转。
+
+### Changed
+
+- 重写 [README.md](README.md)：原文"Project Stage: Early Development / 当前目标：完成 V0.1"与能力表里 V0.5 已实现自相矛盾，已按实际进度（v0.5.0-preview，V0.1–V0.5 全部发布，V0.6 设计定稿待实现）更新；新增「特色功能」章节写清与同类工具的真实差异（元数据优先同步、信任分级、仅自建基础设施、AI 完全本地且不掌握文件操作权、GGUF 头解析、GPL 许可证隔离、自动操作可撤销），新增「开源 · 开放 · 安全」章节与分层文档导航。
+- [ARCHITECTURE.md](ARCHITECTURE.md) crate 表补齐 `aa4c-server` / `aa4c-engine` / `aa4c-ai` 三个漏掉的 crate 并订正各 crate 职责描述；Transfer/Download/AI Service 三节的里程碑状态从"设计中/部分实现"更新为已实现。
+- **HTTP 下载默认开启分段加速**：此前从没往 aria2 conf 里写过 `max-connection-per-server`/`split`，一直跑在 aria2 默认的**单连接**（`-x 1`）上——等于 IDM/FDM 最核心的「多线程加速」完全没生效。现在无条件写入，未设置时兜底 5 连接（不是引擎默认的 1），可在设置里调 1–16，配 `min-split-size=5M` 避免小文件也开多连接。
+- **HTTP 下载默认带浏览器 User-Agent**：aria2 默认发 `aria2/1.37.0`，相当一部分站点见到直接 403 / 跳验证页，用户只会看到一条没头没脑的下载失败。未设置时改用常见浏览器 UA（同 Motrix 的取舍）。以上两条与其余「`None` = 引擎默认」的设置刻意不同，原因写在各自的类型文档里。
+- 数据库迁移 011：`download_tasks` 加 `options` 列（JSON）持久化每任务选项。**必须落库**——HTTP 任务的重试是「删旧记录 + 用原 URL 重新添加」（aria2 无法复活同一个 GID），不存的话重试就丢掉 referer/cookie，而「从挑剔的站点重试失败下载」恰恰最需要它们。
+
+### Fixed
+
+- 下载完成后的「打开所在文件夹」实际调用的是 `openPath(savePath)`，效果是直接打开文件本身，按钮标签与行为对不上。现拆成「打开文件」（`openPath`）与「打开所在文件夹」（`revealItemInDir`）两个按钮，各自对应正确的系统调用。
+
 ## [0.5.0-preview] - 2026-08-03
 
 > **预览版**：V0.5「AI」数字资产管理**五个里程碑（AI1–AI5）全部实现**——规则式自动归档、本地 llama-server AI 引擎、AI 标签/分类建议、本地知识库问答，全程零云端调用；核心原则**规则自动、AI 建议**（AI 输出永远只进"待确认"队列，从不擅自动文件）。工作区版本号 0.4.0→0.5.0。V0.5 不碰设备间线路协议（`PROTO_VERSION` 未变），与 `v0.4.0` 起的构建完全互通，无需强制同步升级。

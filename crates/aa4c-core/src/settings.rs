@@ -15,6 +15,13 @@ pub(crate) const KEY_ENABLE_REMOTE: &str = "enable_remote";
 pub(crate) const KEY_DOWNLOAD_DIR: &str = "download_dir";
 pub(crate) const KEY_DOWNLOAD_SPEED_LIMIT_KBPS: &str = "download_speed_limit_kbps";
 pub(crate) const KEY_DOWNLOAD_CONCURRENCY: &str = "download_concurrency";
+pub(crate) const KEY_DOWNLOAD_MAX_CONNECTIONS_PER_FILE: &str = "download_max_connections_per_file";
+pub(crate) const KEY_DOWNLOAD_UPLOAD_LIMIT_KBPS: &str = "download_upload_limit_kbps";
+pub(crate) const KEY_DOWNLOAD_USER_AGENT: &str = "download_user_agent";
+pub(crate) const KEY_DOWNLOAD_PROXY: &str = "download_proxy";
+pub(crate) const KEY_DOWNLOAD_PROXY_BYPASS: &str = "download_proxy_bypass";
+pub(crate) const KEY_BT_TRACKERS: &str = "bt_trackers";
+pub(crate) const KEY_DOWNLOAD_RESUME_ON_START: &str = "download_resume_on_start";
 pub(crate) const KEY_BT_RATIO_LIMIT: &str = "bt_ratio_limit";
 pub(crate) const KEY_BT_IDLE_SEEDING_LIMIT_MINUTES: &str = "bt_idle_seeding_limit_minutes";
 pub(crate) const KEY_ARCHIVE_ROOT: &str = "archive_root";
@@ -121,6 +128,16 @@ pub(crate) async fn load(
             .unwrap_or_else(|| default_download_dir().to_string_lossy().into_owned()),
         download_speed_limit_kbps: get_json(store, KEY_DOWNLOAD_SPEED_LIMIT_KBPS).await?,
         download_concurrency: get_json(store, KEY_DOWNLOAD_CONCURRENCY).await?,
+        download_max_connections_per_file: get_json(store, KEY_DOWNLOAD_MAX_CONNECTIONS_PER_FILE)
+            .await?,
+        download_upload_limit_kbps: get_json(store, KEY_DOWNLOAD_UPLOAD_LIMIT_KBPS).await?,
+        download_user_agent: get_json(store, KEY_DOWNLOAD_USER_AGENT).await?,
+        download_proxy: get_json(store, KEY_DOWNLOAD_PROXY).await?,
+        download_proxy_bypass: get_json(store, KEY_DOWNLOAD_PROXY_BYPASS).await?,
+        bt_trackers: get_json(store, KEY_BT_TRACKERS).await?,
+        download_resume_on_start: get_json(store, KEY_DOWNLOAD_RESUME_ON_START)
+            .await?
+            .unwrap_or(false),
         bt_ratio_limit: get_json(store, KEY_BT_RATIO_LIMIT).await?,
         bt_idle_seeding_limit_minutes: get_json(store, KEY_BT_IDLE_SEEDING_LIMIT_MINUTES).await?,
         ai_models_dir: get_json(store, KEY_AI_MODELS_DIR)
@@ -158,6 +175,28 @@ pub(crate) async fn save(store: &Store, s: &Settings) -> Result<()> {
     )
     .await?;
     set_json(store, KEY_DOWNLOAD_CONCURRENCY, &s.download_concurrency).await?;
+    set_json(
+        store,
+        KEY_DOWNLOAD_MAX_CONNECTIONS_PER_FILE,
+        &s.download_max_connections_per_file,
+    )
+    .await?;
+    set_json(
+        store,
+        KEY_DOWNLOAD_UPLOAD_LIMIT_KBPS,
+        &s.download_upload_limit_kbps,
+    )
+    .await?;
+    set_json(store, KEY_DOWNLOAD_USER_AGENT, &s.download_user_agent).await?;
+    set_json(store, KEY_DOWNLOAD_PROXY, &s.download_proxy).await?;
+    set_json(store, KEY_DOWNLOAD_PROXY_BYPASS, &s.download_proxy_bypass).await?;
+    set_json(store, KEY_BT_TRACKERS, &s.bt_trackers).await?;
+    set_json(
+        store,
+        KEY_DOWNLOAD_RESUME_ON_START,
+        &s.download_resume_on_start,
+    )
+    .await?;
     set_json(store, KEY_BT_RATIO_LIMIT, &s.bt_ratio_limit).await?;
     set_json(
         store,

@@ -9,6 +9,7 @@ import type {
   ArchiveRule,
   CommandError,
   DeviceInfo,
+  DownloadOptions,
   DownloadTask,
   KbSource,
   KbSourceSummary,
@@ -70,13 +71,18 @@ export const api = {
     invoke<ShareAccess[]>("list_share_access", { shareId }),
   openShare: (link: string) => invoke<string>("open_share", { link }),
 
-  addDownload: (url: string) => invoke<string>("add_download", { url }),
+  addDownload: (url: string, options?: DownloadOptions) =>
+    invoke<string>("add_download", { url, options: options ?? null }),
+  addTorrentFile: (path: string, options?: DownloadOptions) =>
+    invoke<string>("add_torrent_file", { path, options: options ?? null }),
   pauseDownload: (taskId: string) =>
     invoke<void>("pause_download", { taskId }),
   resumeDownload: (taskId: string) =>
     invoke<void>("resume_download", { taskId }),
-  cancelDownload: (taskId: string) =>
-    invoke<void>("cancel_download", { taskId }),
+  cancelDownload: (taskId: string, deleteLocal = false) =>
+    invoke<void>("cancel_download", { taskId, deleteLocal }),
+  retryDownload: (taskId: string) =>
+    invoke<string>("retry_download", { taskId }),
   listDownloads: () => invoke<DownloadTask[]>("list_downloads"),
   pauseAllDownloads: () => invoke<number>("pause_all_downloads"),
   resumeAllDownloads: () => invoke<number>("resume_all_downloads"),

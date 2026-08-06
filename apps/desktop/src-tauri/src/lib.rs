@@ -75,6 +75,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             // 数据目录由 Tauri 注入（桌面为应用数据目录，Android 为应用私有目录）。
             // 联调钩子：AA4C_DATA_DIR 覆盖数据目录（含接收目录），使同一台机器能跑
@@ -145,9 +146,11 @@ pub fn run() {
             commands::list_share_access,
             commands::open_share,
             commands::add_download,
+            commands::add_torrent_file,
             commands::pause_download,
             commands::resume_download,
             commands::cancel_download,
+            commands::retry_download,
             commands::list_downloads,
             commands::pause_all_downloads,
             commands::resume_all_downloads,

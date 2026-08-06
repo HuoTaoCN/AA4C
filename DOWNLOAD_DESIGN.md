@@ -311,6 +311,48 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
   3. 事件总线既有，`on_task_complete`/`on_periodic` 挂点天然存在，无需预留动作。
 - **里程碑归属**：V0.4 之外的独立里程碑（暂记 D4），动手前出独立设计文档，安全模型单独评审——插件是用户侧代码执行，风险量级不同于"下载不受信内容"。
 
+## 11. D4 打磨：对标 Motrix 的功能/设置补齐（V0.5 之后的横向打磨）
+
+不是新里程碑，是一轮**横向对标打磨**：把 Motrix（同为 aria2 图形壳，功能面最接近）的配置项与新建任务对话框逐项拿来比对，补上真正缺的那些。对标依据是**直接读 Motrix 源码**（`src/shared/configKeys.js` 的 `systemKeys`/`userKeys` 全量清单、`src/main/core/ConfigManager.js` 的默认值），不是二手文章；所有引擎侧键名都在本机真实 `aria2c 1.37.0 --help=#all` 与真实 `transmission-daemon 4.1.3` 自己生成的 `settings.json` 上核实过存在，沿用 §9 "不猜键名"的既有纪律。
+
+### 11.1 补上的功能
+
+| 项 | 落点 | 说明 |
+|---|---|---|
+| **分段下载加速** | aria2 `max-connection-per-server`/`split`/`min-split-size` | **最要紧的一条**：此前从没写过这几个键，一直跑在 aria2 默认的**单连接**（`-x 1`）上，等于 IDM/FDM 最核心的"多线程加速"完全没开。现在无条件写入，未设置时兜底 5（不是引擎默认 1），可设 1–16 |
+| **自定义 User-Agent** | aria2 `user-agent` | 同样是"`None` 不等于引擎默认"：aria2 默认 UA 会被相当一部分站点直接 403，兜底改成常见浏览器 UA（Motrix 也是这么做的） |
+| 上传限速 | aria2 `max-overall-upload-limit` + Transmission `speed-limit-up(-enabled)` | 此前只有下载限速 |
+| 代理 | aria2 `all-proxy` + `no-proxy` | BT 侧不透传——Transmission 4 的 `proxy_url` 只作用于 tracker 通信，与"下载走代理"不是一回事，不混为一谈 |
+| BT 追加 tracker | Transmission `default-trackers` | 磁力链接连不上人时的主要补救手段。**只做手动填，不做 Motrix 那种从 GitHub 定时自动同步**——自动同步等于应用自己定期往第三方地址发请求，与 AA4C"不配置就完全不出网"的默认姿态冲突 |
+| 启动自动续传 | Core 启动首轮对账后 `resume_all()` | 默认**关闭**（同 Motrix `resume-all-when-app-launched`）：用户可能是故意暂停的 |
+| **每任务选项** | `DownloadRequest`（§11.2） | 保存位置 / 另存文件名 / Referer / Cookie，对标 Motrix 新建任务对话框 |
+| **`.torrent` 文件输入** | `DownloadSource::TorrentFile` → Transmission `torrent-add` 的 `metainfo`（base64） | 本节之前一直挂在"仍待实现"里 |
+| 失败重试 / 取消并删文件 / 打开文件 / 复制链接 / 剪贴板识别 / 批量添加 / 状态筛选搜索 | 前端 | 同批打磨，见 CHANGELOG |
+
+### 11.2 `DownloadRequest`——§5/§10 预留接缝的兑现
+
+§5 写过"任务添加路径改走一个**引擎无关的请求描述**中间结构而非一根字符串直通引擎"，§10.2 又把它列为 Lua 插件 `on_before_add` 钩子的天然挂点。这轮打磨把每任务选项落进来时正式建了这层：
+
+```rust
+enum DownloadSource { Uri(String), TorrentFile(PathBuf) }
+struct DownloadRequest { source: DownloadSource, options: DownloadOptions }
+struct DownloadOptions { save_dir, out, referer, cookie }   // 全 Option
+```
+
+- aria2 侧翻译成 `addUri` 的第二个参数（options dict）：`dir`/`out`/`referer`/`header: ["Cookie: …"]`；
+- BT 侧**只透传 `save_dir`**——`out` 对种子不成立（一个种子可含多个文件，名字由种子决定），`referer`/`cookie` 是 HTTP 概念，BT peer 协议里没有对应物；
+- `.torrent` 传**文件路径**而不是字节：Tauri IPC 传大块二进制不划算，前端选完文件把路径交过来、Rust 侧读盘 + base64。
+
+**这些选项要落库**（迁移 011 给 `download_tasks` 加了一个 JSON 的 `options` 列）：HTTP 任务的 `retry()` 是"删旧记录 + 用原 URL 重新添加"（aria2 没有复活同一个 GID 的能力），不存的话重试就丢掉 referer/cookie——而"从挑剔的站点重试一个失败下载"恰恰是最需要这些选项的场景，丢了等于重试必然再失败一次。存成一个 JSON 列而不是拆四列：这些字段只被整体读写、从不参与查询条件，且 §10 的插件将来可能再加字段，没有拆列的收益（这与 §4 "`category` 列现在不加"的克制不冲突——那是**推测性**字段，这是已经在用的字段）。
+
+### 11.3 对标后**明确不做**的项（Motrix 有，我们不跟）
+
+- **tracker 列表自动同步**：理由见上表，改为手动填。
+- **BT 内选择性下载文件 / 队列优先级上下移动 / 任务详情面板（逐文件进度）**：都是"任务详情"这一整块的功能，值得单独做而不是塞进这轮打磨；现阶段任务列表的信息密度还够用。
+- **开机自启 / 托盘速度计 / 主题手动切换 / 多语言**：属于应用外壳偏好，不是下载能力，且与 AA4C 现有的"跟随系统"取舍冲突，单独评估。
+- **UPnP/NAT-PMP 端口映射开关**：Transmission 侧我们已经默认开着 `port-forwarding-enabled`，再暴露一个开关只会增加用户的选择负担。
+- **`disk-cache`/`file-allocation` 等引擎调优项**：面向极端场景，默认值在个人使用量级下没有可感差异，不进设置页（真需要时也是改默认值而不是给开关）。
+
 ## 仍待实现 / 后续
 
-下载失败的自动重试策略（子进程崩溃后的自动重启策略已在打磨阶段补上，见 §3.5）；`.torrent` 文件输入（D2 只接 magnet，文件输入留给插件阶段）；引擎版本升级的操作流程文档化（engines release 的产出步骤，做进 CONTRIBUTING 或脚本注释）；Lua 插件系统的独立设计文档 + 安全评审（§10，D4）；Android 平台的下载能力方案（很可能是完全不同的技术路径，比如系统 DownloadManager，而不是 bundled 二进制，需要单独评估）；S3 协议支持（PROJECT_VISION.md 提到但未细化，大概率需要凭证管理，单独评估，不在 D1–D3 范围内）。
+下载失败的**自动**重试策略（手动重试按钮已在 §11 补上；子进程崩溃后的自动重启策略见 §3.5）；BT 内选择性下载文件 / 队列优先级 / 任务详情面板（§11.3 明确留给后续）；引擎版本升级的操作流程文档化（engines release 的产出步骤，做进 CONTRIBUTING 或脚本注释）；Lua 插件系统的独立设计文档 + 安全评审（§10，D4——`DownloadRequest` 接缝已在 §11.2 就位）；Android 平台的下载能力方案（很可能是完全不同的技术路径，比如系统 DownloadManager，而不是 bundled 二进制，需要单独评估）；S3 协议支持（PROJECT_VISION.md 提到但未细化，大概率需要凭证管理，单独评估，不在 D1–D3 范围内）。

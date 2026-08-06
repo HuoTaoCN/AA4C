@@ -65,7 +65,7 @@ async fn migration_is_idempotent_across_reopens() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 10); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares + 008_downloads + 009_archive + 010_knowledge
+    assert_eq!(version, 11); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares + 008_downloads + 009_archive + 010_knowledge + 011_download_options
 }
 
 #[tokio::test]
@@ -471,6 +471,51 @@ async fn share_crud_roundtrip() {
     assert!(store.revoke_share("nope").await.is_err());
 }
 
+/// 每任务选项（迁移 011）落库后能原样读回，且经 `list_downloads` 也带得出来——
+/// `retry()` 就是靠这条路径拿回 referer/cookie 的，丢了等于重试必然再失败一次。
+#[tokio::test]
+async fn download_options_roundtrip_and_survive_list() {
+    use aa4c_types::{DownloadKind, DownloadOptions};
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    let opts = DownloadOptions {
+        save_dir: Some("/tmp/custom".into()),
+        out: Some("renamed.zip".into()),
+        referer: Some("https://example.com/page".into()),
+        cookie: Some("session=abc".into()),
+    };
+    store
+        .insert_download(
+            "gid1",
+            DownloadKind::Http,
+            "https://example.com/a.zip",
+            Some(&opts),
+        )
+        .await
+        .unwrap();
+
+    let fetched = store.get_download("gid1").await.unwrap().unwrap();
+    assert_eq!(fetched.options.as_ref(), Some(&opts));
+
+    let listed = store.list_downloads().await.unwrap();
+    assert_eq!(listed[0].options.as_ref(), Some(&opts));
+
+    // 全空的选项等同"没有选项"，不该在库里留一行 `{}`
+    store
+        .insert_download(
+            "gid2",
+            DownloadKind::Http,
+            "https://example.com/b.zip",
+            Some(&DownloadOptions::default()),
+        )
+        .await
+        .unwrap();
+    let empty = store.get_download("gid2").await.unwrap().unwrap();
+    assert_eq!(empty.options, None);
+}
+
 #[tokio::test]
 async fn download_crud_roundtrip() {
     use aa4c_types::{DownloadKind, DownloadStatus};
@@ -479,12 +524,19 @@ async fn download_crud_roundtrip() {
     let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
 
     let task = store
-        .insert_download("gid1", DownloadKind::Http, "https://example.com/a.zip")
+        .insert_download(
+            "gid1",
+            DownloadKind::Http,
+            "https://example.com/a.zip",
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(task.id, "gid1");
     assert_eq!(task.status, DownloadStatus::Waiting);
     assert_eq!(task.save_path, None);
+    // 没传选项 → options 列为 NULL，不留一行空 `{}`
+    assert_eq!(task.options, None);
 
     let listed = store.list_downloads().await.unwrap();
     assert_eq!(listed.len(), 1);
@@ -542,15 +594,30 @@ async fn delete_completed_downloads_removes_rows() {
     let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
 
     store
-        .insert_download("gid1", DownloadKind::Http, "https://example.com/a.zip")
+        .insert_download(
+            "gid1",
+            DownloadKind::Http,
+            "https://example.com/a.zip",
+            None,
+        )
         .await
         .unwrap();
     store
-        .insert_download("gid2", DownloadKind::Http, "https://example.com/b.zip")
+        .insert_download(
+            "gid2",
+            DownloadKind::Http,
+            "https://example.com/b.zip",
+            None,
+        )
         .await
         .unwrap();
     store
-        .insert_download("gid3", DownloadKind::Http, "https://example.com/c.zip")
+        .insert_download(
+            "gid3",
+            DownloadKind::Http,
+            "https://example.com/c.zip",
+            None,
+        )
         .await
         .unwrap();
 
@@ -580,7 +647,12 @@ async fn update_download_save_path_rewrites_path() {
     let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
 
     store
-        .insert_download("gid1", DownloadKind::Http, "https://example.com/a.zip")
+        .insert_download(
+            "gid1",
+            DownloadKind::Http,
+            "https://example.com/a.zip",
+            None,
+        )
         .await
         .unwrap();
     store

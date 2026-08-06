@@ -34,6 +34,13 @@ const form = reactive<Settings>({
   downloadDir: "",
   downloadSpeedLimitKbps: null,
   downloadConcurrency: null,
+  downloadMaxConnectionsPerFile: null,
+  downloadUploadLimitKbps: null,
+  downloadUserAgent: null,
+  downloadProxy: null,
+  downloadProxyBypass: null,
+  btTrackers: null,
+  downloadResumeOnStart: false,
   btRatioLimit: null,
   btIdleSeedingLimitMinutes: null,
   archiveRoot: "",
@@ -60,6 +67,8 @@ watchEffect(() => {
 type NullableNumberKey =
   | "downloadSpeedLimitKbps"
   | "downloadConcurrency"
+  | "downloadMaxConnectionsPerFile"
+  | "downloadUploadLimitKbps"
   | "btRatioLimit"
   | "btIdleSeedingLimitMinutes";
 function numberInput(key: NullableNumberKey) {
@@ -73,8 +82,29 @@ function numberInput(key: NullableNumberKey) {
 }
 const speedLimitInput = numberInput("downloadSpeedLimitKbps");
 const concurrencyInput = numberInput("downloadConcurrency");
+const maxConnectionsInput = numberInput("downloadMaxConnectionsPerFile");
+const uploadLimitInput = numberInput("downloadUploadLimitKbps");
 const ratioLimitInput = numberInput("btRatioLimit");
 const idleSeedingLimitInput = numberInput("btIdleSeedingLimitMinutes");
+
+// 同 serverUrlInput 的既有做法：留空 ⇄ null，避免保存一个全是空格的"已配置"假象。
+type NullableStringKey =
+  | "downloadUserAgent"
+  | "downloadProxy"
+  | "downloadProxyBypass"
+  | "btTrackers";
+function stringInput(key: NullableStringKey) {
+  return computed({
+    get: () => form[key] ?? "",
+    set: (v: string) => {
+      form[key] = v.trim() === "" ? null : v;
+    },
+  });
+}
+const userAgentInput = stringInput("downloadUserAgent");
+const proxyInput = stringInput("downloadProxy");
+const proxyBypassInput = stringInput("downloadProxyBypass");
+const btTrackersInput = stringInput("btTrackers");
 
 // 下载目录同步范围重叠警示（D3，DOWNLOAD_DESIGN.md §5）：纯前端路径前缀比对，
 // 不阻断保存，只是提醒——`list_sync_scopes` 是既有命令（C6 起就有）。
@@ -258,6 +288,64 @@ async function unpair(id: string) {
         </div>
 
         <div class="field">
+          <label>单文件最大连接数</label>
+          <input
+            v-model="maxConnectionsInput"
+            type="number"
+            min="1"
+            max="16"
+            placeholder="默认 5"
+          />
+          <p class="hint muted">
+            分段下载加速：一个文件同时开多少个连接下载，数值越大单文件下载越快，
+            但对服务器压力也越大（部分服务器会限制单个客户端的连接数）。
+          </p>
+        </div>
+
+        <div class="field">
+          <label>上传限速（KB/s）</label>
+          <input v-model="uploadLimitInput" type="number" min="0" placeholder="不限" />
+          <p class="hint muted">
+            主要影响 BT 做种的上传占用；上传占满会连带拖慢自己的下载和其他上网。
+          </p>
+        </div>
+
+        <div class="field row">
+          <label>启动时自动继续未完成的下载</label>
+          <label class="switch">
+            <input type="checkbox" v-model="form.downloadResumeOnStart" />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <p class="hint muted">
+          关闭时，上次没下完的任务在启动后保持暂停，你自己点「全部继续」再开始。
+        </p>
+
+        <div class="field">
+          <label>浏览器标识（User-Agent）</label>
+          <input v-model="userAgentInput" type="text" placeholder="留空使用内置浏览器标识" />
+          <p class="hint muted">
+            有些网站会拒绝非浏览器的下载请求。留空时会用一个常见浏览器的标识，
+            通常不需要改；个别站点认特定标识时才需要自己填。
+          </p>
+        </div>
+
+        <div class="field">
+          <label>代理服务器</label>
+          <input v-model="proxyInput" type="text" placeholder="留空不使用代理，如 http://127.0.0.1:7890" />
+        </div>
+
+        <div class="field">
+          <label>不走代理的地址</label>
+          <input
+            v-model="proxyBypassInput"
+            type="text"
+            placeholder="逗号分隔，如 localhost,192.168.0.0/16"
+          />
+          <p class="hint muted">只在填了代理服务器时才有意义；BT 传输不受代理设置影响。</p>
+        </div>
+
+        <div class="field">
           <label>BT 分享率上限</label>
           <input v-model="ratioLimitInput" type="number" min="0" step="0.1" placeholder="不限" />
         </div>
@@ -267,6 +355,19 @@ async function unpair(id: string) {
           <input v-model="idleSeedingLimitInput" type="number" min="1" placeholder="不限" />
           <p class="hint muted">
             指没有上传活动多久后自动停止做种，不是"下载完成后固定做种这么久"。
+          </p>
+        </div>
+
+        <div class="field">
+          <label>BT 追加 tracker 列表</label>
+          <textarea
+            v-model="btTrackersInput"
+            rows="4"
+            placeholder="一行一个，留空不追加"
+          ></textarea>
+          <p class="hint muted">
+            磁力链接连不上人时，补一批公共 tracker 通常能明显改善。可以从
+            ngosang/trackerslist 这类公开列表复制粘贴进来。
           </p>
         </div>
 
@@ -407,13 +508,19 @@ label {
   font-weight: 600;
 }
 input[type="text"],
-input[type="number"] {
+input[type="number"],
+textarea {
   padding: 9px 12px;
   border: 1px solid var(--aa-border);
   border-radius: var(--aa-radius-sm);
   background: var(--aa-bg);
   color: var(--aa-text);
   font-size: 0.9rem;
+  font-family: inherit;
+}
+textarea {
+  resize: vertical;
+  line-height: 1.5;
 }
 .dir {
   display: flex;

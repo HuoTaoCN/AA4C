@@ -8,6 +8,8 @@
     "opener:default",
     "dialog:default",
     "notification:default",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
     {
       "identifier": "shell:allow-execute",
       "allow": [

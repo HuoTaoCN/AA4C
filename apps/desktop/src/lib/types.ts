@@ -72,6 +72,22 @@ export interface Settings {
   downloadSpeedLimitKbps: number | null;
   /** 并发下载数，null = 引擎默认。重启引擎生效（里程碑 D3）。 */
   downloadConcurrency: number | null;
+  /** 单文件最大连接数（分段下载加速，对标 FDM/IDM 的多线程下载），null = 用一个
+   * 比 aria2 默认值（1，等同不加速）更合理的兜底值（5）。1-16，重启引擎生效。 */
+  downloadMaxConnectionsPerFile: number | null;
+  /** 上传限速（KB/s），null = 不限。两个引擎都透传，重启生效。 */
+  downloadUploadLimitKbps: number | null;
+  /** HTTP 下载 User-Agent，null = 用内置浏览器 UA（不是引擎默认值——aria2 自己的
+   * 默认 UA 会被不少站点直接拒）。重启生效。 */
+  downloadUserAgent: string | null;
+  /** 下载代理（`http://host:port`），null = 不走代理。BT 不透传。重启生效。 */
+  downloadProxy: string | null;
+  /** 不走代理的地址列表（逗号分隔），null = 全走代理。重启生效。 */
+  downloadProxyBypass: string | null;
+  /** BT 追加 tracker 列表（一行一个），null = 不追加。重启生效。 */
+  btTrackers: string | null;
+  /** 启动时自动继续上次未完成的下载，默认 false。 */
+  downloadResumeOnStart: boolean;
   /** BT 分享率上限，null = 不限（里程碑 D3）。 */
   btRatioLimit: number | null;
   /** BT 空闲做种超时（分钟），null = 不限——多久没有上传活动就停止做种，
@@ -180,6 +196,20 @@ export type DownloadStatus =
   | "removed";
 
 /** 一条下载任务（里程碑 D1，DOWNLOAD_DESIGN.md §4）。 */
+/** 一条下载任务的自定义选项（对标 Motrix 新建任务对话框的「高级选项」）。
+ *  BT 任务只有 saveDir 有意义——种子的文件名由种子自己决定，referer/cookie
+ *  是 HTTP 概念。 */
+export interface DownloadOptions {
+  /** 这条任务单独的保存目录，不填 = 用全局下载目录。 */
+  saveDir?: string;
+  /** 自定义保存文件名，不填 = 用服务器给的名字。 */
+  out?: string;
+  /** 来源页地址——防盗链站点会校验它。 */
+  referer?: string;
+  /** Cookie，用于需要登录态才能下的直链。 */
+  cookie?: string;
+}
+
 export interface DownloadTask {
   id: string;
   kind: DownloadKind;
@@ -191,6 +221,8 @@ export interface DownloadTask {
   error: string | null;
   /** unix 毫秒。 */
   createdAt: number;
+  /** 自定义选项；没有时该字段直接不出现。 */
+  options?: DownloadOptions;
 }
 
 /** 内置类别（不可增删，标签才是用户的自由维度，见 ARCHIVE_DESIGN.md §2.1）。 */

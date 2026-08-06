@@ -80,6 +80,37 @@ impl std::str::FromStr for DownloadStatus {
     }
 }
 
+/// 一条下载任务的自定义选项（对标 Motrix 新建任务对话框的"高级选项"，
+/// DOWNLOAD_DESIGN.md §5/§10 预留的"引擎无关请求描述"）。全部字段可选，
+/// 全为 `None` 时整体不落库（`download_tasks.options` 为 NULL）。
+///
+/// 落库是为了让 `retry()` 不丢这些选项——HTTP 任务的重试是"删旧记录 + 用原 URL
+/// 重新添加"，不存的话 referer/cookie 全丢，而这恰恰是重试最需要的东西
+/// （见迁移 011 的注释）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadOptions {
+    /// 这条任务单独的保存目录，`None` = 用全局下载目录。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub save_dir: Option<String>,
+    /// 自定义保存文件名，`None` = 用服务器/种子给的名字。BT 任务不适用。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub out: Option<String>,
+    /// 来源页地址——防盗链站点会校验它，不带就 403。BT 任务不适用。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub referer: Option<String>,
+    /// Cookie，用于需要登录态才能下的直链。BT 任务不适用。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cookie: Option<String>,
+}
+
+impl DownloadOptions {
+    /// 一个字段都没填 —— 调用方据此决定不落库（绝大多数任务都是这种）。
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadTask {
@@ -93,6 +124,9 @@ pub struct DownloadTask {
     pub error: Option<String>,
     /// unix 毫秒。
     pub created_at: i64,
+    /// 这条任务的自定义选项（迁移 011）；`None` = 没有任何自定义选项。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub options: Option<DownloadOptions>,
 }
 
 #[cfg(test)]
@@ -111,6 +145,7 @@ mod tests {
             downloaded_bytes: 200,
             error: None,
             created_at: 0,
+            options: None,
         };
         let json = serde_json::to_value(&task).unwrap();
         assert_eq!(json["savePath"], serde_json::Value::Null);
@@ -118,6 +153,29 @@ mod tests {
         assert_eq!(json["downloadedBytes"], 200);
         assert_eq!(json["status"], "active");
         assert_eq!(json["kind"], "http");
+        // 没有自定义选项时这个 key 直接不出现（`skip_serializing_if`），不是
+        // 出现成 null——同 `DownloadProgress` 里 BT 专属字段的既有取舍。
+        assert!(json.get("options").is_none());
+    }
+
+    #[test]
+    fn download_options_json_is_camel_case_and_omits_empty_fields() {
+        let opts = DownloadOptions {
+            save_dir: Some("/tmp/x".into()),
+            referer: Some("https://example.com/page".into()),
+            ..DownloadOptions::default()
+        };
+        assert!(!opts.is_empty());
+        assert!(DownloadOptions::default().is_empty());
+
+        let json = serde_json::to_value(&opts).unwrap();
+        assert_eq!(json["saveDir"], "/tmp/x");
+        assert_eq!(json["referer"], "https://example.com/page");
+        assert!(json.get("out").is_none());
+        assert!(json.get("cookie").is_none());
+
+        let back: DownloadOptions = serde_json::from_value(json).unwrap();
+        assert_eq!(back, opts);
     }
 
     #[test]

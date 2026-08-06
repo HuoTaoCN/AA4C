@@ -74,18 +74,18 @@ AA连接（AA4C）是一个**跨平台设备连接平台**——架构遵循"设
 负责文件传输、文件夹传输、远程传输。
 
 - V0.1：局域网 TCP（TLS 1.3 加密）
-- V0.3+：QUIC、NAT 穿透、Relay
-- 分块传输 + BLAKE3 哈希校验 + 断点续传
+- V0.3（已实现）：QUIC 会话层、NAT 打洞、自建 Relay 兜底
+- 分块传输 + BLAKE3 哈希校验 + 断点续传（proto ≥ 3）
 
 ### Sync Service（V0.2+）
 
 负责持续同步、增量同步、版本管理、冲突处理。设计参考 Syncthing 的块交换模型。
 
-### Download Service（V0.4，里程碑 D1 已实现，见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)）
+### Download Service（V0.4，里程碑 D1–D3 已实现，见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)）
 
 负责 HTTP / HTTPS / FTP（D1，Aria2 RPC）与 BT / Magnet（D2，Transmission RPC——v3 从 qBittorrent 换过来，理由见 DOWNLOAD_DESIGN.md §3.6.1）下载；S3 后续评估。两个引擎都作为 AA4C 自动打包/管理的独立子进程运行（GPL 许可证隔离，只通过 RPC/API 调用，不链接源码），与 Core 之间用 `SidecarSpawner` trait 解耦，Core 本身不直接依赖 Tauri 专属的进程拉起 API。站点化长尾需求（私有 Tracker/PT、搜索、自动分类）预留 Lua 插件系统（DOWNLOAD_DESIGN.md §10，V0.4 之后的独立里程碑）。
 
-### AI Service（V0.5，设计定稿见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)）
+### AI Service（V0.5，里程碑 AI1–AI5 已实现，设计见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)）
 
 负责文件分类、自动标签、知识库管理、向量索引。基于 llama.cpp（`llama-server` sidecar，MIT，官方预编译产物，OpenAI 兼容 HTTP）运行本地 GGUF 模型，完全本地、零云端调用；懒启动 + 空闲自停。规则式归档引擎住 `aa4c-core::archive`（同 sync 先例），AI 引擎住独立 crate `aa4c-ai`（镜像 `aa4c-download` 形态）；sidecar 公共设施（spawner/孤儿防护）抽到 `aa4c-engine` 供 download/ai 共用。核心原则：**规则自动、AI 建议**——AI 输出永不直接驱动文件操作。未来支持 Agent。
 
@@ -132,15 +132,20 @@ Plugin（基础生命周期）
 
 | Crate | 对应模块 | 说明 |
 |-------|----------|------|
-| `aa4c-types` | 公共类型 | DeviceInfo、TransferTask、错误类型、事件 |
-| `aa4c-proto` | 线路协议 | Message 定义、帧编解码（配对与传输共用） |
-| `aa4c-core` | Core | 生命周期、事件总线、配置、服务编排 |
-| `aa4c-identity` | Security | 设备密钥、证书、配对协议 |
-| `aa4c-discovery` | Device Service | mDNS 发现 |
-| `aa4c-transfer` | Transfer Service | 传输协议与引擎 |
-| `aa4c-store` | Storage Service | SQLite 持久化 |
-| `aa4c-download` | Download Service | aria2 引擎子进程生命周期 + JSON-RPC 客户端（V0.4 里程碑 D1） |
+| `aa4c-types` | 公共类型 | DeviceInfo、TransferTask、Settings、错误类型、事件 |
+| `aa4c-proto` | 线路协议 | Message 定义、帧编解码（配对 / 传输 / 同步 / 服务器信令共用） |
+| `aa4c-core` | Core | 生命周期、事件总线、配置、服务编排；`archive/` 规则式归档引擎、`sync_*` 同步索引与交换、`server_link` 远程连接 |
+| `aa4c-identity` | Security | 设备密钥、TLS 证书与固定、配对协议、PIN 推导 |
+| `aa4c-discovery` | Device Service | mDNS 发现与 TXT 解析 |
+| `aa4c-transfer` | Transfer Service | 传输协议与引擎、QUIC 会话、断点续传、路径净化 |
+| `aa4c-store` | Storage Service | SQLite 迁移与持久化 |
+| `aa4c-server` | 信令 + 中继 | 自建 `aa4c-server`（库 + 二进制），设备注册 / 查询 / 中继（V0.3 里程碑 C2/C3） |
+| `aa4c-engine` | Sidecar 公共设施 | 子进程 spawner 抽象与孤儿进程防护，供 download / ai 共用 |
+| `aa4c-download` | Download Service | aria2（HTTP/FTP）与 Transmission（BT/磁力）子进程生命周期 + RPC 客户端（V0.4） |
+| `aa4c-ai` | AI Service | `llama-server` 子进程、OpenAI 兼容客户端、标签建议、知识库（V0.5） |
 | `apps/desktop` | Desktop + Android UI | Tauri 2 + Vue3（Android 工程由 Tauri 生成于 `src-tauri/gen/android`） |
+
+依赖方向严格单向（`types` → `proto` / `identity` / `store` → 各 Service → `core` → `apps`），Core 只做编排、不写业务。
 
 详细接口定义见 [API_DESIGN.md](API_DESIGN.md)。
 

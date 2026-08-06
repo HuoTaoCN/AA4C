@@ -339,7 +339,8 @@ CREATE TABLE download_tasks (
     downloaded_bytes  INTEGER NOT NULL DEFAULT 0,
     error             TEXT,                       -- 失败原因（人类可读）
     created_at        INTEGER NOT NULL,
-    updated_at        INTEGER NOT NULL
+    updated_at        INTEGER NOT NULL,
+    options           TEXT                        -- 迁移 011：每任务选项（JSON），NULL=无
 );
 
 CREATE INDEX idx_download_tasks_status ON download_tasks(status);
@@ -350,6 +351,13 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
   "peer 必然是已配对设备"这个假设的产物，V0.4 的任务完全不适用这个假设，见 §4c.1 记录的
   C6 教训——不共用这张表就不会重蹈覆辙）。
 - 速度/ETA 不落库，只在事件里带、前端本地维护（同 `transfer_tasks` 的既有先例）。
+- **`options`（迁移 011，对标 Motrix 的打磨轮次加的，见 DOWNLOAD_DESIGN.md §11.2）**：一条任务
+  的自定义选项（保存目录 / 另存文件名 / Referer / Cookie），JSON 编码，全空时写 NULL 而不是
+  `{}`——绝大多数任务没有自定义选项。**必须落库的原因**：HTTP 任务的"重试"实现是"删旧记录 +
+  用原 URL 重新添加"（aria2 没有复活同一个 GID 的能力），不存这些选项的话重试就丢掉
+  referer/cookie，而"从挑剔的站点重试一个失败下载"恰恰最需要它们。存一个 JSON 列而不是拆四列：
+  只被整体读写、从不参与查询条件，且插件系统（DOWNLOAD_DESIGN.md §10）将来可能再加字段。
+  这与上面"`category` 列现在不加"的克制不冲突——那是**推测性**字段，这是已经在用的字段。
 
 ## 4g. V0.5 表结构（归档，里程碑 AI1，设计定稿未实现）
 
