@@ -26,6 +26,9 @@ identity/
 # IDE / 编辑器
 .idea/
 .vscode/
+# Claude Code 的本地工具配置（如 launch.json 里的开发服务器定义）——同 .vscode/
+# 一样属于个人工具偏好，不是项目内容
+.claude/
 *.swp
 
 # 操作系统
