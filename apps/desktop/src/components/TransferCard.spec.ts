@@ -6,7 +6,12 @@ import { useDeviceStore } from "../stores/devices";
 import { useTransferStore, type ActiveTask } from "../stores/transfer";
 
 vi.mock("../lib/api", () => ({
-  api: { cancelTransfer: vi.fn().mockResolvedValue(undefined) },
+  api: {
+    cancelTransfer: vi.fn().mockResolvedValue(undefined),
+    pauseTransfer: vi.fn().mockResolvedValue(undefined),
+    resumeTransfer: vi.fn().mockResolvedValue(undefined),
+    listTransfers: vi.fn().mockResolvedValue([]),
+  },
   asCommandError: (e: unknown) => ({ code: "unknown", message: String(e) }),
 }));
 
@@ -75,7 +80,45 @@ describe("TransferCard", () => {
     const wrapper = mount(TransferCard, { props: { task: task() } });
     const transfer = useTransferStore();
     const spy = vi.spyOn(transfer, "cancel");
-    await wrapper.find(".cancel").trigger("click");
+    await wrapper.find('button[title="取消"]').trigger("click");
     expect(spy).toHaveBeenCalledWith("t1");
+  });
+
+  it("发送中显示暂停按钮，点击调用 transfer.pause", async () => {
+    const wrapper = mount(TransferCard, {
+      props: { task: task({ direction: "send", status: "transferring" }) },
+    });
+    expect(wrapper.find('button[title="暂停"]').exists()).toBe(true);
+    expect(wrapper.find('button[title="继续"]').exists()).toBe(false);
+
+    const transfer = useTransferStore();
+    const spy = vi.spyOn(transfer, "pause");
+    await wrapper.find('button[title="暂停"]').trigger("click");
+    expect(spy).toHaveBeenCalledWith("t1");
+  });
+
+  it("已暂停显示继续按钮与提示文案，点击调用 transfer.resume", async () => {
+    const wrapper = mount(TransferCard, {
+      props: { task: task({ direction: "send", status: "paused" }) },
+    });
+    expect(wrapper.find('button[title="继续"]').exists()).toBe(true);
+    expect(wrapper.find('button[title="暂停"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("已暂停");
+
+    const transfer = useTransferStore();
+    const spy = vi.spyOn(transfer, "resume");
+    await wrapper.find('button[title="继续"]').trigger("click");
+    expect(spy).toHaveBeenCalledWith("t1");
+  });
+
+  it("接收方向不给暂停/继续按钮——那是发送方才能做的动作", () => {
+    const transferring = mount(TransferCard, {
+      props: { task: task({ direction: "recv", status: "transferring" }) },
+    });
+    expect(transferring.find('button[title="暂停"]').exists()).toBe(false);
+    const paused = mount(TransferCard, {
+      props: { task: task({ direction: "recv", status: "paused" }) },
+    });
+    expect(paused.find('button[title="继续"]').exists()).toBe(false);
   });
 });

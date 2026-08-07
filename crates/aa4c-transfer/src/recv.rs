@@ -16,7 +16,6 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
-use tokio_util::sync::CancellationToken;
 
 use crate::path::{dedup_target, sanitize_rel_path};
 use crate::progress::Progress;
@@ -186,8 +185,20 @@ async fn dispatch_shared(
                 .await;
                 return Err(Aa4cError::NotPaired(cert_id));
             }
-            let result = session(&svc, &mut stream, &cert_id, task_id.clone(), files, proto).await;
-            svc.finish_task(&task_id, result).await;
+            // 信号在这里登记（而不是 session 内部）：收尾时要拿它判断"我这一轮
+            // 是不是已经被『继续』拉起的新一轮顶替了"，见 `finish_task_if_current`。
+            let signal = svc.register_cancel(&task_id);
+            let result = session(
+                &svc,
+                &mut stream,
+                &cert_id,
+                task_id.clone(),
+                files,
+                proto,
+                &signal,
+            )
+            .await;
+            svc.finish_task_if_current(&task_id, &signal, result).await;
             Ok(())
         }
         // 索引交换：仅已配对设备，交给 Core 注入的分流钩子（完全信任过滤在 Core 端）
@@ -282,6 +293,37 @@ struct OpenFile {
     written: u64,
 }
 
+/// 这条任务此前是否已经被本机同意过；是则返回当时选定的保存目录，用于「继续」时
+/// 跳过第二次确认框。
+///
+/// **只认"同一条任务的原样重来"**：除了要求此前确实同意过（`save_dir` 非空），还
+/// 逐项比对本次 Offer 的文件清单与当时落库的那份是否完全一致（文件数、相对路径、
+/// 大小）。少了这一层，一个已配对设备就能拿一个用过的 task_id 配一份**不同的**
+/// 文件清单绕过确认——同意过的是"那些文件"，不是"这个编号"。任何对不上就照常
+/// 走确认流程，宁可多问一次。
+async fn remembered_acceptance(
+    svc: &Arc<TransferService>,
+    task_id: &TaskId,
+    files: &[FileMeta],
+) -> Option<PathBuf> {
+    let dir = svc.store.accepted_save_dir(task_id).await.ok()??;
+    let previous = svc.store.get_task(task_id).await.ok()??;
+    if previous.direction != Direction::Recv {
+        return None;
+    }
+    same_manifest(&previous.files, files).then(|| PathBuf::from(dir))
+}
+
+/// 本次 Offer 的文件清单是否与此前落库的那份完全一致（顺序、相对路径、大小）。
+/// 抽成纯函数是为了能直接测——这是"跳过确认框"唯一的把关处。
+fn same_manifest(previous: &[TransferFile], incoming: &[FileMeta]) -> bool {
+    previous.len() == incoming.len()
+        && previous
+            .iter()
+            .zip(incoming)
+            .all(|(old, new)| old.rel_path == new.rel_path && old.size == new.size)
+}
+
 /// 接收会话主循环。`proto` 为握手协商版本，决定是否交换断点续传信息（PROTOCOL.md §13）。
 async fn session<S>(
     svc: &Arc<TransferService>,
@@ -290,6 +332,7 @@ async fn session<S>(
     task_id: TaskId,
     files: Vec<FileMeta>,
     proto: u16,
+    cancel: &crate::StopSignal,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -323,26 +366,48 @@ where
         created_at: crate::now_ms(),
         error: None,
     };
-    svc.store.insert_task(&task).await?;
-    let cancel = svc.register_cancel(&task_id);
-    let decision_rx = svc.register_pending_accept(&task_id);
-    let _ = svc.events.send(CoreEvent::TransferRequest { task });
+    // 「暂停 → 继续」会用同一个 task_id 再发一次 Offer。用户上一轮已经同意过了，
+    // 不该被第二次确认框打扰——**必须在 `insert_task` 之前问**，那一步会先删掉
+    // 同 id 的旧行（连同记着的 save_dir）再重建。
+    let remembered = remembered_acceptance(svc, &task_id, &files).await;
 
-    // 等待用户决定（独立超时；svc.accept() 注入）
-    let (accepted, save_dir) = match timeout(t, decision_rx).await {
-        Ok(Ok(decision)) => decision,
-        Ok(Err(_)) => return Err(Aa4cError::Cancelled),
-        Err(_) => {
-            let _ = write_message(stream, &answer(&task_id, false)).await;
-            return Err(Aa4cError::Network("accept timeout".into()));
+    svc.store.insert_task(&task).await?;
+
+    let save_dir = match remembered {
+        Some(dir) => {
+            tracing::info!(
+                task = %task_id,
+                "resuming a transfer this device already accepted; not asking again"
+            );
+            dir
+        }
+        None => {
+            let decision_rx = svc.register_pending_accept(&task_id);
+            let _ = svc.events.send(CoreEvent::TransferRequest { task });
+
+            // 等待用户决定（独立超时；svc.accept() 注入）
+            let (accepted, save_dir) = match timeout(t, decision_rx).await {
+                Ok(Ok(decision)) => decision,
+                Ok(Err(_)) => return Err(Aa4cError::Cancelled),
+                Err(_) => {
+                    let _ = write_message(stream, &answer(&task_id, false)).await;
+                    return Err(Aa4cError::Network("accept timeout".into()));
+                }
+            };
+            if !accepted {
+                write_message(stream, &answer(&task_id, false)).await?;
+                return Err(Aa4cError::TransferRejected);
+            }
+            save_dir.unwrap_or_else(|| svc.config.default_save_dir.clone())
         }
     };
-    if !accepted {
-        write_message(stream, &answer(&task_id, false)).await?;
-        return Err(Aa4cError::TransferRejected);
-    }
-    let save_dir = save_dir.unwrap_or_else(|| svc.config.default_save_dir.clone());
     tokio::fs::create_dir_all(&save_dir).await?;
+    // 记住这次的同意，供下一次「继续」复用（`insert_task` 刚把这一列清成 NULL，
+    // 所以每一轮都要重新写，不能只在首次同意时写）。
+    let _ = svc
+        .store
+        .set_task_save_dir(&task_id, &save_dir.to_string_lossy())
+        .await;
     write_message(stream, &answer(&task_id, true)).await?;
     svc.store
         .update_task_status(&task_id, TransferStatus::Transferring, None)
@@ -366,7 +431,7 @@ where
     };
 
     receive_files(
-        svc, stream, &task_id, &files, &rel_paths, &save_dir, &resume, &cancel,
+        svc, stream, &task_id, &files, &rel_paths, &save_dir, &resume, cancel,
     )
     .await
 }
@@ -419,7 +484,7 @@ pub(crate) async fn receive_files<S>(
     rel_paths: &[PathBuf],
     save_dir: &std::path::Path,
     resume: &[FileProgress],
-    cancel: &CancellationToken,
+    cancel: &crate::StopSignal,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -456,7 +521,7 @@ where
 
     let result = loop {
         let msg = tokio::select! {
-            () = cancel.cancelled() => {
+            () = cancel.stopped() => {
                 explicit_cancel = true;
                 let _ = write_message(stream, &Message::Cancel {
                     task_id: task_id.clone(),
@@ -680,5 +745,70 @@ async fn finalize_file(mut open: OpenFile) -> Result<()> {
 async fn cleanup_parts(parts: &[PathBuf]) {
     for part in parts {
         let _ = tokio::fs::remove_file(part).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stored(rel_path: &str, size: u64) -> TransferFile {
+        TransferFile {
+            rel_path: rel_path.into(),
+            size,
+            hash: None,
+            status: FileStatus::Pending,
+        }
+    }
+
+    fn offered(rel_path: &str, size: u64) -> FileMeta {
+        FileMeta {
+            rel_path: rel_path.into(),
+            size,
+        }
+    }
+
+    /// 原样重来（「暂停 → 继续」的正常形态）才算认得。
+    #[test]
+    fn same_manifest_accepts_an_identical_offer() {
+        let previous = vec![stored("a.jpg", 10), stored("dir/b.mp4", 20)];
+        let incoming = vec![offered("a.jpg", 10), offered("dir/b.mp4", 20)];
+        assert!(same_manifest(&previous, &incoming));
+    }
+
+    /// 下面几种都必须落回"照常问一次"——用户当初同意的是**那些文件**，
+    /// 不是这个任务编号。已配对设备也不该能拿一个用过的 task_id 夹带别的东西。
+    #[test]
+    fn same_manifest_rejects_anything_that_differs() {
+        let previous = vec![stored("a.jpg", 10), stored("dir/b.mp4", 20)];
+
+        // 换了文件名
+        assert!(!same_manifest(
+            &previous,
+            &[offered("a.jpg", 10), offered("dir/evil.exe", 20)]
+        ));
+        // 同名但大小不同（内容被换掉）
+        assert!(!same_manifest(
+            &previous,
+            &[offered("a.jpg", 10), offered("dir/b.mp4", 999)]
+        ));
+        // 多塞一个文件
+        assert!(!same_manifest(
+            &previous,
+            &[
+                offered("a.jpg", 10),
+                offered("dir/b.mp4", 20),
+                offered("extra.sh", 1)
+            ]
+        ));
+        // 少一个文件
+        assert!(!same_manifest(&previous, &[offered("a.jpg", 10)]));
+        // 顺序变了：file_index 是按顺序对应的，换序等于换了对应关系
+        assert!(!same_manifest(
+            &previous,
+            &[offered("dir/b.mp4", 20), offered("a.jpg", 10)]
+        ));
+        // 空清单
+        assert!(!same_manifest(&previous, &[]));
     }
 }

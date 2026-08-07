@@ -77,6 +77,8 @@ export function statusText(status: TransferStatus): string {
       return "等待对方确认";
     case "transferring":
       return "正在传输";
+    case "paused":
+      return "已暂停";
     case "done":
       return "已完成";
     case "failed":

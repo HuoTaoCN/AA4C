@@ -7,11 +7,10 @@ use aa4c_proto::{client_hello, read_message, unexpected, write_message, Message}
 use aa4c_types::{Aa4cError, CoreEvent, DeviceId, Result, TaskId, TransferStatus};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout;
-use tokio_util::sync::CancellationToken;
 
 use crate::path::SendFile;
 use crate::progress::Progress;
-use crate::TransferService;
+use crate::{StopSignal, TransferService};
 
 /// 单文件最大重传次数（PROTOCOL.md §7 规则 2）。
 const MAX_RETRIES: u32 = 2;
@@ -26,16 +25,18 @@ pub(crate) struct SendJob {
 }
 
 /// 发送任务入口：建连、驱动会话、收尾（状态与事件）。
-pub(crate) async fn run(svc: Arc<TransferService>, job: SendJob, cancel: CancellationToken) {
-    let result = drive(&svc, &job, &cancel).await;
-    svc.finish_task(&job.task_id, result).await;
+pub(crate) async fn run(svc: Arc<TransferService>, job: SendJob, signal: StopSignal) {
+    let result = drive(&svc, &job, &signal).await;
+    // 暂停走的也是 `Cancelled` 这条控制流（发送循环靠它退出），但收尾完全不同：
+    // 不是终态、要留着发送清单供「继续」用，见 `finish_paused_task`。
+    if matches!(result, Err(Aa4cError::Cancelled)) && signal.is_paused() {
+        svc.finish_paused_task(&job.task_id).await;
+    } else {
+        svc.finish_task(&job.task_id, result).await;
+    }
 }
 
-async fn drive(
-    svc: &Arc<TransferService>,
-    job: &SendJob,
-    cancel: &CancellationToken,
-) -> Result<()> {
+async fn drive(svc: &Arc<TransferService>, job: &SendJob, signal: &StopSignal) -> Result<()> {
     let t = svc.config.timeout;
     let (mut stream, via) = svc.dial(&job.peer_id, job.addr).await?;
     // 里程碑 C4 连接质量：只在这里报一次，UI 据此显示「直连/中继（较慢）」（不落库，见
@@ -110,7 +111,7 @@ async fn drive(
         svc.config.chunk_size,
         t,
         &mut progress,
-        cancel,
+        signal,
         &resume,
     )
     .await
@@ -128,7 +129,7 @@ async fn transfer_files<S: AsyncRead + AsyncWrite + Unpin>(
     chunk_size: usize,
     t: std::time::Duration,
     progress: &mut Progress,
-    cancel: &CancellationToken,
+    signal: &StopSignal,
     resume: &HashMap<u32, u64>,
 ) -> Result<()> {
     for (index, file) in files.iter().enumerate() {
@@ -141,8 +142,12 @@ async fn transfer_files<S: AsyncRead + AsyncWrite + Unpin>(
         }
         let mut attempts = 0u32;
         loop {
-            if cancel.is_cancelled() {
-                let _ = write_message(stream, &cancel_msg(task_id)).await;
+            if signal.is_stopped() {
+                // 暂停时**不发** `Cancel`——静默断开才会让接收端保留 .aa4c-part
+                // 供续传（PROTOCOL.md §7 规则 3，见 `StopSignal` 文档）。
+                if !signal.is_paused() {
+                    let _ = write_message(stream, &cancel_msg(task_id)).await;
+                }
                 return Err(Aa4cError::Cancelled);
             }
             let sent = match send_file(
@@ -151,7 +156,7 @@ async fn transfer_files<S: AsyncRead + AsyncWrite + Unpin>(
                 file,
                 chunk_size,
                 progress,
-                cancel,
+                signal,
                 resume_from,
             )
             .await
@@ -162,7 +167,9 @@ async fn transfer_files<S: AsyncRead + AsyncWrite + Unpin>(
                 // 明确取消要通知对端清理 part 文件（V0.3 起未通知的中断会保留
                 // part 文件供续传，见 recv.rs 的 explicit_cancel）。
                 Err(Aa4cError::Cancelled) => {
-                    let _ = write_message(stream, &cancel_msg(task_id)).await;
+                    if !signal.is_paused() {
+                        let _ = write_message(stream, &cancel_msg(task_id)).await;
+                    }
                     return Err(Aa4cError::Cancelled);
                 }
                 Err(e) => return Err(e),
@@ -224,7 +231,7 @@ async fn send_file<S: AsyncRead + AsyncWrite + Unpin>(
     file: &SendFile,
     chunk_size: usize,
     progress: &mut Progress,
-    cancel: &CancellationToken,
+    signal: &StopSignal,
     resume_from: u64,
 ) -> Result<String> {
     let mut reader = tokio::fs::File::open(&file.abs).await?;
@@ -250,7 +257,7 @@ async fn send_file<S: AsyncRead + AsyncWrite + Unpin>(
 
     let mut remaining = file.meta.size - offset;
     while remaining > 0 {
-        if cancel.is_cancelled() {
+        if signal.is_stopped() {
             return Err(Aa4cError::Cancelled);
         }
         let want = usize::try_from(remaining.min(buf.len() as u64)).expect("chunk fits usize");
@@ -440,7 +447,7 @@ mod tests {
             },
         }];
         let (mut a, mut b) = tokio::io::duplex(256 * 1024);
-        let cancel = CancellationToken::new();
+        let signal = StopSignal::new_for_test();
         let task_id = "t1".to_string();
         let resume = HashMap::new();
         let (send_res, (done_count, task_done)) = tokio::join!(
@@ -451,12 +458,107 @@ mod tests {
                 1024, // 小分块，确保多块
                 Duration::from_secs(5),
                 &mut progress,
-                &cancel,
+                &signal,
                 &resume,
             ),
             fake_receiver(&mut b, fail_acks),
         );
         (send_res, done_count, task_done)
+    }
+
+    /// 在**传输途中**叫停，返回（发送结果, 接收端有没有收到 `Cancel`）。
+    ///
+    /// "途中"是确定性的、不靠 sleep 赌时序：假接收端读满 3 个分块之后才触发叫停，
+    /// 此时发送循环必然还在文件中间。之后继续读，看有没有 `Cancel` 跟过来。
+    async fn stop_midway_and_report_cancel(pause: bool) -> (Result<()>, bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.bin");
+        std::fs::write(&path, vec![9u8; 512 * 1024]).unwrap();
+        let store = aa4c_store::Store::open(&dir.path().join("db.sqlite"))
+            .await
+            .unwrap();
+        let (events, _keep) = tokio::sync::broadcast::channel(16);
+        let mut progress = Progress::new("t1".into(), events, store, 512 * 1024);
+        let files = vec![SendFile {
+            abs: path,
+            meta: FileMeta {
+                rel_path: "data.bin".into(),
+                size: 512 * 1024,
+            },
+        }];
+        let (mut a, mut b) = tokio::io::duplex(64 * 1024);
+        let signal = StopSignal::new_for_test();
+        let trigger = signal.clone();
+        let task_id = "t1".to_string();
+        let resume = HashMap::new();
+
+        let reader = async {
+            let mut chunks = 0u32;
+            loop {
+                match read_message(&mut b).await {
+                    Ok(Message::Chunk { len, .. }) => {
+                        let mut buf = vec![0u8; len as usize];
+                        if b.read_exact(&mut buf).await.is_err() {
+                            return false;
+                        }
+                        chunks += 1;
+                        if chunks == 3 {
+                            if pause {
+                                trigger.pause();
+                            } else {
+                                trigger.cancel();
+                            }
+                        }
+                    }
+                    Ok(Message::Cancel { .. }) => return true,
+                    // 对端把连接丢了——静默断开，正是暂停期望的形态。
+                    Err(_) => return false,
+                    Ok(_) => {}
+                }
+            }
+        };
+        // 暂停路径下发送方直接返回、不再写任何东西，而 `a` 还活着（同一作用域里
+        // 借着），读端等不到 EOF 会一直挂着——所以给读端一个上限：超时即"没等到
+        // Cancel"，正是我们要断言的结论。
+        let (send_res, saw_cancel) = tokio::join!(
+            transfer_files(
+                &mut a,
+                &task_id,
+                &files,
+                1024,
+                Duration::from_secs(5),
+                &mut progress,
+                &signal,
+                &resume,
+            ),
+            async {
+                tokio::time::timeout(Duration::from_secs(2), reader)
+                    .await
+                    .unwrap_or(false)
+            },
+        );
+        (send_res, saw_cancel)
+    }
+
+    /// **暂停不能发 `Cancel`**——整套「暂停/继续」就靠这一点成立：接收端只有在
+    /// 没收到 `Cancel` 时才保留 `.aa4c-part`（PROTOCOL.md §7 规则 3），发了就等于
+    /// 让对端把续传的本钱删掉。
+    #[tokio::test]
+    async fn pausing_does_not_send_cancel_to_the_peer() {
+        let (result, saw_cancel) = stop_midway_and_report_cancel(true).await;
+        assert!(matches!(result, Err(Aa4cError::Cancelled)));
+        assert!(
+            !saw_cancel,
+            "pause must disconnect silently; sending Cancel would make the peer delete the .aa4c-part"
+        );
+    }
+
+    /// 对照组：取消**必须**发 `Cancel`，对端据此清理半成品。
+    #[tokio::test]
+    async fn cancelling_does_send_cancel_to_the_peer() {
+        let (result, saw_cancel) = stop_midway_and_report_cancel(false).await;
+        assert!(matches!(result, Err(Aa4cError::Cancelled)));
+        assert!(saw_cancel, "cancel must tell the peer so it cleans up");
     }
 
     #[tokio::test]

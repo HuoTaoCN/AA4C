@@ -562,6 +562,17 @@ impl Core {
         self.download_service()?.resume(id).await
     }
 
+    /// 暂停一条发送中的传输（打磨计划第二步）。只对本机发起的发送任务有效——
+    /// 接收方向没有"我这边继续"的说法，得由发送方重新发起。
+    pub async fn pause_transfer(&self, task_id: &TaskId) -> Result<()> {
+        self.transfer.pause(task_id).await
+    }
+
+    /// 继续一条已暂停的传输，沿用同一个 `task_id` 走断点续传接上。
+    pub async fn resume_transfer(&self, task_id: &TaskId) -> Result<()> {
+        self.transfer.resume(task_id).await
+    }
+
     /// `delete_local`——同时删除已下载的本地文件（对标 FDM/Motrix 的"取消并删除
     /// 文件"），见 `DownloadService::cancel` 文档。
     pub async fn cancel_download(&self, id: TaskId, delete_local: bool) -> Result<()> {

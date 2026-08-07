@@ -43,6 +43,10 @@ export const api = {
     invoke<string>("send_files", { deviceId, paths }),
   acceptTransfer: (taskId: string, accept: boolean, saveDir?: string) =>
     invoke<void>("accept_transfer", { taskId, accept, saveDir: saveDir ?? null }),
+  pauseTransfer: (taskId: string) =>
+    invoke<void>("pause_transfer", { taskId }),
+  resumeTransfer: (taskId: string) =>
+    invoke<void>("resume_transfer", { taskId }),
   cancelTransfer: (taskId: string) =>
     invoke<void>("cancel_transfer", { taskId }),
   listTransfers: (limit: number, offset: number) =>

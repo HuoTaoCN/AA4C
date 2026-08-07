@@ -50,6 +50,30 @@ async function cancel() {
     toast.push("error", asCommandError(e).message);
   }
 }
+
+// 暂停/继续只对**本机发起的发送**有意义：接收方向没有"我这边继续"的说法，
+// 要由发送方重新发起（后端也会拒，这里就不摆一个点了必然报错的按钮）。
+const canPause = computed(
+  () => props.task.direction === "send" && props.task.status === "transferring",
+);
+const canResume = computed(
+  () => props.task.direction === "send" && props.task.status === "paused",
+);
+
+async function pause() {
+  try {
+    await transfer.pause(props.task.id);
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
+}
+async function resume() {
+  try {
+    await transfer.resume(props.task.id);
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
+}
 </script>
 
 <template>
@@ -59,7 +83,9 @@ async function cancel() {
       <span v-if="viaText" class="via" :class="{ relay: task.via === 'relay' }">{{
         viaText
       }}</span>
-      <button class="cancel" title="取消" @click="cancel">✕</button>
+      <button v-if="canPause" class="act" title="暂停" @click="pause">⏸</button>
+      <button v-if="canResume" class="act" title="继续" @click="resume">▶</button>
+      <button class="act danger" title="取消" @click="cancel">✕</button>
     </div>
     <div class="file">
       {{ task.currentFile || statusText(task.status) }}
@@ -72,6 +98,7 @@ async function cancel() {
       </span>
       <span v-if="eta">{{ eta }}</span>
       <span v-if="task.status === 'waiting_accept'">等待对方确认…</span>
+      <span v-if="task.status === 'paused'">已暂停，点 ▶ 接着传</span>
     </div>
   </div>
 </template>
@@ -115,12 +142,16 @@ async function cancel() {
     background: #4a3a16;
   }
 }
-.cancel {
+.act {
   color: var(--aa-text-dim);
   font-size: 0.9rem;
   padding: 2px 6px;
+  flex-shrink: 0;
 }
-.cancel:hover {
+.act:hover {
+  color: var(--aa-primary);
+}
+.act.danger:hover {
   color: var(--aa-danger);
 }
 .file {

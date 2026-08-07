@@ -52,7 +52,7 @@ CREATE TABLE transfer_tasks (
     direction          TEXT NOT NULL CHECK (direction IN ('send','recv')),
     peer_device_id     TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     status             TEXT NOT NULL
-                       CHECK (status IN ('waiting_accept','transferring','done',
+                       CHECK (status IN ('waiting_accept','transferring','paused','done',
                                          'failed','cancelled','rejected')),
     total_bytes        INTEGER NOT NULL DEFAULT 0,
     transferred_bytes  INTEGER NOT NULL DEFAULT 0,
@@ -71,7 +71,17 @@ CREATE INDEX idx_tasks_status  ON transfer_tasks(status);
 说明：
 
 - 进度（`transferred_bytes`）**节流写库**（≥1s 一次），实时进度走事件总线，不依赖数据库
-- 应用启动时将所有 `waiting_accept` / `transferring` 状态的任务标记为 `failed`（error = "应用重启中断"）——V0.1 不做断点续传恢复
+- 应用启动时将所有 `waiting_accept` / `transferring` / `paused` 状态的任务标记为 `failed`
+  （error = "应用重启中断"）。`paused` 也在其中：「继续」依赖的发送清单只存在内存里
+  （`TransferService` 的 job 缓存），进程一退就没了，留着它显示"已暂停"等于给用户一个
+  点了没反应的假按钮
+- **`paused` 是迁移 012 加进 CHECK 的**（AA Send 暂停/继续）。SQLite 改不了已有的 CHECK
+  约束，只能走官方的「建新表 → 拷数据 → 删旧表 → 改名」流程；而 `DROP TABLE` 在外键
+  开启时会先做一次隐式 DELETE，顺着 `transfer_files ... ON DELETE CASCADE` 把**整个传输
+  历史的文件明细连带删光**。`migrate()` 因此在事务之外先关掉 `foreign_keys`、跑完再还原
+  并做一次 `foreign_key_check`（该 PRAGMA 在事务内是 no-op，必须在外面设）。这条不是
+  纸上谈兵：把那一行去掉后，升级路径的测试立刻从"2 条文件明细"变成"0 条"
+  （`migration_012_rebuild_preserves_existing_tasks_and_files`）
 
 ### 2.3 transfer_files —— 传输文件明细表
 

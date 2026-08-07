@@ -229,6 +229,13 @@ impl Store {
         self.call(move |conn| {
             let now = now_ms();
             let tx = conn.transaction().map_err(db_err)?;
+            // 先清掉同 id 的旧记录：AA Send 的「继续」沿用**同一个 task_id** 重新发起
+            // （这样接收端的 part 文件、用户看到的那一行任务都还是原来那条），于是
+            // 接收端会对一个已存在的 id 再走一次 `insert_task`——不先删就撞主键。
+            // 删除会级联带走 transfer_files 的旧明细，紧接着按新清单重新插入，正是
+            // 我们要的效果。对首次插入（发送方新 uuid / 按需拉取）这一句是 no-op。
+            tx.execute("DELETE FROM transfer_tasks WHERE id = ?1", params![t.id])
+                .map_err(db_err)?;
             tx.execute(
                 "INSERT INTO transfer_tasks
                    (id, direction, peer_device_id, status, total_bytes,
@@ -320,13 +327,18 @@ impl Store {
                 .execute(
                     "UPDATE transfer_tasks
                      SET status = ?1, error = ?2, updated_at = ?3
-                     WHERE status IN (?4, ?5)",
+                     WHERE status IN (?4, ?5, ?6)",
                     params![
                         TransferStatus::Failed.as_str(),
                         "应用已重启，任务中断",
                         now_ms(),
                         TransferStatus::WaitingAccept.as_str(),
                         TransferStatus::Transferring.as_str(),
+                        // 暂停态也要一并标失败：「继续」依赖的发送任务清单只存在内存里
+                        // （`TransferService` 的 job 缓存），进程一退就没了，重启后这条
+                        // 任务已经不可能续上——留着它显示"已暂停"会给用户一个点了没反应
+                        // 的假按钮。
+                        TransferStatus::Paused.as_str(),
                     ],
                 )
                 .map_err(db_err)?;
@@ -366,6 +378,75 @@ impl Store {
                     .map_err(db_err)?;
             }
             Ok(tasks)
+        })
+        .await
+    }
+
+    /// 记下这条接收任务被同意保存到哪儿。`save_dir` 列 001_init 起就有、注释也写着
+    /// 是给接收任务用的，但一直没人写过（`insert_task` 恒写 NULL）——现在它承担
+    /// 一个明确职责：**"这条任务用户已经同意过，而且同意存到这里"**。
+    /// 「暂停 → 继续」时接收端据此不再弹第二次确认框（见 `recv::session`）。
+    pub async fn set_task_save_dir(&self, id: &TaskId, dir: &str) -> Result<()> {
+        let id = id.clone();
+        let dir = dir.to_string();
+        self.call(move |conn| {
+            conn.execute(
+                "UPDATE transfer_tasks SET save_dir = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, dir, now_ms()],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 这条任务此前被同意保存到哪儿；`None` = 没同意过（或根本没这条任务）。
+    /// 只有走完确认那一步才会写这个字段，所以"非空"本身就等于"同意过"。
+    pub async fn accepted_save_dir(&self, id: &TaskId) -> Result<Option<String>> {
+        let id = id.clone();
+        self.call(move |conn| {
+            conn.query_row(
+                "SELECT save_dir FROM transfer_tasks WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+            .map_err(db_err)
+        })
+        .await
+    }
+
+    /// 取单条任务（含文件明细）。补上与 `get_download` 对称的这一个——
+    /// 「继续」一条暂停的传输前要先确认它当前确实还是暂停态。
+    pub async fn get_task(&self, id: &TaskId) -> Result<Option<TransferTask>> {
+        let id = id.clone();
+        self.call(move |conn| {
+            let task = conn
+                .query_row(
+                    "SELECT id, direction, peer_device_id, status,
+                            total_bytes, transferred_bytes, error, created_at
+                     FROM transfer_tasks WHERE id = ?1",
+                    params![id],
+                    row_to_task,
+                )
+                .optional()
+                .map_err(db_err)?;
+            let Some(mut task) = task else {
+                return Ok(None);
+            };
+            let mut file_stmt = conn
+                .prepare(
+                    "SELECT rel_path, size, hash, status
+                     FROM transfer_files WHERE task_id = ?1 ORDER BY file_index",
+                )
+                .map_err(db_err)?;
+            task.files = file_stmt
+                .query_map(params![task.id], row_to_file)
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(Some(task))
         })
         .await
     }

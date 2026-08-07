@@ -14,6 +14,8 @@ export type Direction = "send" | "recv";
 export type TransferStatus =
   | "waiting_accept"
   | "transferring"
+  /** 发送方主动暂停：接收端保留了半成品，可以「继续」接着传。 */
+  | "paused"
   | "done"
   | "failed"
   | "cancelled"

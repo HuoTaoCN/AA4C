@@ -22,9 +22,11 @@ use aa4c_types::{
     Aa4cError, ConnectionVia, CoreEvent, DeviceId, DeviceInfo, Direction, FileStatus, Result,
     TaskId, TransferFile, TransferStatus, TransferTask, CHUNK_SIZE, DEFAULT_PORT,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot, Semaphore};
 use tokio_rustls::TlsAcceptor;
+
 use tokio_util::sync::CancellationToken;
 
 /// 事件发送端（与 aa4c-core 的事件总线同型）。
@@ -184,13 +186,88 @@ impl Default for TransferConfig {
     }
 }
 
+/// 「停止当前会话」的信号，外加一位区分**为什么**停：取消还是暂停。
+///
+/// 两者对协议的要求刚好相反（PROTOCOL.md §7 规则 3）：
+/// - **取消**要给对端发一条 `Cancel`，让它清理已落盘的 `.aa4c-part`；
+/// - **暂停**恰恰**不能**发——静默断开才会让接收端保留 part 文件，「继续」时
+///   才有东西可续（这正是断点续传赖以成立的既有行为，里程碑 C1）。
+///
+/// 所以不能只用一个裸 `CancellationToken`：发送侧在被叫停的那一刻必须能问出
+/// "这是暂停吗"来决定发不发那条 `Cancel`。
+#[derive(Clone)]
+pub(crate) struct StopSignal {
+    token: CancellationToken,
+    paused: Arc<AtomicBool>,
+}
+
+impl StopSignal {
+    fn new() -> Self {
+        Self {
+            token: CancellationToken::new(),
+            paused: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// 取消：会给对端发 `Cancel`，对端清理 part 文件。
+    fn cancel(&self) {
+        self.token.cancel();
+    }
+
+    /// 暂停：先立起标志位再叫停，顺序要紧——发送循环醒来后要能读到已经是
+    /// `true`，否则会走成取消、把对端的 part 文件清掉，续传就没了。
+    fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+        self.token.cancel();
+    }
+
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.token.is_cancelled()
+    }
+
+    /// 等到被叫停为止（接收端的 select! 分支用）。接收端不区分暂停/取消——
+    /// 「暂停」是发送方单方面的动作，对接收端而言就是对端不说话了。
+    pub(crate) async fn stopped(&self) {
+        self.token.cancelled().await;
+    }
+
+    pub(crate) fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    /// 是不是同一轮会话发出来的信号（`clone` 出来的算同一轮，`new()` 出来的不算）。
+    /// 用于识别"被新一轮顶替掉的旧会话"，见 `finish_task_if_current`。
+    fn same_session(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.paused, &other.paused)
+    }
+
+    /// 协议级测试直接驱动 `transfer_files` 时用（那层不经过 `TransferService`）。
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Self {
+        Self::new()
+    }
+}
+
+/// 「继续」一条已暂停的发送任务所需的全部信息。只存在内存里——进程退出即丢失，
+/// 重启后那些任务由 `Store::fail_incomplete_tasks` 统一标失败（见那里的注释）。
+#[derive(Clone)]
+struct CachedSendJob {
+    peer_id: DeviceId,
+    addr: Option<std::net::SocketAddr>,
+    files: Vec<path::SendFile>,
+    total: u64,
+}
+
 pub struct TransferService {
     pub(crate) identity: Arc<Identity>,
     pub(crate) store: Store,
     pub(crate) events: EventSender,
     pub(crate) config: TransferConfig,
     pending_accepts: Mutex<HashMap<TaskId, oneshot::Sender<AcceptDecision>>>,
-    cancels: Mutex<HashMap<TaskId, CancellationToken>>,
+    cancels: Mutex<HashMap<TaskId, StopSignal>>,
+    /// 发送任务的原始清单，供「继续」时用同一个 task_id 重新发起。只在 `send()`
+    /// 里写入（接收/拉取方向不需要——那两个方向的「继续」是对端的事）。
+    send_jobs: Mutex<HashMap<TaskId, CachedSendJob>>,
     send_permits: Arc<Semaphore>,
     /// 配对分流钩子（Core 注入；未注入时入站 `PairRequest` 直接拒绝）。
     pub(crate) pair_dispatch: OnceLock<Arc<dyn IncomingPairDispatch>>,
@@ -225,6 +302,7 @@ impl TransferService {
             config,
             pending_accepts: Mutex::new(HashMap::new()),
             cancels: Mutex::new(HashMap::new()),
+            send_jobs: Mutex::new(HashMap::new()),
             send_permits: Arc::new(Semaphore::new(permits)),
             pair_dispatch: OnceLock::new(),
             index_dispatch: OnceLock::new(),
@@ -409,6 +487,17 @@ impl TransferService {
             .await?;
 
         let cancel = self.register_cancel(&task_id);
+        // 缓存原始清单供「继续」复用（见 `CachedSendJob`）。只有发送方向缓存——
+        // 接收方向的「继续」得由对端重新发起，本机说了不算。
+        self.send_jobs.lock().expect("jobs lock").insert(
+            task_id.clone(),
+            CachedSendJob {
+                peer_id: peer.id.clone(),
+                addr,
+                files: files.clone(),
+                total,
+            },
+        );
         let job = send::SendJob {
             task_id: task_id.clone(),
             peer_id: peer.id.clone(),
@@ -694,27 +783,135 @@ impl TransferService {
     }
 
     /// 取消任务（双方均可）。
+    ///
+    /// 已暂停的任务**没有在跑的会话**（信号在暂停收尾时就清掉了，那一轮确实结束了），
+    /// 但用户显然还能取消它——界面上暂停态的卡片一直摆着 ✕。所以这里分两条路：
+    /// 有活会话就叫停它，没有则看看是不是"已暂停"，是就地落终态。
     pub async fn cancel(&self, task_id: &TaskId) -> Result<()> {
-        let token = self
+        let live = self
             .cancels
             .lock()
             .expect("cancels lock")
             .get(task_id)
-            .cloned()
-            .ok_or_else(|| Aa4cError::Protocol(format!("unknown task: {task_id}")))?;
-        token.cancel();
+            .cloned();
+        match live {
+            Some(signal) => signal.cancel(),
+            None => {
+                let status = self.store.get_task(task_id).await?.map(|t| t.status);
+                if status != Some(TransferStatus::Paused) {
+                    return Err(Aa4cError::Protocol(format!("unknown task: {task_id}")));
+                }
+                // 收尾在这里就地做完：没有会话可以跑 `finish_task`。接收端那边留下的
+                // `.aa4c-part` 收不到 `Cancel`（连接早断了）会继续躺着，属于既有的
+                // 孤儿 part 文件问题（见 `recv::receive_files` 的注释），不在此处理。
+                self.store
+                    .update_task_status(task_id, TransferStatus::Cancelled, Some("已取消"))
+                    .await?;
+                let _ = self.events.send(CoreEvent::TransferFailed {
+                    task_id: task_id.clone(),
+                    error: "已取消".to_string(),
+                });
+            }
+        }
+        // 取消是终态，缓存的发送清单不会再用到。
+        self.send_jobs.lock().expect("jobs lock").remove(task_id);
         Ok(())
+    }
+
+    /// 暂停一条**发送中**的任务（打磨计划第二步）。
+    ///
+    /// 与 [`Self::cancel`] 只差"发不发 `Cancel`"这一点，但结果天差地别：暂停走静默
+    /// 断开，接收端保留 `.aa4c-part`，[`Self::resume`] 才接得上（详见 [`StopSignal`]）。
+    ///
+    /// 只对本机发起的发送任务有意义——接收方向没有"我这边继续"的说法（要由发送方
+    /// 重新发起），所以没缓存发送清单的任务直接拒绝，而不是假装暂停成功。
+    pub async fn pause(&self, task_id: &TaskId) -> Result<()> {
+        if !self
+            .send_jobs
+            .lock()
+            .expect("jobs lock")
+            .contains_key(task_id)
+        {
+            return Err(Aa4cError::Protocol(format!(
+                "only outgoing transfers can be paused: {task_id}"
+            )));
+        }
+        let signal = self.stop_signal(task_id)?;
+        signal.pause();
+        Ok(())
+    }
+
+    /// 继续一条已暂停的发送任务：**沿用同一个 `task_id`** 重新发起。
+    ///
+    /// 沿用而不是新建，是为了让接收端的 `resume_progress` 认出这是同一次传输、
+    /// 把已落盘的 `.aa4c-part` 接着写（PROTOCOL.md §13）；对用户来说也仍是列表里
+    /// 那一条任务，不会莫名多出一条。
+    pub async fn resume(self: &Arc<Self>, task_id: &TaskId) -> Result<()> {
+        let job = self
+            .send_jobs
+            .lock()
+            .expect("jobs lock")
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| {
+                // 进程重启过：内存里的清单没了（那些任务已被 `fail_incomplete_tasks`
+                // 标失败）。给一句人话，别让调用方看到一个裸的 "unknown task"。
+                Aa4cError::Protocol(format!("this transfer can no longer be resumed: {task_id}"))
+            })?;
+
+        let current = self.store.get_task(task_id).await?;
+        match current.map(|t| t.status) {
+            Some(TransferStatus::Paused) => {}
+            Some(other) => {
+                return Err(Aa4cError::Protocol(format!(
+                    "transfer is not paused (status: {})",
+                    other.as_str()
+                )))
+            }
+            None => return Err(Aa4cError::Protocol(format!("unknown task: {task_id}"))),
+        }
+
+        self.store
+            .update_task_status(task_id, TransferStatus::WaitingAccept, None)
+            .await?;
+
+        // 全新的 StopSignal：上一个已经处于 cancelled 状态，复用会让新会话一起步
+        // 就被判定为"已叫停"。
+        let signal = self.register_cancel(task_id);
+        let send_job = send::SendJob {
+            task_id: task_id.clone(),
+            peer_id: job.peer_id,
+            addr: job.addr,
+            files: job.files,
+            total: job.total,
+        };
+        let svc = self.clone();
+        let permits = self.send_permits.clone();
+        tokio::spawn(async move {
+            let _permit = permits.acquire_owned().await;
+            send::run(svc, send_job, signal).await;
+        });
+        Ok(())
+    }
+
+    fn stop_signal(&self, task_id: &TaskId) -> Result<StopSignal> {
+        self.cancels
+            .lock()
+            .expect("cancels lock")
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| Aa4cError::Protocol(format!("unknown task: {task_id}")))
     }
 
     // —— 会话簿记（send/recv 模块共用） ——
 
-    pub(crate) fn register_cancel(&self, task_id: &TaskId) -> CancellationToken {
-        let token = CancellationToken::new();
+    pub(crate) fn register_cancel(&self, task_id: &TaskId) -> StopSignal {
+        let signal = StopSignal::new();
         self.cancels
             .lock()
             .expect("cancels lock")
-            .insert(task_id.clone(), token.clone());
-        token
+            .insert(task_id.clone(), signal.clone());
+        signal
     }
 
     pub(crate) fn register_pending_accept(
@@ -729,9 +926,65 @@ impl TransferService {
         rx
     }
 
+    /// 暂停收尾：与 [`Self::finish_task`] 的关键差别是**保留** `send_jobs` 里的
+    /// 清单（[`Self::resume`] 要靠它重新发起），只清掉本次会话的信号与待确认簿记。
+    pub(crate) async fn finish_paused_task(&self, task_id: &TaskId) {
+        self.cancels.lock().expect("cancels lock").remove(task_id);
+        self.pending_accepts
+            .lock()
+            .expect("pending lock")
+            .remove(task_id);
+
+        if let Err(e) = self
+            .store
+            .update_task_status(task_id, TransferStatus::Paused, None)
+            .await
+        {
+            tracing::warn!(task = %task_id, error = %e, "failed to persist paused status");
+        }
+        let _ = self.events.send(CoreEvent::TransferPaused {
+            task_id: task_id.clone(),
+        });
+    }
+
+    /// 同 [`Self::finish_task`]，但会先确认**这一轮会话仍然是当前那一轮**。
+    ///
+    /// 「暂停 → 继续」沿用同一个 `task_id`，于是接收端可能同时存在两轮会话：被暂停
+    /// 的那一轮（发送方已静默断开，它还要一小会儿才察觉 EOF）和「继续」拉起的新
+    /// 一轮。旧那轮察觉后会走收尾——如果照常执行，它会把任务状态改成 failed、并把
+    /// 新那轮的待确认/信号簿记一并删掉，真的把刚接上的传输弄断。实测这个竞态确实
+    /// 会发生（集成测试 5 次里稳定复现 1 次）。
+    ///
+    /// 判定靠"当前登记的信号还是不是我这一轮的"——新会话 `register_cancel` 时会覆盖
+    /// 掉 map 里的旧条目，指针一比即知。被顶替的那轮直接静默退出，什么都不碰。
+    pub(crate) async fn finish_task_if_current(
+        &self,
+        task_id: &TaskId,
+        signal: &StopSignal,
+        result: Result<()>,
+    ) {
+        let superseded = {
+            let guard = self.cancels.lock().expect("cancels lock");
+            match guard.get(task_id) {
+                Some(current) => !current.same_session(signal),
+                // 已经被某一轮收尾清掉了：那一轮才是最终的，这里不再重复写。
+                None => true,
+            }
+        };
+        if superseded {
+            tracing::debug!(
+                task = %task_id,
+                "ignoring cleanup from a superseded receive session (task was resumed)"
+            );
+            return;
+        }
+        self.finish_task(task_id, result).await;
+    }
+
     /// 会话收尾：状态落库 + 事件 + 簿记清理。
     pub(crate) async fn finish_task(&self, task_id: &TaskId, result: Result<()>) {
         self.cancels.lock().expect("cancels lock").remove(task_id);
+        self.send_jobs.lock().expect("jobs lock").remove(task_id);
         self.pending_accepts
             .lock()
             .expect("pending lock")

@@ -101,6 +101,16 @@ pub async fn cancel_transfer(core: State<'_, Arc<Core>>, task_id: String) -> Cmd
 }
 
 #[tauri::command]
+pub async fn pause_transfer(core: State<'_, Arc<Core>>, task_id: String) -> CmdResult<()> {
+    Ok(core.pause_transfer(&task_id).await?)
+}
+
+#[tauri::command]
+pub async fn resume_transfer(core: State<'_, Arc<Core>>, task_id: String) -> CmdResult<()> {
+    Ok(core.resume_transfer(&task_id).await?)
+}
+
+#[tauri::command]
 pub async fn list_transfers(
     core: State<'_, Arc<Core>>,
     limit: u32,
@@ -400,6 +410,7 @@ pub fn event_payload(event: &CoreEvent) -> Value {
             "currentFile": current_file,
         }),
         CoreEvent::TransferDone { task_id } => json!({ "taskId": task_id }),
+        CoreEvent::TransferPaused { task_id } => json!({ "taskId": task_id }),
         CoreEvent::TransferFailed { task_id, error } => {
             json!({ "taskId": task_id, "error": error })
         }
