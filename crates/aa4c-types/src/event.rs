@@ -99,6 +99,12 @@ pub enum CoreEvent {
         task_id: TaskId,
         error: String,
     },
+    /// 发送方主动暂停——区别于 `TransferFailed`：不是错误，接收端的 `.aa4c-part`
+    /// 已保留，随时可以「继续」接着传（见 `TransferStatus::Paused`）。
+    #[serde(rename_all = "camelCase")]
+    TransferPaused {
+        task_id: TaskId,
+    },
 
     /// 本机同步索引发生变化（扫描完成），UI 应重新拉取统一文件视图。
     SyncIndexUpdated,
@@ -210,6 +216,7 @@ impl CoreEvent {
             Self::TransferProgress { .. } => "transfer_progress",
             Self::TransferDone { .. } => "transfer_done",
             Self::TransferFailed { .. } => "transfer_failed",
+            Self::TransferPaused { .. } => "transfer_paused",
             Self::SyncIndexUpdated => "sync_index_updated",
             Self::DownloadProgress { .. } => "download_progress",
             Self::DownloadDone { .. } => "download_done",

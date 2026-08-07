@@ -184,6 +184,264 @@ async fn two_cores_pair_then_transfer() {
     b.core.shutdown().await.unwrap();
 }
 
+/// 暂停 → 接收端保留 `.aa4c-part` → 继续 → 接着传完，内容正确。
+///
+/// 这条测的是暂停与取消的**根本区别**：取消会给对端发 `Cancel`、对端随即清掉
+/// part 文件；暂停必须静默断开，part 文件留着才谈得上"继续"。所以中间那句
+/// "part 文件还在"的断言是本测试的核心，不是顺带检查。
+#[tokio::test]
+async fn pause_keeps_partial_file_then_resume_completes_it() {
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let b_id = b.core.self_info().id;
+
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "both sides pair");
+
+    // 要足够大，暂停才有机会插进传输中间；用可压缩性差的内容避免任何一层顺手压掉。
+    let payload: Vec<u8> = (0..32 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let src = a._dir.path().join("big.bin");
+    tokio::fs::write(&src, &payload).await.unwrap();
+    let recv_dir = b._dir.path().join("inbox");
+
+    // 数一数接收端被问了几次「要不要接收」——「继续」时不该再问第二遍。
+    let prompts = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let ev_b2 = b.core.subscribe();
+    let b_core = b.core.clone();
+    let recv_dir2 = recv_dir.clone();
+    let prompts_seen = prompts.clone();
+    tokio::spawn(async move {
+        let mut rx = ev_b2;
+        while let Ok(event) = rx.recv().await {
+            if let CoreEvent::TransferRequest { task } = event {
+                prompts_seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = b_core
+                    .accept_transfer(&task.id, true, Some(recv_dir2.clone()))
+                    .await;
+            }
+        }
+    });
+
+    let mut ev_a2 = a.core.subscribe();
+    let task_id = a.core.send_files(&b_id, vec![src]).await.unwrap();
+
+    // 等到接收端真的落了盘再暂停——刚发起就暂停的话连 part 文件都还没建出来，
+    // 测的就不是"传到一半暂停"这个场景了。盯 part 文件而不是 TransferProgress
+    // 事件：后者有 100ms 节流，回环上一个不大的文件可能一条都不发。
+    let part = recv_dir.join("big.bin.aa4c-part");
+    let part_poll = part.clone();
+    // 等到落盘量超过一个续传块（4 MiB）再暂停：接收端汇报的续传起点是按 4 MiB
+    // 整块截断的（`resume_progress` 的"安全前缀"），不到一块的话「继续」会从头重来，
+    // 这条用例就只是在测"重传"而不是"续传"了。
+    const RESUME_BLOCK: u64 = 4 * 1024 * 1024;
+    let started = timeout(WAIT, async {
+        loop {
+            if let Ok(meta) = tokio::fs::metadata(&part_poll).await {
+                if meta.len() >= 2 * RESUME_BLOCK {
+                    return meta.len();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    let part_len_at_pause =
+        started.expect("receiver writes more than one resume block before we pause");
+
+    a.core.pause_transfer(&task_id).await.unwrap();
+
+    let paused = timeout(WAIT, async {
+        loop {
+            match ev_a2.recv().await.unwrap() {
+                CoreEvent::TransferPaused { task_id: t } if t == task_id => return,
+                CoreEvent::TransferFailed { task_id: t, error } if t == task_id => {
+                    panic!("pause surfaced as a failure instead: {error}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await;
+    paused.expect("pausing emits TransferPaused");
+
+    let a_task = a.core.list_transfers(10, 0).await.unwrap();
+    assert_eq!(a_task[0].status, TransferStatus::Paused);
+
+    // **本测试的核心断言**：接收端的半成品还在。取消会把它删掉，暂停不能。
+    assert!(
+        part.exists(),
+        "pausing must leave the .aa4c-part behind — that is the whole premise of resuming"
+    );
+    assert!(
+        part_len_at_pause >= RESUME_BLOCK,
+        "there must be at least one whole resume block on disk, otherwise 「继续」\
+         silently restarts from zero and this test would not be exercising resumption"
+    );
+
+    let mut ev_b3 = b.core.subscribe();
+    a.core.resume_transfer(&task_id).await.unwrap();
+
+    let wait_a = async {
+        loop {
+            match ev_a2.recv().await.unwrap() {
+                CoreEvent::TransferDone { task_id: t } if t == task_id => return,
+                CoreEvent::TransferFailed { task_id: t, error } if t == task_id => {
+                    panic!("resumed transfer failed (a side): {error}")
+                }
+                _ => {}
+            }
+        }
+    };
+    // 接收端**一定**会为被抛弃的那一轮会话报一次失败（发送方静默断开，它读到 EOF
+    // 就收尾），而且沿用同一个 task_id，没法靠 id 把它跟新一轮区分开。这里因此只
+    // 认 `TransferDone`：真的没接上的话就等不到它，由外层 timeout 判失败。
+    let wait_b = async {
+        loop {
+            if let CoreEvent::TransferDone { .. } = ev_b3.recv().await.unwrap() {
+                return;
+            }
+        }
+    };
+    let (a_done, b_done) = tokio::join!(timeout(WAIT, wait_a), timeout(WAIT, wait_b));
+    a_done.expect("resumed transfer completes (a side)");
+    b_done.expect("resumed transfer completes (b side)");
+
+    // 续传拼出来的文件必须与原文件逐字节一致——这才说明续传起点算对了，
+    // 没有重叠也没有空洞。
+    assert_eq!(
+        tokio::fs::read(recv_dir.join("big.bin")).await.unwrap(),
+        payload
+    );
+    assert!(
+        !part.exists(),
+        "part file is consumed once the file completes"
+    );
+
+    let a_tasks = a.core.list_transfers(10, 0).await.unwrap();
+    assert_eq!(
+        a_tasks.len(),
+        1,
+        "resume reuses the same task, not a new one"
+    );
+    assert_eq!(a_tasks[0].status, TransferStatus::Done);
+
+    // 「继续」不该再弹一次确认框：用户上一轮已经同意过这条任务了。
+    assert_eq!(
+        prompts.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "resuming must not ask the receiver to accept a second time"
+    );
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}
+
+/// 暂停之后仍然可以取消。暂停收尾会把会话信号清掉（那一轮确实结束了），
+/// 早期实现里 `cancel()` 只认"有在跑的会话"，于是用户暂停后再点 ✕ 会拿到一个
+/// "unknown task" 报错——而卡片上取消按钮在暂停态是一直显示的。
+#[tokio::test]
+async fn a_paused_transfer_can_still_be_cancelled() {
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let b_id = b.core.self_info().id;
+
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "both sides pair");
+
+    let payload: Vec<u8> = (0..32 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let src = a._dir.path().join("big.bin");
+    tokio::fs::write(&src, &payload).await.unwrap();
+    let recv_dir = b._dir.path().join("inbox");
+
+    let ev_b2 = b.core.subscribe();
+    let b_core = b.core.clone();
+    let recv_dir2 = recv_dir.clone();
+    tokio::spawn(async move {
+        let mut rx = ev_b2;
+        while let Ok(event) = rx.recv().await {
+            if let CoreEvent::TransferRequest { task } = event {
+                let _ = b_core
+                    .accept_transfer(&task.id, true, Some(recv_dir2.clone()))
+                    .await;
+            }
+        }
+    });
+
+    let mut ev_a2 = a.core.subscribe();
+    let task_id = a.core.send_files(&b_id, vec![src]).await.unwrap();
+
+    let part = recv_dir.join("big.bin.aa4c-part");
+    timeout(WAIT, async {
+        loop {
+            if let Ok(m) = tokio::fs::metadata(&part).await {
+                if m.len() > 0 {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("transfer starts");
+
+    a.core.pause_transfer(&task_id).await.unwrap();
+    timeout(WAIT, async {
+        loop {
+            if let CoreEvent::TransferPaused { task_id: t } = ev_a2.recv().await.unwrap() {
+                if t == task_id {
+                    return;
+                }
+            }
+        }
+    })
+    .await
+    .expect("pause lands");
+
+    // 关键：暂停之后取消不该报错
+    a.core
+        .cancel_transfer(&task_id)
+        .await
+        .expect("a paused transfer must still be cancellable");
+
+    let tasks = a.core.list_transfers(10, 0).await.unwrap();
+    assert_eq!(tasks[0].status, TransferStatus::Cancelled);
+    // 取消之后就不该还能「继续」了
+    assert!(a.core.resume_transfer(&task_id).await.is_err());
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}
+
+/// 接收方向不能暂停（没有"我这边继续"的说法，要由发送方重新发起）——
+/// 与其假装成功、留个点了没反应的按钮，不如明确报错。
+#[tokio::test]
+async fn pausing_a_task_we_did_not_originate_is_rejected() {
+    let a = spawn_node().await;
+    assert!(a
+        .core
+        .pause_transfer(&"no-such-task".to_string())
+        .await
+        .is_err());
+    assert!(a
+        .core
+        .resume_transfer(&"no-such-task".to_string())
+        .await
+        .is_err());
+    a.core.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn index_exchange_gated_by_full_trust() {
     use aa4c_types::TrustLevel;
@@ -495,8 +753,23 @@ async fn quic_resume_after_disconnect() {
     tokio::fs::write(&src, &content).await.unwrap();
 
     // —— 第一次尝试：经黑洞代理，中途"断网" ——
+    // 直接给传输层一个 addr 指向代理的 DeviceInfo，**绕开 `resolve_peer`**：那一步
+    // 会优先用 mDNS 发现到的地址、只在发现不到时才回落到库里的 `last_addr`（这对
+    // 生产是对的行为）。而本用例恰恰要强制走代理——一旦 A 的发现服务在这期间找到了
+    // B 的真实地址，代理就被绕过、第一次尝试反而会成功，断言随即失灵。这正是本用例
+    // 长期在整套跑时偶发失败、单跑却稳过的原因：同进程里前面的用例已经把 mDNS 预热
+    // 了，发现赢下了这场竞速。
+    let via_proxy = DeviceInfo {
+        addr: Some(proxy),
+        ..peer_info(&b)
+    };
     let ev_a1 = a.core.subscribe();
-    let task1 = a.core.send_files(&b_id, vec![src.clone()]).await.unwrap();
+    let task1 = a
+        .core
+        .transfer
+        .send(&via_proxy, vec![src.clone()])
+        .await
+        .unwrap();
     assert!(
         !timeout(Duration::from_secs(30), wait_terminal(ev_a1, &task1))
             .await

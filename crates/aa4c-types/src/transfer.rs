@@ -43,6 +43,11 @@ pub enum TransferStatus {
     /// 等待接收方确认。
     WaitingAccept,
     Transferring,
+    /// 发送方主动暂停。实现上就是**静默断开连接**——不发 `Cancel`，接收端因此
+    /// 保留已落盘的 `.aa4c-part`（PROTOCOL.md §7 规则 3：只有明确取消才清理），
+    /// 「继续」时用同一个 task_id 重新发起，走既有的断点续传协商（§13）接上。
+    /// 非终态：`is_terminal()` 为 false。
+    Paused,
     Done,
     Failed,
     Cancelled,
@@ -55,6 +60,7 @@ impl TransferStatus {
         match self {
             Self::WaitingAccept => "waiting_accept",
             Self::Transferring => "transferring",
+            Self::Paused => "paused",
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -78,6 +84,7 @@ impl FromStr for TransferStatus {
         match s {
             "waiting_accept" => Ok(Self::WaitingAccept),
             "transferring" => Ok(Self::Transferring),
+            "paused" => Ok(Self::Paused),
             "done" => Ok(Self::Done),
             "failed" => Ok(Self::Failed),
             "cancelled" => Ok(Self::Cancelled),
@@ -158,6 +165,7 @@ mod tests {
         for s in [
             TransferStatus::WaitingAccept,
             TransferStatus::Transferring,
+            TransferStatus::Paused,
             TransferStatus::Done,
             TransferStatus::Failed,
             TransferStatus::Cancelled,
@@ -167,6 +175,7 @@ mod tests {
         }
         assert!(TransferStatus::Done.is_terminal());
         assert!(!TransferStatus::Transferring.is_terminal());
+        assert!(!TransferStatus::Paused.is_terminal());
     }
 
     #[test]

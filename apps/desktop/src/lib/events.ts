@@ -112,6 +112,9 @@ export async function startEventBridge(): Promise<UnlistenFn> {
         toast.push("success", `已发送到 ${peer}`);
       }
     }),
+    listen<TransferDonePayload>("aa4c://transfer_paused", (e) => {
+      transfer.onPaused(e.payload.taskId);
+    }),
     listen<TransferFailedPayload>("aa4c://transfer_failed", (e) => {
       // error 已是后端给出的人话消息（取消/拒绝等）
       transfer.onFailed(e.payload.taskId);

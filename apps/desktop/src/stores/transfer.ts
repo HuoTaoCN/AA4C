@@ -117,8 +117,24 @@ export const useTransferStore = defineStore("transfer", {
       void this.loadHistory();
     },
 
+    /** 暂停后任务留在列表里（状态转 paused），不像完成/失败那样移出——
+     *  用户还要在那一行上点「继续」。 */
+    onPaused(taskId: string) {
+      const task = this.active[taskId];
+      if (task) {
+        this.active[taskId] = { ...task, status: "paused", speedBps: 0 };
+      }
+      void this.loadHistory();
+    },
+
     async cancel(taskId: string) {
       await api.cancelTransfer(taskId);
+    },
+    async pause(taskId: string) {
+      await api.pauseTransfer(taskId);
+    },
+    async resume(taskId: string) {
+      await api.resumeTransfer(taskId);
     },
   },
 });

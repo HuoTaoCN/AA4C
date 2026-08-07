@@ -15,7 +15,6 @@ use aa4c_types::{
     TransferStatus, TransferTask,
 };
 use tokio::time::timeout;
-use tokio_util::sync::CancellationToken;
 
 use crate::path::sanitize_rel_path;
 use crate::{now_ms, TransferService};
@@ -47,7 +46,7 @@ pub(crate) async fn run(svc: Arc<TransferService>, job: FetchJob) {
 async fn drive(
     svc: &Arc<TransferService>,
     job: &FetchJob,
-    cancel: &CancellationToken,
+    cancel: &crate::StopSignal,
 ) -> Result<()> {
     let t = svc.config.timeout;
     let (mut stream, via) = svc.dial(&job.peer_id, job.addr).await?;

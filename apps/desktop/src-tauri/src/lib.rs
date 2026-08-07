@@ -128,6 +128,8 @@ pub fn run() {
             commands::send_files,
             commands::accept_transfer,
             commands::cancel_transfer,
+            commands::pause_transfer,
+            commands::resume_transfer,
             commands::list_transfers,
             commands::get_settings,
             commands::update_settings,

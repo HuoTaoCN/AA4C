@@ -65,7 +65,91 @@ async fn migration_is_idempotent_across_reopens() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 11); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares + 008_downloads + 009_archive + 010_knowledge + 011_download_options
+    assert_eq!(version, 12); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares + 008_downloads + 009_archive + 010_knowledge + 011_download_options + 012_transfer_paused
+}
+
+/// 迁移 012 重建 `transfer_tasks`（SQLite 改不了 CHECK 约束，只能建新表-拷贝-删旧-改名）。
+/// `DROP TABLE` 在外键开启时会顺着 `transfer_files ... ON DELETE CASCADE` 把子表数据
+/// **一起删光**——`migrate()` 因此在事务之外先关掉外键。这条测试直接搭一个 011 状态的
+/// 旧库、塞进真实数据，再跑升级，确认任务与文件明细一条都没少。
+///
+/// 只建这次重建牵涉到的三张表：升级到 012 只会跑 012 那一条 SQL，其余表缺席不影响。
+#[tokio::test]
+async fn migration_012_rebuild_preserves_existing_tasks_and_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("aa4c.db");
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE devices (
+                 id TEXT PRIMARY KEY, name TEXT NOT NULL, platform TEXT NOT NULL,
+                 public_key BLOB NOT NULL, trusted INTEGER NOT NULL DEFAULT 0,
+                 trust_level TEXT NOT NULL DEFAULT 'friend',
+                 paired_at INTEGER, last_seen_at INTEGER, last_addr TEXT, server_hint TEXT,
+                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE transfer_tasks (
+                 id TEXT PRIMARY KEY,
+                 direction TEXT NOT NULL CHECK (direction IN ('send','recv')),
+                 peer_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                 status TEXT NOT NULL
+                     CHECK (status IN ('waiting_accept','transferring','done',
+                                       'failed','cancelled','rejected')),
+                 total_bytes INTEGER NOT NULL DEFAULT 0,
+                 transferred_bytes INTEGER NOT NULL DEFAULT 0,
+                 file_count INTEGER NOT NULL DEFAULT 0,
+                 save_dir TEXT, error TEXT,
+                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE transfer_files (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 task_id TEXT NOT NULL REFERENCES transfer_tasks(id) ON DELETE CASCADE,
+                 file_index INTEGER NOT NULL, rel_path TEXT NOT NULL, size INTEGER NOT NULL,
+                 hash TEXT,
+                 status TEXT NOT NULL DEFAULT 'pending'
+                     CHECK (status IN ('pending','transferring','done','failed')),
+                 abs_path TEXT, UNIQUE (task_id, file_index)
+             );
+             INSERT INTO devices VALUES
+                 ('dev1','旧设备','macos',X'00',1,'friend',1,1,NULL,NULL,1,1);
+             INSERT INTO transfer_tasks VALUES
+                 ('t-old','send','dev1','done',100,100,2,NULL,NULL,5,5);
+             INSERT INTO transfer_files (task_id, file_index, rel_path, size, hash, status)
+                 VALUES ('t-old',0,'photo-a.jpg',60,NULL,'done'),
+                        ('t-old',1,'photo-b.mp4',40,NULL,'done');",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 11i64).unwrap();
+    }
+
+    let store = Store::open(&db_path).await.unwrap();
+    let tasks = store.list_tasks(10, 0).await.unwrap();
+    assert_eq!(tasks.len(), 1, "task itself must survive the rebuild");
+    assert_eq!(tasks[0].id, "t-old");
+    assert_eq!(
+        tasks[0].files.len(),
+        2,
+        "file rows must not be swept away by DROP TABLE's cascade - that is exactly why migrations run with foreign_keys off"
+    );
+    assert_eq!(tasks[0].files[1].rel_path, "photo-b.mp4");
+    drop(store);
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 12);
+    conn.execute(
+        "UPDATE transfer_tasks SET status = 'paused' WHERE id = 't-old'",
+        [],
+    )
+    .expect("new CHECK constraint accepts 'paused'");
+    let fk: i64 = conn
+        .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(fk, 1, "foreign keys must be restored after migrating");
 }
 
 #[tokio::test]
