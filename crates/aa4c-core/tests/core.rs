@@ -17,6 +17,11 @@ use tokio::sync::broadcast;
 use tokio::time::timeout;
 
 const WAIT: Duration = Duration::from_secs(20);
+/// 给"要真的搬几十 MiB"的用例用的宽松上限。这类用例的 I/O 量比套件里其余用例大一个
+/// 量级，共用 20s 的 `WAIT` 在机器负载高时会被卡住（实测 load average ~19 时整套跑会
+/// 偶发超时，连带若干无关用例一起挂）。它们等的都是**前置条件/终态**而非活性指标——
+/// 条件一满足立刻返回，放宽只是让"真的卡住"时多等一会儿，不会放过任何真实失败。
+const HEAVY: Duration = Duration::from_secs(90);
 
 struct Node {
     core: Arc<Core>,
@@ -240,7 +245,7 @@ async fn pause_keeps_partial_file_then_resume_completes_it() {
     // 整块截断的（`resume_progress` 的"安全前缀"），不到一块的话「继续」会从头重来，
     // 这条用例就只是在测"重传"而不是"续传"了。
     const RESUME_BLOCK: u64 = 4 * 1024 * 1024;
-    let started = timeout(WAIT, async {
+    let started = timeout(HEAVY, async {
         loop {
             if let Ok(meta) = tokio::fs::metadata(&part_poll).await {
                 if meta.len() >= 2 * RESUME_BLOCK {
@@ -256,7 +261,7 @@ async fn pause_keeps_partial_file_then_resume_completes_it() {
 
     a.core.pause_transfer(&task_id).await.unwrap();
 
-    let paused = timeout(WAIT, async {
+    let paused = timeout(HEAVY, async {
         loop {
             match ev_a2.recv().await.unwrap() {
                 CoreEvent::TransferPaused { task_id: t } if t == task_id => return,
@@ -308,7 +313,7 @@ async fn pause_keeps_partial_file_then_resume_completes_it() {
             }
         }
     };
-    let (a_done, b_done) = tokio::join!(timeout(WAIT, wait_a), timeout(WAIT, wait_b));
+    let (a_done, b_done) = tokio::join!(timeout(HEAVY, wait_a), timeout(HEAVY, wait_b));
     a_done.expect("resumed transfer completes (a side)");
     b_done.expect("resumed transfer completes (b side)");
 
@@ -383,7 +388,7 @@ async fn a_paused_transfer_can_still_be_cancelled() {
     let task_id = a.core.send_files(&b_id, vec![src]).await.unwrap();
 
     let part = recv_dir.join("big.bin.aa4c-part");
-    timeout(WAIT, async {
+    timeout(HEAVY, async {
         loop {
             if let Ok(m) = tokio::fs::metadata(&part).await {
                 if m.len() > 0 {
@@ -397,7 +402,7 @@ async fn a_paused_transfer_can_still_be_cancelled() {
     .expect("transfer starts");
 
     a.core.pause_transfer(&task_id).await.unwrap();
-    timeout(WAIT, async {
+    timeout(HEAVY, async {
         loop {
             if let CoreEvent::TransferPaused { task_id: t } = ev_a2.recv().await.unwrap() {
                 if t == task_id {
