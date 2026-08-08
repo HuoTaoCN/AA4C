@@ -2,7 +2,7 @@
 //!
 //! 环境变量：
 //! - `AA4C_SERVER_DATA_DIR`：身份数据目录，默认 `./aa4c-server-data`
-//! - `AA4C_SERVER_LISTEN`：监听地址，默认 `0.0.0.0:42420`
+//! - `AA4C_SERVER_LISTEN`：监听地址，默认 `[::]:42420`（双栈，同时接受 IPv6 与 IPv4）
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -22,7 +22,9 @@ async fn main() {
     let listen_addr: SocketAddr = std::env::var("AA4C_SERVER_LISTEN")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| "0.0.0.0:42420".parse().unwrap());
+        // 默认双栈（里程碑 R1）：`[::]` 同时接受 IPv6 与 IPv4（`IPV6_V6ONLY` 由
+        // `Server::run` 显式关闭）。要退回只听 IPv4 就显式设 `0.0.0.0:42420`。
+        .unwrap_or_else(|| "[::]:42420".parse().unwrap());
 
     let server = run(ServerConfig {
         data_dir,

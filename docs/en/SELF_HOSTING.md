@@ -73,13 +73,13 @@ Two environment variables configure it:
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `AA4C_SERVER_DATA_DIR` | `./aa4c-server-data` | Identity directory. On first start the server generates its Ed25519 key and self-signed certificate here, and **keeps them from then on** |
-| `AA4C_SERVER_LISTEN` | `0.0.0.0:42420` | Listen address and port |
+| `AA4C_SERVER_LISTEN` | `[::]:42420` | Listen address and port. Dual-stack by default: one port serves both IPv6 and IPv4. Set `0.0.0.0:42420` explicitly for IPv4 only |
 
 For example:
 
 ```bash
 AA4C_SERVER_DATA_DIR=/var/lib/aa4c-server \
-AA4C_SERVER_LISTEN=0.0.0.0:42420 \
+AA4C_SERVER_LISTEN=[::]:42420 \
 aa4c-server
 ```
 
@@ -131,7 +131,7 @@ Type=simple
 User=aa4c
 Group=aa4c
 Environment=AA4C_SERVER_DATA_DIR=/var/lib/aa4c-server
-Environment=AA4C_SERVER_LISTEN=0.0.0.0:42420
+Environment=AA4C_SERVER_LISTEN=[::]:42420
 Environment=RUST_LOG=info
 ExecStart=/usr/local/bin/aa4c-server
 Restart=always
@@ -171,7 +171,7 @@ RUN cargo build --release -p aa4c-server
 FROM debian:bookworm-slim
 COPY --from=builder /src/target/release/aa4c-server /usr/local/bin/aa4c-server
 ENV AA4C_SERVER_DATA_DIR=/data
-ENV AA4C_SERVER_LISTEN=0.0.0.0:42420
+ENV AA4C_SERVER_LISTEN=[::]:42420
 VOLUME /data
 EXPOSE 42420
 ENTRYPOINT ["/usr/local/bin/aa4c-server"]
@@ -228,6 +228,7 @@ Which means: **unpairing = the next registration omits that peer = lookup access
 | **Bandwidth** | Direct connections and hole punching cost the server no bandwidth; only relayed sessions do. Rate limits and quotas are yours to configure at the system level (`tc`, provider-side shaping) |
 | **Logging** | `RUST_LOG=info` is enough for day-to-day operation; logs contain no file contents or file names |
 | **Ports** | Change `AA4C_SERVER_LISTEN` to move ports, then update the port in the client-side address |
+| **IPv6** | IPv6 is already listened on by default (`[::]`, dual-stack). If your machine has a public IPv6 address, clients can often connect directly and skip hole punching and relaying entirely — just remember your firewall or security group has to open that port for IPv6 **as well**; IPv4 rules alone are not enough |
 
 ## 10. Troubleshooting
 

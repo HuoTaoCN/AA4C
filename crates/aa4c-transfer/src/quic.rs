@@ -125,9 +125,19 @@ pub(crate) fn listen(
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_server));
     server_config.transport_config(transport_config());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let endpoint = quinn::Endpoint::server(server_config, addr)
+    // 双栈监听（TRUST_DESIGN.md §6.1，里程碑 R1）：自己建 socket 而不是用
+    // `Endpoint::server`，就是为了能显式关掉 `IPV6_V6ONLY`——不能赌平台默认值
+    // （Windows 默认是开的，那样 IPv4 会整个失联），详见 `aa4c_proto::net`。
+    let socket = aa4c_proto::net::bind_udp_dual_stack(port)
         .map_err(|e| Aa4cError::Network(format!("quic bind: {e}")))?;
+    let endpoint = quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(server_config),
+        socket,
+        quinn::default_runtime()
+            .ok_or_else(|| Aa4cError::Network("no async runtime for quic endpoint".into()))?,
+    )
+    .map_err(|e| Aa4cError::Network(format!("quic endpoint: {e}")))?;
 
     let accept_endpoint = endpoint.clone();
     tokio::spawn(async move {

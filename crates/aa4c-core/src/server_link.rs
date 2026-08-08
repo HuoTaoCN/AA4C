@@ -118,7 +118,12 @@ async fn connect(
 /// 主要本地 IP（UDP connect 路由查询，不实际发包；沙箱/离线环境测不出就只剩回环这条）。
 fn local_candidate_endpoints(port: u16) -> Vec<SocketAddr> {
     let mut out = vec![SocketAddr::from(([127, 0, 0, 1], port))];
-    if let Some(ip) = primary_local_ip() {
+    // IPv4 与 IPv6 各探一次（里程碑 R1，TRUST_DESIGN.md §6.1）：只报 IPv4 的话，
+    // 即便双方都有公网 IPv6，对端也永远拿不到那个可以直连的地址，白白落到打洞/中继。
+    for ip in [primary_local_ip_v4(), primary_local_ip_v6()]
+        .into_iter()
+        .flatten()
+    {
         let candidate = SocketAddr::new(ip, port);
         if !out.contains(&candidate) {
             out.push(candidate);
@@ -129,10 +134,26 @@ fn local_candidate_endpoints(port: u16) -> Vec<SocketAddr> {
 
 /// "我的 OS 会用哪个本地 IP 出网" 的零依赖探测：UDP `connect` 只做内核路由查表，
 /// 不实际发包，离线也能返回结果（除非连本地路由表都没有默认路由）。
-fn primary_local_ip() -> Option<std::net::IpAddr> {
+fn primary_local_ip_v4() -> Option<std::net::IpAddr> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
     socket.local_addr().ok().map(|a| a.ip())
+}
+
+/// 同 [`primary_local_ip_v4`] 的 IPv6 版本。目标地址取 Google Public DNS 的 IPv6
+/// （`2001:4860:4860::8888`）——同样只查路由表、不发包。
+///
+/// 没有 IPv6 的机器上 `bind`/`connect` 会直接失败，返回 `None`，候选列表退化成打通
+/// 双栈之前的样子。**链路本地地址不上报**：`fe80::/10` 离开本链路无法路由，而候选
+/// 端点恰恰是给跨网对端用的（`pick_addr` 那边出于同样理由排除它）。
+fn primary_local_ip_v6() -> Option<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind("[::]:0").ok()?;
+    socket.connect("[2001:4860:4860::8888]:80").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    match ip {
+        std::net::IpAddr::V6(v6) if (v6.segments()[0] & 0xffc0) == 0xfe80 => None,
+        other => Some(other),
+    }
 }
 
 /// 打洞候选交换的共享状态（里程碑 C5）：由 [`spawn_register_loop`] 创建一份，一个
