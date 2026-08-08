@@ -39,6 +39,7 @@ aa4c-ai = { path = "crates/aa4c-ai" }
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
+socket2 = { version = "0.5", features = ["all"] }
 
 # 网络与安全
 mdns-sd = "0.13"

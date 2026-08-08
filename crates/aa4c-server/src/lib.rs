@@ -124,9 +124,22 @@ pub async fn run(config: ServerConfig) -> Result<Arc<Server>> {
     let tls_config = identity.tls_server_config(None)?;
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
-    let listener = TcpListener::bind(config.listen_addr)
-        .await
-        .map_err(|e| Aa4cError::Network(format!("bind {}: {e}", config.listen_addr)))?;
+    // 双栈监听（里程碑 R1）：默认地址 `[::]` 走 `bind_tcp_dual_stack`，它会**显式**关掉
+    // `IPV6_V6ONLY`（不能赌平台默认值，见 `aa4c_proto::net`），于是同一个端口同时接受
+    // IPv6 与 IPv4。只监听 IPv4 的自建服务器会把 R1 的收益吃掉一半——国内家宽普遍下发
+    // 公网 IPv6，手机在 IPv6-only 的蜂窝网里根本够不着它。
+    //
+    // 管理员显式指定了具体地址（不是通配）时按原样绑：那是明确的意图，不该被改写。
+    let listener = if config.listen_addr.is_ipv6() && config.listen_addr.ip().is_unspecified() {
+        let std_listener = aa4c_proto::net::bind_tcp_dual_stack(config.listen_addr.port())
+            .map_err(|e| Aa4cError::Network(format!("bind {}: {e}", config.listen_addr)))?;
+        TcpListener::from_std(std_listener)
+            .map_err(|e| Aa4cError::Network(format!("bind {}: {e}", config.listen_addr)))?
+    } else {
+        TcpListener::bind(config.listen_addr)
+            .await
+            .map_err(|e| Aa4cError::Network(format!("bind {}: {e}", config.listen_addr)))?
+    };
     let local_addr = listener
         .local_addr()
         .map_err(|e| Aa4cError::Network(e.to_string()))?;
@@ -197,7 +210,14 @@ pub async fn run(config: ServerConfig) -> Result<Arc<Server>> {
 type ServerTlsStream = tokio_rustls::server::TlsStream<TcpStream>;
 
 async fn handle_connection(server: Arc<Server>, mut stream: ServerTlsStream) -> Result<()> {
-    let peer_addr = stream.get_ref().0.peer_addr().ok();
+    // 还原 IPv4 映射地址（里程碑 R1，见 `aa4c_proto::net::normalize_mapped`）：这个地址
+    // 会作为端点登记进注册表、再被别的设备取走用于直连，形式必须与对端自报的一致。
+    let peer_addr = stream
+        .get_ref()
+        .0
+        .peer_addr()
+        .ok()
+        .map(aa4c_proto::net::normalize_mapped);
     let cert_id = {
         let certs = stream
             .get_ref()

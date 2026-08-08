@@ -73,13 +73,13 @@ aa4c-server
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
 | `AA4C_SERVER_DATA_DIR` | `./aa4c-server-data` | 身份数据目录。首次启动会在这里生成服务器的 Ed25519 密钥与自签证书，**之后固定不变** |
-| `AA4C_SERVER_LISTEN` | `0.0.0.0:42420` | 监听地址与端口 |
+| `AA4C_SERVER_LISTEN` | `[::]:42420` | 监听地址与端口。默认是**双栈**：同一个端口同时接受 IPv6 与 IPv4。要只听 IPv4 就显式写 `0.0.0.0:42420` |
 
 例如：
 
 ```bash
 AA4C_SERVER_DATA_DIR=/var/lib/aa4c-server \
-AA4C_SERVER_LISTEN=0.0.0.0:42420 \
+AA4C_SERVER_LISTEN=[::]:42420 \
 aa4c-server
 ```
 
@@ -130,7 +130,7 @@ Type=simple
 User=aa4c
 Group=aa4c
 Environment=AA4C_SERVER_DATA_DIR=/var/lib/aa4c-server
-Environment=AA4C_SERVER_LISTEN=0.0.0.0:42420
+Environment=AA4C_SERVER_LISTEN=[::]:42420
 Environment=RUST_LOG=info
 ExecStart=/usr/local/bin/aa4c-server
 Restart=always
@@ -170,7 +170,7 @@ RUN cargo build --release -p aa4c-server
 FROM debian:bookworm-slim
 COPY --from=builder /src/target/release/aa4c-server /usr/local/bin/aa4c-server
 ENV AA4C_SERVER_DATA_DIR=/data
-ENV AA4C_SERVER_LISTEN=0.0.0.0:42420
+ENV AA4C_SERVER_LISTEN=[::]:42420
 VOLUME /data
 EXPOSE 42420
 ENTRYPOINT ["/usr/local/bin/aa4c-server"]
@@ -227,6 +227,7 @@ docker logs -f aa4c-server        # 取服务器地址
 | **带宽** | 直连和打洞不消耗服务器带宽；只有中继会走服务器流量。中继的限速与配额由你自己在系统层面配置（如 `tc`、云厂商限速） |
 | **日志** | `RUST_LOG=info` 足够日常运维；日志不含文件内容与文件名 |
 | **端口** | 想换端口就改 `AA4C_SERVER_LISTEN`，客户端地址里的端口跟着改 |
+| **IPv6** | 默认已经在听 IPv6（`[::]` 双栈）。如果你的机器有公网 IPv6，客户端往往能直接连上、跳过打洞与中继——记得防火墙 / 安全组要**同时**放行 IPv6 的这个端口，只放 IPv4 规则是不够的 |
 
 ## 十、排查
 

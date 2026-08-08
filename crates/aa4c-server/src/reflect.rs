@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aa4c_identity::Identity;
+use aa4c_proto::net;
 use aa4c_types::{Aa4cError, Result};
 use quinn::crypto::rustls::QuicServerConfig;
 
@@ -31,9 +32,18 @@ pub(crate) fn spawn(identity: Arc<Identity>, port: u16) -> Result<u16> {
         .map_err(|e| Aa4cError::Network(format!("reflect quic server config: {e}")))?;
     let server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_server));
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let endpoint = quinn::Endpoint::server(server_config, addr)
+    // 双栈监听（TRUST_DESIGN.md §6.1，里程碑 R1）：反射服务尤其需要——它的职责就是
+    // 告诉对端"我看到你的地址是什么"，只绑 IPv4 的话 IPv6 客户端根本问不到自己的地址。
+    let socket = aa4c_proto::net::bind_udp_dual_stack(port)
         .map_err(|e| Aa4cError::Network(format!("reflect quic bind: {e}")))?;
+    let endpoint = quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(server_config),
+        socket,
+        quinn::default_runtime()
+            .ok_or_else(|| Aa4cError::Network("no async runtime for reflect".into()))?,
+    )
+    .map_err(|e| Aa4cError::Network(format!("reflect quic endpoint: {e}")))?;
     let bound_port = endpoint
         .local_addr()
         .map_err(|e| Aa4cError::Network(format!("reflect local_addr: {e}")))?
@@ -47,7 +57,11 @@ pub(crate) fn spawn(identity: Arc<Identity>, port: u16) -> Result<u16> {
             tokio::spawn(async move {
                 match incoming.await {
                     Ok(connection) => {
-                        let observed = connection.remote_address();
+                        // 还原 IPv4 映射地址（里程碑 R1）：双栈监听之后，一个普通
+                        // IPv4 客户端的源地址会变成 `::ffff:a.b.c.d`。这个值会被对端
+                        // 当作**打洞候选**用，不还原就会和 `local_candidate_endpoints`
+                        // 报的纯 IPv4 形式对不上——去重失效，白白多打几轮探测。
+                        let observed = net::normalize_mapped(connection.remote_address());
                         if let Err(e) = reply(&connection, observed).await {
                             tracing::debug!(error = %e, "reflect reply failed");
                         }

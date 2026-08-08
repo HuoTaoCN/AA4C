@@ -115,7 +115,15 @@ impl PairingManager {
         let (session_id, decisions) = self.new_session();
         let ctx = self.session_ctx(&session_id, decisions);
         tokio::spawn(async move {
-            let peer_addr = stream.get_ref().0.peer_addr().ok();
+            // 双栈监听之后，普通 IPv4 入站会以 `::ffff:a.b.c.d` 的映射形式出现；
+            // 这个值会一路写进 `devices.last_addr`，不还原就会让同一台设备在打通
+            // 双栈前后存出两种写法（里程碑 R1，见 `aa4c_proto::net::normalize_mapped`）。
+            let peer_addr = stream
+                .get_ref()
+                .0
+                .peer_addr()
+                .ok()
+                .map(aa4c_proto::net::normalize_mapped);
             let result = responder_after_request(
                 &ctx,
                 stream,
@@ -380,7 +388,13 @@ async fn initiator_session(ctx: &SessionCtx, addr: SocketAddr) -> Result<DeviceI
 /// 接收方会话（PROTOCOL.md §6 右列）：读取 Hello + `PairRequest`，再进入
 /// 用户决策环节。成功返回对端 DeviceId。
 async fn responder_session(ctx: &SessionCtx, mut stream: IncomingStream) -> Result<DeviceId> {
-    let peer_addr = stream.get_ref().0.peer_addr().ok();
+    // 同上：还原 IPv4 映射地址，避免 `devices.last_addr` 出现 `::ffff:` 前缀（里程碑 R1）。
+    let peer_addr = stream
+        .get_ref()
+        .0
+        .peer_addr()
+        .ok()
+        .map(aa4c_proto::net::normalize_mapped);
     let cert_id = peer_cert_id(stream.get_ref().1)?;
 
     let (hello_id, proto) = server_hello(&mut stream, ctx.identity.device_id()).await?;

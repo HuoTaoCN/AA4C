@@ -137,7 +137,9 @@ dependencies = [
  "aa4c-types",
  "bincode",
  "serde",
+ "socket2 0.5.10",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aa4c_identity::Identity;
+use aa4c_proto::net;
 use aa4c_store::Store;
 use aa4c_types::{
     Aa4cError, ConnectionVia, CoreEvent, DeviceId, DeviceInfo, Direction, FileStatus, Result,
@@ -1115,16 +1116,19 @@ impl TransferService {
 }
 
 /// 端口占用时自动递增（PROTOCOL.md §1）。
+///
+/// 绑的是**双栈** `[::]`（TRUST_DESIGN.md §6.1，里程碑 R1），IPv6 不可用时由
+/// [`aa4c_proto::net::bind_tcp_dual_stack`] 自行回落纯 IPv4，行为与打通双栈之前一致。
 async fn bind_with_fallback(port: u16) -> Result<TcpListener> {
     // 端口 0 = 系统分配（测试用），不做递增
     if port == 0 {
-        return Ok(TcpListener::bind(("0.0.0.0", 0)).await?);
+        return Ok(TcpListener::from_std(net::bind_tcp_dual_stack(0)?)?);
     }
     let mut last_err = None;
     for offset in 0..16u16 {
         let candidate = port.checked_add(offset).unwrap_or(DEFAULT_PORT);
-        match TcpListener::bind(("0.0.0.0", candidate)).await {
-            Ok(l) => return Ok(l),
+        match net::bind_tcp_dual_stack(candidate) {
+            Ok(l) => return Ok(TcpListener::from_std(l)?),
             Err(e) => last_err = Some(e),
         }
     }

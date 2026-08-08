@@ -1074,7 +1074,7 @@ async fn resolve_peer_reaches_peer_remotely_and_unpair_still_blocks_transfer() {
 ///
 /// ⚠️ 额外踩到的、与本次改动无关的沙箱环境坑：本机某些容器化开发环境会给一块虚拟网卡
 /// 分配形如 `192.168.97.0`（网段地址本身，不是合法主机地址）的 `inet` 地址（`ifconfig`
-/// 可查），`primary_local_ip()`（`server_link.rs`，UDP connect 探测本机出网 IP 的既有
+/// 可查），`primary_local_ip_v4()`（`server_link.rs`，UDP connect 探测本机出网 IP 的既有
 /// 零依赖实现）据此上报的候选地址不可连接，一旦 mDNS 恰好在这块坏网卡上广播自己、把这个
 /// 地址当自己的地址发布出去，直连必然以 `EADDRNOTAVAIL` 失败——这一档失败后当前实现会
 /// 尝试打洞/中继兜底，而这条测试里两台服务器天然没有公共信令点，兜底必然也失败，导致
@@ -2462,4 +2462,82 @@ async fn shutdown_releases_the_listening_port() {
 
     // 幂等：重复 shutdown 不该出错。
     node.core.shutdown().await.unwrap();
+}
+
+/// IPv6 端到端（TRUST_DESIGN.md §6.1，里程碑 R1）：配对与传输全程走 `[::1]`。
+///
+/// 这条用例守的是 R1 真正的主张——不是"绑定地址那行代码改了"，而是**IPv6 这条路真的
+/// 能跑通一次完整的配对 + 传输**。此前全链路只绑 `0.0.0.0`，本用例根本连不上第一步。
+///
+/// 顺带守住不回归的那一半：监听绑的是 `[::]` 双栈，同一个监听器**必须同时**接受 IPv4
+/// （`two_cores_pair_then_transfer` 等既有用例全部走 IPv4，它们仍然全绿就是那半边的证据）。
+#[tokio::test]
+async fn pair_and_transfer_over_ipv6() {
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let b_id = b.core.self_info().id;
+
+    // 用 IPv6 回环显式构造对端地址——不经 mDNS，确保走的确实是 IPv6。
+    let b_v6 = DeviceInfo {
+        addr: Some(
+            format!("[::1]:{}", b.core.listen_port())
+                .parse()
+                .expect("ipv6 loopback addr"),
+        ),
+        ..b.core.self_info()
+    };
+
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&b_v6).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(
+        ok_a.unwrap() && ok_b.unwrap(),
+        "IPv6 上必须能完成配对——这正是 R1 打通双栈监听要换来的东西"
+    );
+
+    // 真搬一个文件过去，证明数据面同样走得通（不只是握手）。
+    let src = a._dir.path().join("ipv6.txt");
+    let payload = b"hello over ipv6";
+    tokio::fs::write(&src, payload).await.unwrap();
+
+    let events_b = b.core.subscribe();
+    let task_id = a.core.transfer.send(&b_v6, vec![src]).await.unwrap();
+
+    // 接收端自动同意（同既有用例的做法）
+    let b_core = b.core.clone();
+    let mut accept_events = b.core.subscribe();
+    tokio::spawn(async move {
+        while let Ok(ev) = accept_events.recv().await {
+            if let CoreEvent::TransferRequest { task } = ev {
+                let _ = b_core.accept_transfer(&task.id, true, None).await;
+            }
+        }
+    });
+
+    assert!(
+        timeout(WAIT, wait_terminal(events_b, &task_id))
+            .await
+            .unwrap(),
+        "IPv6 上的传输应当完成"
+    );
+
+    // 落库的对端地址应当是真 IPv6（`::1`），不是被映射污染过的写法。
+    let rec = a.core.store.get_device(&b_id).await.unwrap().unwrap();
+    let stored: std::net::SocketAddr = rec
+        .last_addr
+        .as_deref()
+        .expect("paired peer has an address")
+        .parse()
+        .expect("stored addr parses");
+    assert!(
+        stored.is_ipv6(),
+        "经 IPv6 配对的对端地址应当存成 IPv6，实际 {stored}"
+    );
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
 }

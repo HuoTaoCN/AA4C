@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod net;
 pub mod server;
 
 use aa4c_types::{Aa4cError, DeviceId, DeviceInfo, Result, TaskId, MAX_FRAME_LEN, PROTO_VERSION};
