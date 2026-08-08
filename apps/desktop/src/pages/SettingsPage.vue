@@ -115,6 +115,12 @@ onMounted(async () => {
   } catch {
     // 拿不到共享范围列表就不显示警示，不影响设置页其余功能。
   }
+  try {
+    // 待确认的引荐（里程碑 R2）：进设置页就拉一次，之后靠 introductions_updated 事件更新。
+    await devices.loadPendingIntroductions();
+  } catch {
+    // 同上：拉不到就不显示这个区块。
+  }
 });
 function normalizePath(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -195,6 +201,36 @@ async function unpair(id: string) {
     toast.push("info", "已解除配对");
   } catch (e) {
     toast.push("error", asCommandError(e).message);
+  }
+}
+
+// —— 待确认的引荐（TRUST_DESIGN.md §5.8，里程碑 R2）——
+// 「某台你已经完全信任的设备说，这台也是你的」。文案必须说清「谁说的」——这是用户
+// 判断要不要信的唯一依据。指纹默认不露（术语），提供展开查看用于排查。
+const expandedIntro = ref<string | null>(null);
+const introBusy = ref<string | null>(null);
+
+async function confirmIntro(id: string, name: string) {
+  introBusy.value = id;
+  try {
+    await devices.confirmIntroduction(id);
+    toast.push("info", `已把「${name}」标记为我的设备`);
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  } finally {
+    introBusy.value = null;
+  }
+}
+
+async function dismissIntro(id: string) {
+  introBusy.value = id;
+  try {
+    await devices.dismissIntroduction(id);
+    toast.push("info", "已忽略，以后不再提示这台设备");
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  } finally {
+    introBusy.value = null;
   }
 }
 </script>
@@ -429,6 +465,55 @@ async function unpair(id: string) {
     </section>
 
     <section v-show="activeTab === 'devices'">
+      <!-- 待确认的设备（TRUST_DESIGN.md §5.8）：引荐只产生提示，信任由用户点出来 -->
+      <template v-if="devices.pendingIntroductions.length">
+        <h3 class="sub">待确认的设备</h3>
+        <div class="card list">
+          <div
+            v-for="p in devices.pendingIntroductions"
+            :key="p.deviceId"
+            class="prow"
+          >
+            <span class="ico">{{ platformIcon(p.platform) }}</span>
+            <div class="pinfo">
+              <div class="pname">
+                <span class="nm">{{ p.name }}</span>
+              </div>
+              <p class="hint muted intro-why">
+                你的「{{ p.introducedByName ?? "已移除的设备" }}」说这也是你的设备
+                <button class="linkish" @click="
+                  expandedIntro = expandedIntro === p.deviceId ? null : p.deviceId
+                ">
+                  {{ expandedIntro === p.deviceId ? "收起" : "查看指纹" }}
+                </button>
+              </p>
+              <code v-if="expandedIntro === p.deviceId" class="fp">{{ p.deviceId }}</code>
+            </div>
+            <div class="intro-actions">
+              <button
+                class="btn btn-primary small"
+                :disabled="introBusy === p.deviceId"
+                @click="confirmIntro(p.deviceId, p.name)"
+              >
+                标记为我的设备
+              </button>
+              <button
+                class="btn small"
+                :disabled="introBusy === p.deviceId"
+                @click="dismissIntro(p.deviceId)"
+              >
+                忽略
+              </button>
+            </div>
+          </div>
+        </div>
+        <p class="hint muted">
+          确认后这台设备就和本机互相完全信任，可以同步文件——即使你们不在同一个局域网。
+          点「忽略」后不再提示。
+        </p>
+        <h3 class="sub">已配对设备</h3>
+      </template>
+
       <div v-if="paired.length" class="card list">
         <div v-for="d in paired" :key="d.id" class="prow">
           <span class="ico">{{ platformIcon(d.platform) }}</span>
@@ -613,6 +698,29 @@ textarea {
   font-size: 0.78rem;
   line-height: 1.6;
   margin: 10px 2px 0;
+}
+/* 待确认的引荐（TRUST_DESIGN.md §5.8） */
+.sub {
+  color: var(--aa-text-dim);
+}
+.intro-why {
+  margin: 0;
+}
+.linkish {
+  font-size: inherit;
+  color: var(--aa-primary);
+  padding: 0 0 0 6px;
+}
+.fp {
+  font-size: 0.68rem;
+  color: var(--aa-text-dim);
+  word-break: break-all;
+  line-height: 1.4;
+}
+.intro-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .hint.warn {
   color: #9a6a00;

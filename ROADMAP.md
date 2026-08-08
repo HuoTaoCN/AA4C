@@ -131,7 +131,7 @@ V0.3 已经打通跨网连接的技术路径，但留下两个使用层面的门
 - **桌面端内置可选 server 模式**：把「要有 VPS」降到「家里有台常开设备」
 - 明确不做：虚拟网卡 / TUN 组网、公共节点池、全网 DHT、账号体系
 
-> 设计详见 [TRUST_DESIGN.md](TRUST_DESIGN.md)（设计稿，未实现；里程碑 R1–R4）。三条前提已核实：Tailscale / ZeroTier **都需要账号或自建控制面**，真正无账号的是 Syncthing / EasyTier 那一类；「零第三方」做不到 NAT 穿透，目标应是「不依赖第三方**服务商**」；我们只要一条应用层连接，不需要照搬 VPN 式组网。
+> 设计详见 [TRUST_DESIGN.md](TRUST_DESIGN.md)（里程碑 R1–R4）。**里程碑 R2（信任传递 / 引荐）已实现**（线路见 [PROTOCOL.md](PROTOCOL.md) §18，实现与设计稿的四处偏差见 TRUST_DESIGN.md §7.1）；R1（IPv6 双栈）、R3（UPnP/NAT-PMP）、R4（内置 server 模式）仍是设计稿。三条前提已核实：Tailscale / ZeroTier **都需要账号或自建控制面**，真正无账号的是 Syncthing / EasyTier 那一类；「零第三方」做不到 NAT 穿透，目标应是「不依赖第三方**服务商**」；我们只要一条应用层连接，不需要照搬 VPN 式组网。
 
 ---
 

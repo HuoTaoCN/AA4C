@@ -23,7 +23,7 @@ pub use archive::{
     ArchiveAction, ArchiveCategory, ArchiveEntry, ArchiveLogEntry, ArchiveMatch, ArchiveRule,
     ArchiveTag, ModelMeta, TagSource,
 };
-pub use device::{DeviceId, DeviceInfo, Platform, TrustLevel};
+pub use device::{DeviceId, DeviceInfo, PendingIntroduction, Platform, TrustLevel};
 pub use download::{DownloadKind, DownloadOptions, DownloadStatus, DownloadTask};
 pub use error::{Aa4cError, Result};
 pub use event::{AiEngineStatus, AiSlot, ConnectionVia, CoreEvent};
@@ -39,9 +39,10 @@ pub use transfer::{Direction, FileStatus, TaskId, TransferFile, TransferStatus, 
 /// 协议版本（PROTOCOL.md §0）。V0.3 起为 4：新增广域网 QUIC 会话层 + 断点续传
 /// （`ResumeReport`，PROTOCOL.md §13，proto=3）+ 分享链接的 `ShareRequest`
 /// （PROTOCOL.md §16，proto=4，里程碑 C6）。proto=5：配对时交换 `server_hint`
-/// （`PairServerHint`，PROTOCOL.md §17）。握手 `min(双方)` 协商；与更旧对端相遇时
-/// 自动降级为对方版本的行为（见 §14）。
-pub const PROTO_VERSION: u16 = 5;
+/// （`PairServerHint`，PROTOCOL.md §17）。proto=6：信任传递 / 引荐（`IntroduceRequest`
+/// / `IntroducePeers`，PROTOCOL.md §18，里程碑 R2）。握手 `min(双方)` 协商；与更旧对端
+/// 相遇时自动降级为对方版本的行为（见 §14）。
+pub const PROTO_VERSION: u16 = 6;
 
 /// 支持跨设备索引交换 / 按需拉取所需的最低协商版本（PROTOCOL.md §8b / §14）。
 /// 握手谈成的 proto < 此值即对端为 v1，跳过一切同步消息（优雅降级，不发 v2 帧）。
@@ -63,6 +64,12 @@ pub const SHARE_PROTO_VERSION: u16 = 4;
 /// proto < 此值的一方不认识 `PairServerHint`，两端都不发送，行为与旧版完全一致（同
 /// `RESUME_PROTO_VERSION` 的 gate 惯例）。
 pub const SERVER_HINT_PROTO_VERSION: u16 = 5;
+
+/// 支持信任传递 / 引荐（`IntroduceRequest` / `IntroducePeers`）所需的最低协商版本
+/// （PROTOCOL.md §18，TRUST_DESIGN.md §5，里程碑 R2）。请求方在与完全信任设备的定期
+/// 交换中，只在协商 proto ≥ 此值时才发出 `IntroduceRequest`；对端版本太旧则跳过这一轮，
+/// 索引交换照常（优雅降级，同 `SYNC_PROTO_VERSION` 的处理方式）。
+pub const INTRODUCE_PROTO_VERSION: u16 = 6;
 
 /// 默认监听端口（PROTOCOL.md §0）。
 pub const DEFAULT_PORT: u16 = 42420;

@@ -8,6 +8,7 @@
 
 mod archive;
 mod dispatch;
+mod introduce;
 mod orchestrate;
 mod server_link;
 mod settings;
@@ -217,6 +218,19 @@ impl Core {
         // 9. 跨设备索引交换：与全部完全信任设备交换索引摘要（里程碑 3；里程碑 C4 起
         //    不再局限于 mDNS 在线快照，远程设备靠周期定时器兜底，见 sync_exchange 模块文档）
         sync_exchange::spawn_exchange_loop(
+            store.clone(),
+            discovery.clone(),
+            identity.clone(),
+            fallback_name.clone(),
+            save_dir_fallback.clone(),
+            transfer.clone(),
+            events.clone(),
+        );
+
+        // 9b. 信任传递 / 引荐（TRUST_DESIGN.md §5，里程碑 R2）：与全部完全信任设备交换
+        //     「这些也是我的设备」的指纹。刻意与索引交换分开跑——引荐几乎不变，用不着
+        //     30s 一轮（见 introduce 模块文档）。只落待确认，绝不自动信任。
+        introduce::spawn_introduce_loop(
             store.clone(),
             discovery.clone(),
             identity.clone(),

@@ -14,6 +14,7 @@ import type {
   KbSource,
   KbSourceSummary,
   LocalModel,
+  PendingIntroduction,
   Settings,
   Share,
   ShareAccess,
@@ -38,6 +39,15 @@ export const api = {
     invoke<void>("unpair_device", { deviceId }),
   setTrustLevel: (deviceId: string, level: TrustLevel) =>
     invoke<void>("set_trust_level", { deviceId, level }),
+
+  // —— 信任传递 / 引荐（TRUST_DESIGN.md §5，里程碑 R2）——
+  listPendingIntroductions: () =>
+    invoke<PendingIntroduction[]>("list_pending_introductions"),
+  confirmIntroduction: (deviceId: string) =>
+    invoke<void>("confirm_introduction", { deviceId }),
+  dismissIntroduction: (deviceId: string) =>
+    invoke<void>("dismiss_introduction", { deviceId }),
+  refreshIntroductions: () => invoke<void>("refresh_introductions"),
 
   sendFiles: (deviceId: string, paths: string[]) =>
     invoke<string>("send_files", { deviceId, paths }),

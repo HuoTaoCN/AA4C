@@ -494,3 +494,54 @@ PairServerHint {
   一方改了 `server_url`，已配对的朋友不会自动收到通知）——`last_addr` 字段本来就是这个
   精度基准（`upsert_device` 只在配对时调用一次），`server_hint` 沿用同一惯例，不新增一条
   专门的刷新通道；需要更新时重新走一次配对流程即可。
+
+---
+
+## 18. 信任传递 / 引荐（`IntroduceRequest` / `IntroducePeers`，proto ≥ 6，已实现，里程碑 R2）
+
+解决的死结见 [TRUST_DESIGN.md](TRUST_DESIGN.md) §5：配对要走 PIN（§6），PIN 要求同一局域网，
+而家里的台式机和单位的台式机永远不会同处一网——连得上也互不认识。手机两边都去过，由它
+把「这也是你的设备」的**指纹**捎过去。
+
+```
+A（请求方）                          B（持有方）
+   │── Hello / HelloAck ─────────────│  proto = min(A, B)，A 必须 proto ≥ 6 才发下一条
+   │── IntroduceRequest ─────────────▶│
+   │                                  │  B 校验：A 必须是 B 的 full 设备
+   │◀──── Cancel{"not_full_trust"} ───│  不满足 → 回绝并断开
+   │◀──── IntroducePeers{peers,last} ─│  满足 → 分批回送，last=true 收尾（空列表也回一帧）
+```
+
+同 §8b 的索引交换：**不修改任何已有消息结构体**，只追加变体（bincode 位置编码，给既有
+变体加字段会破坏所有旧客户端的解码）。
+
+```rust
+IntroduceRequest,
+IntroducePeers { peers: Vec<PeerIntro>, last: bool },
+
+pub struct PeerIntro {
+    pub device_id: DeviceId,      // 指纹 = 信任锚点
+    pub public_key: Vec<u8>,      // Ed25519 公钥原始 32 字节
+    pub name: String,             // 仅供界面辨认，不参与任何信任判定
+    pub platform: String,
+    pub server_hint: Option<String>,
+}
+```
+
+- **版本 gate**：`INTRODUCE_PROTO_VERSION = 6`。协商 proto < 6 时请求方直接跳过这一轮，
+  索引交换照常（优雅降级，同 §14 与 `SYNC_PROTO_VERSION` 的惯例）。
+- **两道信任闸**：请求方必须是持有方的 `full`（与索引交换同闸，SYNC_DESIGN §2）；且**只回送
+  `full` 设备**，`friend` 一个都不传——那是「别人的设备」，广播出去等于泄露社交关系图。
+  请求方自己也被排除。
+- **待确认记录不参与传递**：只回送本机用户**亲自确认过**的信任（`trusted = 1` 的行）。
+  引荐可以多跳（H 确认了 W 之后会把 W 再引荐出去），但**每一跳都要用户确认一次**——
+  这正是它不会失控的原因；未确认的记录若也能转发，一条引荐就能顺着设备图无限扩散。
+- **`public_key` 随行、收方自校验**：`device_id == BLAKE3(public_key)`（同 `device_id_from_cert`
+  的推导），收方本地即可确认两者自洽——恶意引荐者递不出一个与公钥对不上的指纹。校验不过
+  的条目直接丢弃并告警。
+- **引荐 ≠ 信任**：收方只落一条「待确认」记录（`devices.introduced_by`，DATABASE_SCHEMA §2b），
+  升级信任必须由用户在界面上点确认。刻意不做 Syncthing 式自动引荐，理由见 TRUST_DESIGN §5.2。
+- **交换时机**：与索引交换分开的独立周期（5 分钟），不并进配对流程——配对只发生一次，
+  之后新加入的设备就传不出去了。
+- **拒绝服务防护**：单次交换的条数上限（500）与批次上限（16）在读取侧截断，本机待确认
+  列表另有容量上限（200）。

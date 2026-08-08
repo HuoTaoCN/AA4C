@@ -8,9 +8,9 @@ use std::sync::Arc;
 use aa4c_core::Core;
 use aa4c_types::{
     Aa4cError, AiStatus, ArchiveEntry, ArchiveLogEntry, ArchiveRule, CoreEvent, DeviceInfo,
-    DownloadOptions, DownloadTask, KbSource, KbSourceSummary, LocalModel, Settings, Share,
-    ShareAccess, Suggestion, SyncConflict, SyncFileEntry, SyncScope, TransferTask, TrustLevel,
-    UnifiedFile,
+    DownloadOptions, DownloadTask, KbSource, KbSourceSummary, LocalModel, PendingIntroduction,
+    Settings, Share, ShareAccess, Suggestion, SyncConflict, SyncFileEntry, SyncScope, TransferTask,
+    TrustLevel, UnifiedFile,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -71,6 +71,30 @@ pub async fn set_trust_level(
 ) -> CmdResult<()> {
     let level: TrustLevel = level.parse()?;
     Ok(core.set_trust_level(&device_id, level).await?)
+}
+
+// —— 信任传递 / 引荐（TRUST_DESIGN.md §5，里程碑 R2）——
+
+#[tauri::command]
+pub async fn list_pending_introductions(
+    core: State<'_, Arc<Core>>,
+) -> CmdResult<Vec<PendingIntroduction>> {
+    Ok(core.list_pending_introductions().await?)
+}
+
+#[tauri::command]
+pub async fn confirm_introduction(core: State<'_, Arc<Core>>, device_id: String) -> CmdResult<()> {
+    Ok(core.confirm_introduction(&device_id).await?)
+}
+
+#[tauri::command]
+pub async fn dismiss_introduction(core: State<'_, Arc<Core>>, device_id: String) -> CmdResult<()> {
+    Ok(core.dismiss_introduction(&device_id).await?)
+}
+
+#[tauri::command]
+pub async fn refresh_introductions(core: State<'_, Arc<Core>>) -> CmdResult<()> {
+    Ok(core.refresh_introductions().await?)
 }
 
 #[tauri::command]
@@ -415,6 +439,7 @@ pub fn event_payload(event: &CoreEvent) -> Value {
             json!({ "taskId": task_id, "error": error })
         }
         CoreEvent::SyncIndexUpdated => Value::Null,
+        CoreEvent::IntroductionsUpdated => Value::Null,
         CoreEvent::DownloadProgress {
             task_id,
             downloaded_bytes,

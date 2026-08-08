@@ -17,9 +17,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use aa4c_types::{
     Aa4cError, ArchiveCategory, ArchiveEntry, ArchiveLogEntry, ArchiveRule, ArchiveTag, DeviceId,
     DownloadKind, DownloadOptions, DownloadStatus, DownloadTask, KbDocStatus, KbDocument, KbSource,
-    KbSourceSummary, ModelMeta, RemoteIndexEntry, Result, ScopeKind, Share, ShareAccess,
-    SyncConflict, SyncFileEntry, SyncScope, TagSource, TaskId, TransferFile, TransferStatus,
-    TransferTask, TrustLevel,
+    KbSourceSummary, ModelMeta, PendingIntroduction, RemoteIndexEntry, Result, ScopeKind, Share,
+    ShareAccess, SyncConflict, SyncFileEntry, SyncScope, TagSource, TaskId, TransferFile,
+    TransferStatus, TransferTask, TrustLevel,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -216,6 +216,169 @@ impl Store {
         self.call(move |conn| {
             conn.execute("DELETE FROM devices WHERE id = ?1", params![id])
                 .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    // —— 信任传递 / 引荐（TRUST_DESIGN.md §5.6，里程碑 R2）——
+
+    /// 记录一条引荐：某台完全信任设备说「这台也是你的」。
+    ///
+    /// **只落一条 `trusted = 0` 的待确认记录，绝不改动信任状态**——升级信任必须经由
+    /// 用户在界面上点确认（`confirm_introduction`），这是引荐方案相对 Syncthing 式自动
+    /// 引荐的本质区别（TRUST_DESIGN.md §5.9）。因此这里刻意不用 `upsert_device`：
+    /// 那个方法会用传入值覆盖 `trusted` / `trust_level`，被引荐者若恰好已是本机的完全
+    /// 信任设备，就会被一条引荐打回未配对。
+    ///
+    /// 冲突处理：
+    /// - 已存在的**已配对**设备（`trusted = 1`）→ 整行不动（连名字都不改：本机用户可能
+    ///   已经自己改过名，引荐者的叫法不该覆盖它）。
+    /// - 已存在的**待确认**记录 → 只刷新展示信息与 `server_hint`，`introduce_dismissed`
+    ///   不动（用户点过「忽略」的，不会被下一轮引荐重新唤醒）。
+    ///
+    /// 返回是否**新插入**了一条待确认记录（供上层决定要不要发事件提醒用户）。
+    pub async fn record_introduction(
+        &self,
+        peer: &DeviceRecord,
+        introduced_by: &DeviceId,
+    ) -> Result<bool> {
+        let peer = peer.clone();
+        let introduced_by = introduced_by.clone();
+        self.call(move |conn| {
+            let existed: bool = conn
+                .query_row(
+                    "SELECT 1 FROM devices WHERE id = ?1",
+                    params![peer.id],
+                    |_| Ok(true),
+                )
+                .optional()
+                .map_err(db_err)?
+                .unwrap_or(false);
+            let now = now_ms();
+            conn.execute(
+                // 不写 trust_level：它是 NOT NULL DEFAULT 'friend'（迁移 002），这里
+                // 留给默认值。待确认记录的 trusted = 0 已经关掉了一切能力，分级要等
+                // 用户确认时才由 confirm_introduction 置为 'full'。
+                "INSERT INTO devices
+                   (id, name, platform, public_key, trusted,
+                    server_hint, introduced_by, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                   name = excluded.name,
+                   platform = excluded.platform,
+                   server_hint = COALESCE(excluded.server_hint, devices.server_hint),
+                   introduced_by = excluded.introduced_by,
+                   updated_at = excluded.updated_at
+                 WHERE devices.trusted = 0",
+                params![
+                    peer.id,
+                    peer.name,
+                    peer.platform.as_str(),
+                    peer.public_key,
+                    peer.server_hint,
+                    introduced_by,
+                    now,
+                ],
+            )
+            .map_err(db_err)?;
+            Ok(!existed)
+        })
+        .await
+    }
+
+    /// 待用户确认的引荐列表（TRUST_DESIGN.md §5.6）。
+    ///
+    /// `introduced_by_name` 用 LEFT JOIN 取引荐者当前的展示名——界面必须显示「谁说的」，
+    /// 这是用户判断要不要信的唯一依据。引荐者已被解除配对时为 `None`（记录本身仍在：
+    /// 引荐已经发生过，不因引荐者离开而消失）。
+    pub async fn list_pending_introductions(&self) -> Result<Vec<PendingIntroduction>> {
+        self.call(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT d.id, d.name, d.platform, d.introduced_by, i.name, d.updated_at
+                     FROM devices d
+                     LEFT JOIN devices i ON i.id = d.introduced_by
+                     WHERE d.introduced_by IS NOT NULL
+                       AND d.trusted = 0
+                       AND d.introduce_dismissed = 0
+                     ORDER BY d.updated_at DESC",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(PendingIntroduction {
+                        device_id: row.get(0)?,
+                        name: row.get(1)?,
+                        platform: parse_col(row, 2)?,
+                        introduced_by: row.get(3)?,
+                        introduced_by_name: row.get(4)?,
+                        introduced_at: row.get(5)?,
+                    })
+                })
+                .map_err(db_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_err)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// 当前待确认条数（用于容量上限判定，TRUST_DESIGN.md §5.9「拒绝服务」）。
+    pub async fn count_pending_introductions(&self) -> Result<i64> {
+        self.call(|conn| {
+            conn.query_row(
+                "SELECT count(*) FROM devices
+                 WHERE introduced_by IS NOT NULL AND trusted = 0 AND introduce_dismissed = 0",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(db_err)
+        })
+        .await
+    }
+
+    /// 用户点「标记为我的设备」：把待确认记录升级为完全信任的已配对设备。
+    ///
+    /// `introduced_by` 保留不清，作为来源溯源。只对**待确认**记录生效（`trusted = 0` 且
+    /// 有引荐来源），避免被拿来绕过配对流程直接信任任意设备。
+    pub async fn confirm_introduction(&self, id: &DeviceId) -> Result<()> {
+        let id = id.clone();
+        self.call(move |conn| {
+            let now = now_ms();
+            let n = conn
+                .execute(
+                    "UPDATE devices
+                     SET trusted = 1, trust_level = 'full', paired_at = ?2, updated_at = ?2
+                     WHERE id = ?1 AND trusted = 0 AND introduced_by IS NOT NULL",
+                    params![id, now],
+                )
+                .map_err(db_err)?;
+            if n == 0 {
+                return Err(Aa4cError::DeviceNotFound(id));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// 用户点「忽略」：以后同一引荐不再打扰（TRUST_DESIGN.md §5.7）。
+    ///
+    /// 刻意用一个**留存的标记位**而不是删除记录——删掉的话下一轮引荐会原样重来，
+    /// 正是 Syncthing「删了又被加回来」那个坑。
+    pub async fn dismiss_introduction(&self, id: &DeviceId) -> Result<()> {
+        let id = id.clone();
+        self.call(move |conn| {
+            let n = conn
+                .execute(
+                    "UPDATE devices SET introduce_dismissed = 1, updated_at = ?2
+                     WHERE id = ?1 AND trusted = 0 AND introduced_by IS NOT NULL",
+                    params![id, now_ms()],
+                )
+                .map_err(db_err)?;
+            if n == 0 {
+                return Err(Aa4cError::DeviceNotFound(id));
+            }
             Ok(())
         })
         .await
