@@ -109,6 +109,11 @@ pub enum CoreEvent {
     /// 本机同步索引发生变化（扫描完成），UI 应重新拉取统一文件视图。
     SyncIndexUpdated,
 
+    /// 收到了新的设备引荐（TRUST_DESIGN.md §5，里程碑 R2），UI 应重新拉取待确认列表。
+    /// 只在**确实新增**了待确认记录时发——周期交换每轮都会把同一批引荐再收一遍，
+    /// 每轮都发事件会让界面无谓地闪。
+    IntroductionsUpdated,
+
     /// 下载进度（V0.4 里程碑 D1，DOWNLOAD_DESIGN.md §5）：状态迁移必发，进行中按数秒级
     /// 节流（不落库，前端本地维护——同 `TransferProgress` 的既有先例）。
     /// `seeders`/`peers`/`ratio` 是 D2（Transmission/BT）专属字段，HTTP 任务恒为
@@ -218,6 +223,7 @@ impl CoreEvent {
             Self::TransferFailed { .. } => "transfer_failed",
             Self::TransferPaused { .. } => "transfer_paused",
             Self::SyncIndexUpdated => "sync_index_updated",
+            Self::IntroductionsUpdated => "introductions_updated",
             Self::DownloadProgress { .. } => "download_progress",
             Self::DownloadDone { .. } => "download_done",
             Self::DownloadFailed { .. } => "download_failed",

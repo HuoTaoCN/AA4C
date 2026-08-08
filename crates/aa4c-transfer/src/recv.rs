@@ -214,6 +214,16 @@ async fn dispatch_shared(
                 None => Err(Aa4cError::Protocol("index dispatch not wired".into())),
             }
         }
+        // 引荐：仅**完全信任**设备之间交换（TRUST_DESIGN.md §5.5，PROTOCOL.md §18）。
+        // 与 `IndexRequest` 不同，这里**不需要 Core 注入钩子**——应答内容全部来自
+        // `store` 里的已配对设备表，没有任何范围 / 路径策略要问 Core，而 TransferService
+        // 本来就持有 store。
+        Message::IntroduceRequest => {
+            if !trusted {
+                return Err(Aa4cError::NotPaired(cert_id));
+            }
+            serve_introductions(&svc, &mut stream, &cert_id).await
+        }
         // 按需拉取：仅完全信任设备可拉（边界由 Core 注入的解析器把关）。解析成功后
         // **反转角色**，本端在同一连接上变身发送方回推该文件（里程碑 4）。
         Message::FetchRequest { rel_path } => {
@@ -281,6 +291,80 @@ async fn dispatch_shared(
         )),
         other => Err(unexpected(&other)),
     }
+}
+
+/// 应答 `IntroduceRequest`：把本机的完全信任设备回送给请求方（TRUST_DESIGN.md §5.5）。
+///
+/// 三道闸，缺一不可：
+/// 1. **请求方必须是 `full`**——与文件索引同一道闸（SYNC_DESIGN §2）。`friend` 拿不到。
+/// 2. **只回送 `full` 设备**。`friend` 是「别人的设备」，把它引荐给自己的另一台设备等于
+///    替用户扩大信任范围，还顺带泄露社交关系图，不做。
+/// 3. **排除请求方自己**（它当然已经认识自己），以及待确认记录（`trusted = 0` 的行不在
+///    `list_paired_devices` 里）——引荐只传递**本机用户已经亲自确认过**的信任，不做二次
+///    转发，否则一条引荐能顺着设备图无限扩散。
+async fn serve_introductions(
+    svc: &Arc<TransferService>,
+    stream: &mut SharedStream,
+    cert_id: &DeviceId,
+) -> Result<()> {
+    use aa4c_proto::PeerIntro;
+    use aa4c_types::TrustLevel;
+
+    let asker_is_full = svc
+        .store
+        .get_device(cert_id)
+        .await?
+        .is_some_and(|d| d.trusted && d.trust_level == TrustLevel::Full);
+    if !asker_is_full {
+        let _ = write_message(
+            stream,
+            &Message::Cancel {
+                task_id: String::new(),
+                reason: "not_full_trust".into(),
+            },
+        )
+        .await;
+        return Err(Aa4cError::Protocol("introduce denied".into()));
+    }
+
+    let peers: Vec<PeerIntro> = svc
+        .store
+        .list_paired_devices()
+        .await?
+        .into_iter()
+        .filter(|d| d.trust_level == TrustLevel::Full && &d.id != cert_id)
+        .map(|d| PeerIntro {
+            device_id: d.id,
+            public_key: d.public_key,
+            name: d.name,
+            platform: d.platform.as_str().to_string(),
+            server_hint: d.server_hint,
+        })
+        .collect();
+
+    let mut chunks = peers.chunks(crate::INTRODUCE_BATCH).peekable();
+    // 空列表也要回一帧 `last = true`，否则请求方会一直等到超时。
+    if chunks.peek().is_none() {
+        return write_message(
+            stream,
+            &Message::IntroducePeers {
+                peers: Vec::new(),
+                last: true,
+            },
+        )
+        .await;
+    }
+    while let Some(batch) = chunks.next() {
+        write_message(
+            stream,
+            &Message::IntroducePeers {
+                peers: batch.to_vec(),
+                last: chunks.peek().is_none(),
+            },
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// 单个文件的落盘状态。

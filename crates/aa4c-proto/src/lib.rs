@@ -138,6 +138,38 @@ pub enum Message {
     PairServerHint {
         server_hint: Option<String>,
     },
+
+    // —— 信任传递 / 引荐（TRUST_DESIGN.md §5，PROTOCOL.md §18，
+    //    proto ≥ INTRODUCE_PROTO_VERSION，里程碑 R2）——
+    /// 请求对端列出「它认为也属于同一个人」的设备（仅完全信任设备之间有效）。
+    /// 与 `IndexRequest` 同形：请求方握手后发出，持有方分批回送。
+    IntroduceRequest,
+    /// 持有方分批回送引荐条目；`last = true` 标记最后一批。
+    ///
+    /// **只回送完全信任（`full`）的设备**——`friend` 是「别人的设备」，把它引荐给自己的
+    /// 另一台设备等于替用户扩大信任范围，不做（TRUST_DESIGN.md §5.3）。
+    IntroducePeers {
+        peers: Vec<PeerIntro>,
+        last: bool,
+    },
+}
+
+/// 引荐条目（`IntroducePeers` 载荷，TRUST_DESIGN.md §5.5）。
+///
+/// 携带公钥而非仅指纹：`device_id == BLAKE3(public_key)`（见 `aa4c_identity::
+/// device_id_from_public_key`），收方**本地即可校验两者自洽**，恶意引荐者无法递来一个
+/// 与公钥对不上的指纹；同时补齐 `devices.public_key`（NOT NULL）这一列。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerIntro {
+    /// 被引荐设备的指纹。
+    pub device_id: DeviceId,
+    /// 被引荐设备的 Ed25519 公钥原始字节（32 字节）。
+    pub public_key: Vec<u8>,
+    /// 展示名与平台，仅供用户在确认界面辨认，不参与任何信任判定。
+    pub name: String,
+    pub platform: String,
+    /// 引荐者已知的对端 home server 地址（`aa4c://host:port#fp`），可空。
+    pub server_hint: Option<String>,
 }
 
 /// 断点续传进度条目（`ResumeReport` 载荷，PROTOCOL.md §13）。
@@ -262,6 +294,8 @@ pub fn unexpected(msg: &Message) -> Aa4cError {
         Message::ResumeReport { .. } => "ResumeReport",
         Message::ShareRequest { .. } => "ShareRequest",
         Message::PairServerHint { .. } => "PairServerHint",
+        Message::IntroduceRequest => "IntroduceRequest",
+        Message::IntroducePeers { .. } => "IntroducePeers",
     };
     Aa4cError::Protocol(format!("unexpected message: {variant}"))
 }

@@ -9,8 +9,8 @@ use aa4c_discovery::DiscoveryService;
 use aa4c_identity::Identity;
 use aa4c_store::Store;
 use aa4c_types::{
-    Aa4cError, CoreEvent, DeviceId, DeviceInfo, Result, ScopeKind, Settings, SyncFileEntry,
-    SyncScope, TaskId, TransferTask, TrustLevel, UnifiedFile,
+    Aa4cError, CoreEvent, DeviceId, DeviceInfo, PendingIntroduction, Result, ScopeKind, Settings,
+    SyncFileEntry, SyncScope, TaskId, TransferTask, TrustLevel, UnifiedFile,
 };
 
 use crate::{server_link, settings, sync_exchange, sync_index, unified, Core};
@@ -111,6 +111,57 @@ impl Core {
                 .await;
             }
         }
+        Ok(())
+    }
+
+    // —— 信任传递 / 引荐（TRUST_DESIGN.md §5，里程碑 R2）——
+
+    /// 待用户确认的引荐列表：「某台你已经完全信任的设备说，这台也是你的」。
+    pub async fn list_pending_introductions(&self) -> Result<Vec<PendingIntroduction>> {
+        self.store.list_pending_introductions().await
+    }
+
+    /// 用户点「标记为我的设备」：把待确认记录升级为完全信任的已配对设备。
+    ///
+    /// 立即拉一次对端索引（同 [`Self::set_trust_level`] 升到 full 的处理），这样确认完
+    /// 马上就能在统一视图里看到对方的文件，不用等下一轮周期交换。
+    pub async fn confirm_introduction(&self, device_id: &DeviceId) -> Result<()> {
+        self.store.confirm_introduction(device_id).await?;
+        let _ = self.events.send(CoreEvent::IntroductionsUpdated);
+        let _ = sync_exchange::fetch_one(
+            &self.store,
+            &self.discovery,
+            &self.identity,
+            &self.self_info.name,
+            &self.save_dir_fallback,
+            &self.transfer,
+            &self.events,
+            device_id,
+        )
+        .await;
+        self.nudge_register();
+        Ok(())
+    }
+
+    /// 用户点「忽略」：以后同一引荐不再打扰。
+    pub async fn dismiss_introduction(&self, device_id: &DeviceId) -> Result<()> {
+        self.store.dismiss_introduction(device_id).await?;
+        let _ = self.events.send(CoreEvent::IntroductionsUpdated);
+        Ok(())
+    }
+
+    /// 手动「刷新」待确认列表：立刻与全部完全信任设备交换一轮引荐，不等周期定时器。
+    pub async fn refresh_introductions(&self) -> Result<()> {
+        crate::introduce::refresh_all(
+            &self.store,
+            &self.discovery,
+            &self.identity,
+            &self.self_info.name,
+            &self.save_dir_fallback,
+            &self.transfer,
+            &self.events,
+        )
+        .await;
         Ok(())
     }
 

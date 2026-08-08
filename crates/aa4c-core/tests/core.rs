@@ -2173,3 +2173,213 @@ async fn kb_lifecycle_through_core_orchestration() {
 
     core.shutdown().await.unwrap();
 }
+
+/// 反复交换引荐直到出现待确认记录（同 `retry_send_files` 的理由：这一步要真的拨号，
+/// 而 `resolve_addr` 先查 mDNS，本机跑四个节点时偶发解析不到/连不上，重试一次就好）。
+async fn retry_until_introduced(node: &Node) {
+    for _ in 0..50 {
+        node.core.refresh_introductions().await.unwrap();
+        if !node
+            .core
+            .list_pending_introductions()
+            .await
+            .unwrap()
+            .is_empty()
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("no introduction arrived after 50 attempts");
+}
+
+/// 某设备在该节点上是否已是**已配对**设备。
+async fn is_trusted(node: &Node, id: &str) -> bool {
+    node.core
+        .list_devices()
+        .await
+        .unwrap()
+        .iter()
+        .any(|d| d.id == id && d.trusted)
+}
+
+/// 信任传递 / 引荐三节点闭环（TRUST_DESIGN.md §5，里程碑 R2）。
+///
+/// 场景就是这个特性存在的理由：手机（P）在家里和家用机（H）配对、到单位和单位机（W）
+/// 配对，而 H 与 W **从头到尾没有配对过、也永远不会同处一个局域网**（配对要走 PIN）。
+/// 由 P 把「这也是你的设备」的指纹捎过去，两边各点一次确认，H 与 W 就能互认。
+///
+/// 一并验证两条边界：`friend` 设备（F）不会被引荐出去；确认之后建立的是**真的能用的
+/// 信任**——直接拿 H 去取 W 的共享索引，取到才算数。
+#[tokio::test]
+async fn introduction_lets_two_never_paired_devices_trust_each_other() {
+    use aa4c_types::TrustLevel;
+
+    let p = spawn_node().await; // 手机：两边都去过
+    let h = spawn_node().await; // 家用机
+    let w = spawn_node().await; // 单位机
+    let f = spawn_node().await; // 朋友的设备（只配对，保持 friend）
+    let (p_id, h_id, w_id, f_id) = (
+        p.core.self_info().id,
+        h.core.self_info().id,
+        w.core.self_info().id,
+        f.core.self_info().id,
+    );
+
+    // 三次配对都由「非 P 方」发起：接收端落库的 last_addr 是入站连接的源端口（临时端口，
+    // 回拨不到），只有主动拨号的一方才会记下对方真实的监听地址。
+    for peer in [&h, &w, &f] {
+        let ev_peer = peer.core.subscribe();
+        let ev_p = p.core.subscribe();
+        peer.core
+            .pairing
+            .start_pairing(&peer_info(&p))
+            .await
+            .unwrap();
+        let (ok1, ok2) = tokio::join!(
+            timeout(WAIT, drive_pairing(peer.core.clone(), ev_peer)),
+            timeout(WAIT, drive_pairing(p.core.clone(), ev_p)),
+        );
+        assert!(ok1.unwrap() && ok2.unwrap(), "pairing succeeds");
+    }
+
+    // 配对默认是 friend。把「我的设备」这一层关系立起来：P 认 H/W 为 full，H/W 认 P 为
+    // full；F 一直留在 friend——它是朋友的设备，不该被当成「我的设备」传出去。
+    p.core
+        .set_trust_level(&h_id, TrustLevel::Full)
+        .await
+        .unwrap();
+    p.core
+        .set_trust_level(&w_id, TrustLevel::Full)
+        .await
+        .unwrap();
+    h.core
+        .set_trust_level(&p_id, TrustLevel::Full)
+        .await
+        .unwrap();
+    w.core
+        .set_trust_level(&p_id, TrustLevel::Full)
+        .await
+        .unwrap();
+
+    // H 此刻不信任 W。（不能断言"看不见 W"：四个节点跑在同一台机器上，mDNS 真的会把
+    // 彼此发现出来，`list_devices` 会带上这些**未配对**的在线设备。要看的是信任状态。）
+    assert!(!is_trusted(&h, &w_id).await, "H 还没信任过 W");
+
+    // —— 引荐交换 ——
+    retry_until_introduced(&h).await;
+    retry_until_introduced(&w).await;
+
+    let pending = h.core.list_pending_introductions().await.unwrap();
+    assert_eq!(
+        pending.len(),
+        1,
+        "只该看到 W 一条：P 自己不算，F 是 friend 不引荐"
+    );
+    assert_eq!(pending[0].device_id, w_id);
+    assert_eq!(pending[0].introduced_by, p_id, "必须记得是谁说的");
+    assert_eq!(
+        pending[0].introduced_by_name.as_deref(),
+        Some(p.core.self_info().name.as_str())
+    );
+    assert!(
+        h.core
+            .list_pending_introductions()
+            .await
+            .unwrap()
+            .iter()
+            .all(|i| i.device_id != f_id),
+        "friend 设备不该被引荐（那是别人的设备，还会泄露社交关系）"
+    );
+
+    // 引荐**只是提示**：没点确认之前，W 在 H 这里依然是未信任设备
+    assert!(!is_trusted(&h, &w_id).await, "引荐本身绝不能产生信任");
+
+    // —— 两边各点一次确认 ——
+    h.core.confirm_introduction(&w_id).await.unwrap();
+    w.core.confirm_introduction(&h_id).await.unwrap();
+    assert!(h
+        .core
+        .list_pending_introductions()
+        .await
+        .unwrap()
+        .is_empty());
+
+    let w_in_h = h
+        .core
+        .list_devices()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|d| d.id == w_id)
+        .expect("W 已成为 H 的已配对设备");
+    assert!(w_in_h.trusted);
+    assert_eq!(w_in_h.trust_level, Some(TrustLevel::Full));
+
+    // —— 这份信任是真能用的：H 直接去取 W 的共享索引（两台从没配对过的机器）——
+    let shared = w._dir.path().join("shared");
+    tokio::fs::create_dir_all(&shared).await.unwrap();
+    tokio::fs::write(shared.join("报表.xlsx"), b"payload")
+        .await
+        .unwrap();
+    w.core.add_sync_scope(shared).await.unwrap();
+    w.core.rescan_sync().await.unwrap();
+
+    let items = h
+        .core
+        .transfer
+        .fetch_index(&w_id, peer_info(&w).addr)
+        .await
+        .expect("引荐确认后 H 与 W 之间是真的完全信任");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].rel_path, "shared/报表.xlsx");
+
+    p.core.shutdown().await.unwrap();
+    h.core.shutdown().await.unwrap();
+    w.core.shutdown().await.unwrap();
+    f.core.shutdown().await.unwrap();
+}
+
+/// 引荐与索引同一道闸：只有**完全信任**设备之间才交换（TRUST_DESIGN.md §5.5）。
+/// `friend` 去问，对端直接回绝，一个指纹都拿不到。
+#[tokio::test]
+async fn introduce_exchange_gated_by_full_trust() {
+    use aa4c_types::TrustLevel;
+
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let a_id = a.core.self_info().id;
+    let b_id = b.core.self_info().id;
+
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap());
+
+    let b_addr = peer_info(&b).addr;
+
+    // A 在 B 眼里还是 friend：B 拒绝，不回空列表——回空列表等于告诉对方"我这儿没设备"，
+    // 而这里的事实是"你没资格问"。
+    let denied = a.core.transfer.fetch_introductions(&b_id, b_addr).await;
+    assert!(denied.is_err(), "friend must not receive introductions");
+
+    // 升级为 full 之后才谈得上交换（此时 B 只认识 A，A 是请求方要被排除，故为空列表）
+    b.core
+        .set_trust_level(&a_id, TrustLevel::Full)
+        .await
+        .unwrap();
+    let peers = a
+        .core
+        .transfer
+        .fetch_introductions(&b_id, b_addr)
+        .await
+        .expect("full device may ask");
+    assert!(peers.is_empty(), "请求方自己不该被引荐回去");
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}

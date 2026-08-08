@@ -117,6 +117,26 @@ pub struct DeviceInfo {
     pub trust_level: Option<TrustLevel>,
 }
 
+/// 待用户确认的引荐（TRUST_DESIGN.md §5.4，里程碑 R2）。
+///
+/// 「某台你已经完全信任的设备说，这台也是你的」。设计上**刻意不自动信任**：这里的每一
+/// 条都要用户点一次确认才会变成已配对设备（Syncthing 式自动引荐有传递失控与「删了又被
+/// 加回来」两个已记录在案的坑，见 TRUST_DESIGN.md §5.2）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingIntroduction {
+    /// 被引荐设备的指纹。
+    pub device_id: DeviceId,
+    pub name: String,
+    pub platform: Platform,
+    /// 引荐者的指纹，以及它在本机的展示名（引荐者已被删除时为 `None`）。
+    /// UI 必须把它显示出来——用户判断「要不要信」靠的就是「谁说的」。
+    pub introduced_by: DeviceId,
+    pub introduced_by_name: Option<String>,
+    /// 首次收到这条引荐的时间（unix 毫秒）。
+    pub introduced_at: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

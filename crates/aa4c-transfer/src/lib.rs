@@ -36,6 +36,16 @@ pub type EventSender = broadcast::Sender<CoreEvent>;
 /// 响应，候选列表可能有好几个，不能让一个不通的候选拖累整条阶梯的失败延迟。
 const PUNCH_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// 引荐一批的条数（TRUST_DESIGN.md §5.5，里程碑 R2）。「我的几台设备」量级极小，
+/// 一批基本就发完了；分批只是为了与 `IndexEntries` 同形、留出扩展余量。
+pub(crate) const INTRODUCE_BATCH: usize = 200;
+
+/// 单次引荐交换接受的条数上限与批次上限（TRUST_DESIGN.md §5.9「拒绝服务」）。
+/// 一台被攻破的完全信任设备能做的事里，刷海量引荐把本机待确认列表灌爆是最廉价的一种，
+/// 这里在读取侧直接截断。
+const MAX_INTRODUCE_PEERS: usize = 500;
+const MAX_INTRODUCE_BATCHES: u32 = 16;
+
 /// 已完成 TLS 握手的入站服务端流（与配对模块同型）。局域网配对目前只走这条具体类型
 /// （见 [`IncomingPairDispatch`]）；索引/拉取的入站分流走下面泛化的 [`SharedStream`]，
 /// 因为它们还要支持 QUIC 入站连接（里程碑 C1，CONNECT_DESIGN.md §5）。
@@ -687,6 +697,67 @@ impl TransferService {
             }
         }
         Err(Aa4cError::Protocol("index stream too long".into()))
+    }
+
+    /// 向某完全信任设备拉取「它认为也属于同一个人」的设备（TRUST_DESIGN.md §5.5，
+    /// PROTOCOL.md §18，里程碑 R2）。
+    ///
+    /// 与 [`Self::fetch_index`] 完全同形：建连 → 握手（校验证书指纹）→ `IntroduceRequest`
+    /// → 分批读 `IntroducePeers` 直至 `last`。只取指纹与公钥，**不产生任何信任**——落库
+    /// 成「待确认」由调用方（Core）负责，升级信任必须经由用户点确认。
+    ///
+    /// 对端 proto < [`aa4c_types::INTRODUCE_PROTO_VERSION`] 时返回错误，调用方跳过这一轮
+    /// 即可（索引交换照常，优雅降级）。
+    pub async fn fetch_introductions(
+        &self,
+        peer_id: &DeviceId,
+        addr: Option<std::net::SocketAddr>,
+    ) -> Result<Vec<aa4c_proto::PeerIntro>> {
+        use aa4c_proto::{client_hello, read_message, write_message, Message};
+        use tokio::time::timeout;
+
+        let t = self.config.timeout;
+        let (mut stream, _via) = self.dial(peer_id, addr).await?;
+
+        let (hello_id, proto) = client_hello(&mut stream, self.identity.device_id()).await?;
+        if &hello_id != peer_id {
+            return Err(Aa4cError::Protocol("hello id != expected peer".into()));
+        }
+        if proto < aa4c_types::INTRODUCE_PROTO_VERSION {
+            return Err(Aa4cError::Protocol(format!(
+                "peer proto {proto} too old for introductions"
+            )));
+        }
+        write_message(&mut stream, &Message::IntroduceRequest).await?;
+
+        let mut peers = Vec::new();
+        for _ in 0..MAX_INTRODUCE_BATCHES {
+            match timeout(t, read_message(&mut stream))
+                .await
+                .map_err(|_| Aa4cError::Network("introduce timeout".into()))??
+            {
+                Message::IntroducePeers {
+                    peers: batch, last, ..
+                } => {
+                    peers.extend(batch);
+                    // 拒绝服务防护（TRUST_DESIGN.md §5.9）：恶意 full 设备可以刷海量引荐，
+                    // 这里直接截断——引荐条数天然很小（「我的几台设备」）。
+                    if peers.len() > MAX_INTRODUCE_PEERS {
+                        return Err(Aa4cError::Protocol("too many introductions".into()));
+                    }
+                    if last {
+                        return Ok(peers);
+                    }
+                }
+                Message::Cancel { reason, .. } => {
+                    return Err(Aa4cError::Network(format!(
+                        "peer refused introductions: {reason}"
+                    )));
+                }
+                other => return Err(aa4c_proto::unexpected(&other)),
+            }
+        }
+        Err(Aa4cError::Protocol("introduce stream too long".into()))
     }
 
     /// 向某完全信任设备按需拉取一个共享文件（SYNC_DESIGN.md §4，里程碑 4）。

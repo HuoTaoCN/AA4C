@@ -123,6 +123,15 @@ export async function startEventBridge(): Promise<UnlistenFn> {
 
     listen<null>("aa4c://sync_index_updated", () => void sync.load()),
 
+    // 收到新的设备引荐（TRUST_DESIGN.md §5）：只在确实新增时才发，所以可以直接提醒用户。
+    listen<null>("aa4c://introductions_updated", () => {
+      void devices.loadPendingIntroductions().then(() => {
+        if (devices.pendingIntroductions.length) {
+          toast.push("info", "有设备等待你确认，去「设置 → 已配对设备」看看");
+        }
+      });
+    }),
+
     listen<DownloadProgressPayload>("aa4c://download_progress", (e) =>
       download.onProgress(e.payload),
     ),

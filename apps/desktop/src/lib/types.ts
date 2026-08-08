@@ -39,6 +39,23 @@ export interface DeviceInfo {
   trustLevel: TrustLevel | null;
 }
 
+/**
+ * 待用户确认的引荐（TRUST_DESIGN.md §5，里程碑 R2）：
+ * 「某台你已经完全信任的设备说，这台也是你的」。
+ *
+ * 引荐**只产生这条待确认记录，不产生任何信任**——必须用户点确认才会变成已配对设备。
+ */
+export interface PendingIntroduction {
+  deviceId: string;
+  name: string;
+  platform: Platform;
+  /** 引荐者的指纹，以及它在本机的展示名（引荐者已被解除配对时为 null）。 */
+  introducedBy: string;
+  introducedByName: string | null;
+  /** 首次收到这条引荐的时间（unix 毫秒）。 */
+  introducedAt: number;
+}
+
 export interface TransferFile {
   relPath: string;
   size: number;

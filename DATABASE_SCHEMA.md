@@ -41,8 +41,33 @@ CREATE INDEX idx_devices_trusted ON devices(trusted);
 
 说明：
 
-- 未配对但发现过的设备**不入库**（只在内存中），配对成功才写入，避免表被局域网陌生设备污染
+- 未配对但发现过的设备**不入库**（只在内存中），配对成功才写入，避免表被局域网陌生设备污染。
+  **唯一的例外是引荐**（V0.7 里程碑 R2，见 §2b）：被引荐但尚未确认的设备就是一条 `trusted = 0`
+  的记录。它不是"发现"来的、条数受上限约束，且只能由本机的完全信任设备产生，不会造成污染
 - 解除配对 = 直接 `DELETE`，而非 `trusted = 0`
+
+### 2b. 引荐（V0.7 里程碑 R2，迁移 013）
+
+信任传递（[TRUST_DESIGN.md](TRUST_DESIGN.md) §5，[PROTOCOL.md](PROTOCOL.md) §18）**不新建表**，
+`devices` 加两列。两列都是 `ALTER TABLE ADD COLUMN`——**刻意避开建表重建**，理由见 §2.2 迁移
+012 那一条（`DROP TABLE` 会顺着 `ON DELETE CASCADE` 删掉子表数据）。
+
+```sql
+ALTER TABLE devices ADD COLUMN introduced_by TEXT;                             -- 谁引荐的；NULL = 不是引荐来的
+ALTER TABLE devices ADD COLUMN introduce_dismissed INTEGER NOT NULL DEFAULT 0; -- 用户点过「忽略」
+```
+
+- **待确认列表** = `introduced_by IS NOT NULL AND trusted = 0 AND introduce_dismissed = 0`。
+  名字、平台、`public_key`、`server_hint` 全部复用既有列。
+- **`trust_level` 不写**：它是 `NOT NULL DEFAULT 'friend'`（迁移 002），待确认记录留给默认值——
+  `trusted = 0` 已经关掉了一切能力，分级要等用户确认时才置为 `'full'`。
+- **确认** → `trusted = 1, trust_level = 'full', paired_at = now`；`introduced_by` **保留**作为
+  来源溯源（确认后自然移出待确认列表）。
+- **忽略** → `introduce_dismissed = 1`。刻意用一个**留存的标记位**而不是删除记录：删掉的话
+  下一轮周期交换会把它原样加回来，正是 Syncthing「删了又被加回来」那个坑。
+- **绝不覆盖已有信任**：落库走专用的 `record_introduction`，而不是 `upsert_device`——后者会用
+  传入值覆盖 `trusted`/`trust_level`，被引荐者若恰好已是本机的完全信任设备，就会被一条引荐
+  打回未配对。`ON CONFLICT ... DO UPDATE ... WHERE devices.trusted = 0` 保证只刷新待确认记录。
 
 ### 2.2 transfer_tasks —— 传输任务表
 
@@ -475,6 +500,9 @@ const MIGRATIONS: &[&str] = &[
     /* v5: */ include_str!("migrations/005_conflicts.sql"),    // sync_conflicts
     /* v6: */ include_str!("migrations/006_server_hint.sql"),  // devices.server_hint
     /* v7: */ include_str!("migrations/007_shares.sql"),       // shares + share_access
+    // …… v8–v12 见 crates/aa4c-store/src/migrate.rs（downloads / archive / knowledge /
+    //    download_options / transfer_paused）
+    /* v13: */ include_str!("migrations/013_introductions.sql"), // devices.introduced_by 等，见 §2b
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {

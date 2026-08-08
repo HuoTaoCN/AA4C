@@ -65,7 +65,7 @@ async fn migration_is_idempotent_across_reopens() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 12); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares + 008_downloads + 009_archive + 010_knowledge + 011_download_options + 012_transfer_paused
+    assert_eq!(version, 13); // 001_init + 002_trust + 003_sync + 004_remote_index + 005_conflicts + 006_server_hint + 007_shares + 008_downloads + 009_archive + 010_knowledge + 011_download_options + 012_transfer_paused + 013_introductions
 }
 
 /// 迁移 012 重建 `transfer_tasks`（SQLite 改不了 CHECK 约束，只能建新表-拷贝-删旧-改名）。
@@ -140,7 +140,7 @@ async fn migration_012_rebuild_preserves_existing_tasks_and_files() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 12);
+    assert_eq!(version, 13);
     conn.execute(
         "UPDATE transfer_tasks SET status = 'paused' WHERE id = 't-old'",
         [],
@@ -1119,4 +1119,124 @@ async fn kb_chunks_replace_search_and_cascade_delete() {
     // 级联：删除文档时 chunk 一并清掉
     store.delete_kb_document("d1").await.unwrap();
     assert_eq!(store.count_kb_chunks().await.unwrap(), 1);
+}
+
+// —— 信任传递 / 引荐（TRUST_DESIGN.md §5.6，里程碑 R2）——
+
+#[tokio::test]
+async fn introduction_never_touches_an_already_trusted_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    // 本机已经完全信任 W。
+    let mut w = sample_device("c", true);
+    w.trust_level = TrustLevel::Full;
+    w.name = "我自己改的名字".into();
+    store.upsert_device(&w).await.unwrap();
+
+    // 引荐者 P 说「W 也是你的」——这一条不该改动 W 的任何状态。
+    let p = sample_device("a", true);
+    store.upsert_device(&p).await.unwrap();
+    let mut claim = w.clone();
+    claim.name = "引荐者的叫法".into();
+    claim.trusted = false;
+    claim.trust_level = TrustLevel::Friend;
+    let inserted = store.record_introduction(&claim, &p.id).await.unwrap();
+
+    assert!(!inserted, "已存在的设备不该算新引荐");
+    let got = store.get_device(&w.id).await.unwrap().unwrap();
+    assert!(got.trusted, "引荐绝不能把已配对设备打回未配对");
+    assert_eq!(got.trust_level, TrustLevel::Full);
+    assert_eq!(got.name, "我自己改的名字", "不该被引荐者的叫法覆盖");
+    assert!(store.list_pending_introductions().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn introduction_pending_confirm_and_dismiss() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    let mut p = sample_device("a", true);
+    p.name = "手机".into();
+    p.trust_level = TrustLevel::Full;
+    store.upsert_device(&p).await.unwrap();
+
+    let mut w = sample_device("c", false);
+    w.name = "单位电脑".into();
+    w.server_hint = Some("aa4c://example.com:42421#ff".into());
+    assert!(store.record_introduction(&w, &p.id).await.unwrap());
+    // 同一条引荐重复收到不算新的（周期交换会反复发过来）。
+    assert!(!store.record_introduction(&w, &p.id).await.unwrap());
+
+    let pending = store.list_pending_introductions().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].device_id, w.id);
+    assert_eq!(pending[0].name, "单位电脑");
+    assert_eq!(pending[0].introduced_by, p.id);
+    assert_eq!(
+        pending[0].introduced_by_name.as_deref(),
+        Some("手机"),
+        "界面必须能说清「谁说的」"
+    );
+    assert_eq!(store.count_pending_introductions().await.unwrap(), 1);
+    // 待确认设备不该混进已配对列表
+    assert_eq!(store.list_paired_devices().await.unwrap().len(), 1);
+
+    // 确认 → 完全信任，且移出待确认列表
+    store.confirm_introduction(&w.id).await.unwrap();
+    let got = store.get_device(&w.id).await.unwrap().unwrap();
+    assert!(got.trusted);
+    assert_eq!(got.trust_level, TrustLevel::Full);
+    assert!(got.paired_at.is_some());
+    assert_eq!(
+        got.server_hint.as_deref(),
+        Some("aa4c://example.com:42421#ff")
+    );
+    assert!(store.list_pending_introductions().await.unwrap().is_empty());
+    // 已确认过的不能再被 confirm/dismiss 拿去改状态
+    assert!(store.confirm_introduction(&w.id).await.is_err());
+    assert!(store.dismiss_introduction(&w.id).await.is_err());
+}
+
+#[tokio::test]
+async fn dismissed_introduction_is_not_revived_by_the_next_round() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    let mut p = sample_device("a", true);
+    p.trust_level = TrustLevel::Full;
+    store.upsert_device(&p).await.unwrap();
+
+    let w = sample_device("c", false);
+    store.record_introduction(&w, &p.id).await.unwrap();
+    store.dismiss_introduction(&w.id).await.unwrap();
+    assert!(store.list_pending_introductions().await.unwrap().is_empty());
+
+    // 下一轮周期交换又收到同一条：不能把它重新唤醒（Syncthing「删了又被加回来」的坑）
+    store.record_introduction(&w, &p.id).await.unwrap();
+    assert!(
+        store.list_pending_introductions().await.unwrap().is_empty(),
+        "忽略过的引荐不该被下一轮重新唤醒"
+    );
+}
+
+#[tokio::test]
+async fn pending_introduction_survives_introducer_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+
+    let mut p = sample_device("a", true);
+    p.trust_level = TrustLevel::Full;
+    store.upsert_device(&p).await.unwrap();
+    let w = sample_device("c", false);
+    store.record_introduction(&w, &p.id).await.unwrap();
+
+    store.remove_device(&p.id).await.unwrap();
+
+    let pending = store.list_pending_introductions().await.unwrap();
+    assert_eq!(pending.len(), 1, "引荐已经发生过，不因引荐者离开而消失");
+    assert!(
+        pending[0].introduced_by_name.is_none(),
+        "引荐者已不在，只剩指纹"
+    );
 }
