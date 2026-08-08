@@ -27,6 +27,7 @@ use aa4c_store::Store;
 use aa4c_transfer::{TransferConfig, TransferService};
 use aa4c_types::{CoreEvent, DeviceInfo, Platform, Result, DEFAULT_PORT};
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 /// AA4C 版本号（与 workspace 版本一致）。
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -66,6 +67,14 @@ pub struct CoreConfig {
     /// `ai_chat_model`/`ai_embedding_model` 有没有配置模型文件（`AiService`
     /// 内部处理，同下载能力"注入了但没配置/起不来"的既有降级设计）。
     pub ai_spawner: Option<Arc<dyn SidecarSpawner>>,
+    /// 不启动 mDNS 广播 / 浏览（**测试专用开关**，同 `TransferConfig::disable_punch`
+    /// 的既有惯例）。
+    ///
+    /// `DiscoveryService` 仍然会建出来（`list_devices` 等照常查它，只是永远为空），
+    /// 只是不 `start()`。集成测试全部用显式地址建连，mDNS 对它们只是噪声：每个
+    /// `ServiceDaemon` 自带一条 OS 线程和一组 5353 组播 socket，并行跑十几个用例时
+    /// 几十个守护进程互相挤，配对会开始超时（此前套件整套跑不通的主因之一）。
+    pub disable_discovery: bool,
 }
 
 impl CoreConfig {
@@ -85,6 +94,7 @@ impl CoreConfig {
             download_spawner: None,
             bt_spawner: None,
             ai_spawner: None,
+            disable_discovery: false,
         }
     }
 }
@@ -115,6 +125,13 @@ pub struct Core {
     save_dir_fallback: String,
     /// 唤醒自建服务器常驻连接立即重新注册（里程碑 C3，见 `server_link::spawn_register_loop`）。
     register_notify: Arc<tokio::sync::Notify>,
+    /// 停机信号：[`Self::shutdown`] 触发后本机的全部常驻后台循环退出。
+    ///
+    /// 此前 `shutdown()` 只停了 discovery / download / AI，而同步扫描、索引交换、引荐、
+    /// 自建服务器续约这四条循环，以及传输层的 accept 循环都没有出口——一个 `Core` 停掉
+    /// 之后它们照跑不误，端口也不释放。桌面端因为进程随后就退出而看不出来，但同进程内
+    /// 反复起停 `Core` 的场景（集成测试整套跑、将来的应用内重启）会一路堆积。
+    shutdown: CancellationToken,
 }
 
 impl Core {
@@ -202,7 +219,9 @@ impl Core {
 
         // 7. mDNS 广播 + 浏览（用真实端口）
         let discovery = Arc::new(DiscoveryService::new(self_info.clone(), events.clone())?);
-        discovery.start(actual_port).await?;
+        if !config.disable_discovery {
+            discovery.start(actual_port).await?;
+        }
 
         // 8. 同步：Inbox 落点 + 初始扫描，并启动后台扫描循环（SYNC_DESIGN.md §3/§5，里程碑 2）
         match store.ensure_inbox_scope(&current.save_dir).await {
@@ -213,7 +232,9 @@ impl Core {
             }
             Err(e) => tracing::warn!(error = %e, "ensure inbox scope failed"),
         }
-        sync_index::spawn_background_scan(store.clone(), events.clone());
+        // 一个停机信号贯穿下面全部常驻循环，`shutdown()` 一次全停（见 `Core::shutdown`）。
+        let shutdown = CancellationToken::new();
+        sync_index::spawn_background_scan(store.clone(), events.clone(), shutdown.clone());
 
         // 9. 跨设备索引交换：与全部完全信任设备交换索引摘要（里程碑 3；里程碑 C4 起
         //    不再局限于 mDNS 在线快照，远程设备靠周期定时器兜底，见 sync_exchange 模块文档）
@@ -225,6 +246,7 @@ impl Core {
             save_dir_fallback.clone(),
             transfer.clone(),
             events.clone(),
+            shutdown.clone(),
         );
 
         // 9b. 信任传递 / 引荐（TRUST_DESIGN.md §5，里程碑 R2）：与全部完全信任设备交换
@@ -238,6 +260,7 @@ impl Core {
             save_dir_fallback.clone(),
             transfer.clone(),
             events.clone(),
+            shutdown.clone(),
         );
 
         // 10. 自建服务器注册续约（CONNECT_DESIGN.md §3.2，里程碑 C2）：未开启远程 /
@@ -249,6 +272,7 @@ impl Core {
             fallback_name.clone(),
             save_dir_fallback.clone(),
             transfer.clone(),
+            shutdown.clone(),
         );
         // 打洞拨号器（连接阶梯第 3 档，里程碑 C5）：同中继拨号器，未开启远程/未配置
         // 服务器时其内部会自行报错，不影响任何现有行为。
@@ -377,11 +401,15 @@ impl Core {
             listen_port: actual_port,
             save_dir_fallback,
             register_notify,
+            shutdown,
         }))
     }
 
     /// 优雅关闭：停止 mDNS 广播与浏览（注销服务、清空在线表）+ 下载引擎优雅退出。
     pub async fn shutdown(&self) -> Result<()> {
+        // 先断信号：后台循环各自在下一个 select 点退出，accept 循环随即释放监听端口。
+        self.shutdown.cancel();
+        self.transfer.shutdown();
         self.discovery.stop().await?;
         if let Some(download) = &self.download {
             download.shutdown().await;

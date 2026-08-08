@@ -25,6 +25,7 @@ use aa4c_proto::PeerIntro;
 use aa4c_store::{DeviceRecord, Store};
 use aa4c_transfer::TransferService;
 use aa4c_types::{CoreEvent, DeviceId, Platform, Result, TrustLevel};
+use tokio_util::sync::CancellationToken;
 
 use crate::orchestrate::resolve_addr;
 use crate::EventSender;
@@ -174,11 +175,17 @@ pub(crate) fn spawn_introduce_loop(
     fallback_save_dir: String,
     transfer: Arc<TransferService>,
     events: EventSender,
+    stop: CancellationToken,
 ) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(INTRODUCE_INTERVAL);
         loop {
-            tick.tick().await; // 首次 tick 立即完成 → 启动即跑一轮
+            // 首次 tick 立即完成 → 启动即跑一轮
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => break,
+                _ = tick.tick() => {}
+            }
             refresh_all(
                 &store,
                 &discovery,

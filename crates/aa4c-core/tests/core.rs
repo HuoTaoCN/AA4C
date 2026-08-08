@@ -34,6 +34,10 @@ async fn spawn_node() -> Node {
     config.listen_port = 0; // ephemeral，避免双实例端口冲突
                             // 不用真实下载目录：否则启动时的 Inbox 初始扫描会扫到测试机的真实文件
     config.transfer.default_save_dir = dir.path().join("downloads");
+    // mDNS 对本套件只是噪声：全部用例都用显式地址建连（见文件头注释），而每个
+    // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
+    // 几十个守护进程互相挤，配对会开始超时。
+    config.disable_discovery = true;
     let core = Core::start(config).await.expect("core starts");
     Node { core, _dir: dir }
 }
@@ -46,6 +50,10 @@ async fn spawn_node_quic() -> Node {
     let mut config = CoreConfig::new(dir.path().to_path_buf());
     config.listen_port = 0;
     config.transfer.default_save_dir = dir.path().join("downloads");
+    // mDNS 对本套件只是噪声：全部用例都用显式地址建连（见文件头注释），而每个
+    // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
+    // 几十个守护进程互相挤，配对会开始超时。
+    config.disable_discovery = true;
     config.transfer.prefer_quic = true;
     let core = Core::start(config).await.expect("core starts");
     Node { core, _dir: dir }
@@ -59,6 +67,10 @@ async fn spawn_node_no_punch() -> Node {
     let mut config = CoreConfig::new(dir.path().to_path_buf());
     config.listen_port = 0;
     config.transfer.default_save_dir = dir.path().join("downloads");
+    // mDNS 对本套件只是噪声：全部用例都用显式地址建连（见文件头注释），而每个
+    // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
+    // 几十个守护进程互相挤，配对会开始超时。
+    config.disable_discovery = true;
     config.transfer.disable_punch = true;
     let core = Core::start(config).await.expect("core starts");
     Node { core, _dir: dir }
@@ -826,6 +838,10 @@ async fn restart_marks_stale_tasks_failed() {
         let mut config = CoreConfig::new(dir.path().to_path_buf());
         config.listen_port = 0;
         config.transfer.default_save_dir = dir.path().join("downloads");
+        // mDNS 对本套件只是噪声：全部用例都用显式地址建连（见文件头注释），而每个
+        // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
+        // 几十个守护进程互相挤，配对会开始超时。
+        config.disable_discovery = true;
         let core = Core::start(config).await.unwrap();
         // 任务的 peer 需先存在于 devices 表（外键约束）
         core.store
@@ -865,6 +881,10 @@ async fn restart_marks_stale_tasks_failed() {
     let mut config = CoreConfig::new(dir.path().to_path_buf());
     config.listen_port = 0;
     config.transfer.default_save_dir = dir.path().join("downloads");
+    // mDNS 对本套件只是噪声：全部用例都用显式地址建连（见文件头注释），而每个
+    // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
+    // 几十个守护进程互相挤，配对会开始超时。
+    config.disable_discovery = true;
     let core = Core::start(config).await.unwrap();
     let tasks = core.list_transfers(10, 0).await.unwrap();
     assert_eq!(tasks.len(), 1);
@@ -1763,6 +1783,10 @@ async fn download_end_to_end_through_core_orchestration() {
     let mut config = CoreConfig::new(dir.path().to_path_buf());
     config.listen_port = 0;
     config.transfer.default_save_dir = dir.path().join("downloads");
+    // mDNS 对本套件只是噪声：全部用例都用显式地址建连（见文件头注释），而每个
+    // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
+    // 几十个守护进程互相挤，配对会开始超时。
+    config.disable_discovery = true;
     config.download_spawner = Some(Arc::new(ProcessSpawner::new(require_aria2c())));
     let core = Core::start(config).await.expect("core starts");
 
@@ -1845,6 +1869,10 @@ async fn bt_download_routes_through_core_orchestration() {
     let mut config = CoreConfig::new(dir.path().to_path_buf());
     config.listen_port = 0;
     config.transfer.default_save_dir = dir.path().join("downloads");
+    // mDNS 对本套件只是噪声：全部用例都用显式地址建连（见文件头注释），而每个
+    // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
+    // 几十个守护进程互相挤，配对会开始超时。
+    config.disable_discovery = true;
     config.download_spawner = Some(Arc::new(ProcessSpawner::new(require_on_path("aria2c"))));
     config.bt_spawner = Some(Arc::new(ProcessSpawner::new(require_on_path(
         "transmission-daemon",
@@ -1985,6 +2013,10 @@ async fn ai_suggest_lifecycle_through_core_orchestration() {
     let mut config = CoreConfig::new(dir.path().to_path_buf());
     config.listen_port = 0;
     config.transfer.default_save_dir = dir.path().join("downloads");
+    // mDNS 对本套件只是噪声：全部用例都用显式地址建连（见文件头注释），而每个
+    // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
+    // 几十个守护进程互相挤，配对会开始超时。
+    config.disable_discovery = true;
     config.ai_spawner = Some(Arc::new(ProcessSpawner::new(require_llama_server_bin())));
     let core = Core::start(config).await.expect("core starts");
 
@@ -2086,6 +2118,10 @@ async fn kb_lifecycle_through_core_orchestration() {
     let mut config = CoreConfig::new(dir.path().to_path_buf());
     config.listen_port = 0;
     config.transfer.default_save_dir = dir.path().join("downloads");
+    // mDNS 对本套件只是噪声：全部用例都用显式地址建连（见文件头注释），而每个
+    // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
+    // 几十个守护进程互相挤，配对会开始超时。
+    config.disable_discovery = true;
     config.ai_spawner = Some(Arc::new(ProcessSpawner::new(require_llama_server_bin())));
     let core = Core::start(config).await.expect("core starts");
 
@@ -2382,4 +2418,48 @@ async fn introduce_exchange_gated_by_full_trust() {
 
     a.core.shutdown().await.unwrap();
     b.core.shutdown().await.unwrap();
+}
+
+/// `shutdown()` 必须真的把常驻后台停掉——**监听端口释放是最容易验证的那个证据**。
+///
+/// 此前 `shutdown()` 只停了 discovery / download / AI：传输层的 accept 循环、同步扫描、
+/// 索引交换、引荐、自建服务器续约这几条循环都没有出口，`Core` 停掉之后照跑不误。桌面端
+/// 因为进程随后就退出而看不出来，但同进程内反复起停 `Core` 的场景会一路堆积——本套集成
+/// 测试就是那个场景，整套跑到后面配对会开始超时（每个用例起 2–4 个 Core，一路留着）。
+#[tokio::test]
+async fn shutdown_releases_the_listening_port() {
+    let node = spawn_node().await;
+    let port = node.core.listen_port();
+
+    // 探针用"连得上吗"而不是"能不能重新绑定"：监听器绑的是 `0.0.0.0`，而在 macOS 上
+    // 由于 `SO_REUSEADDR`（tokio 默认开）再绑一次 `127.0.0.1:同端口` 是允许的，那个探针
+    // 恒为真、测不出任何东西。
+    assert!(
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok(),
+        "监听中的端口当然连得上"
+    );
+
+    node.core.shutdown().await.unwrap();
+
+    // accept 循环退出是异步的，给它几个调度轮次。
+    let mut refused = false;
+    for _ in 0..50 {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
+        {
+            refused = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        refused,
+        "shutdown 之后监听端口必须释放，否则 accept 循环还在跑"
+    );
+
+    // 幂等：重复 shutdown 不该出错。
+    node.core.shutdown().await.unwrap();
 }

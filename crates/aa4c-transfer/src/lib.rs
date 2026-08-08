@@ -295,6 +295,11 @@ pub struct TransferService {
     pub(crate) relay_dialer: OnceLock<Arc<dyn RelayDialer>>,
     /// 打洞拨号器（Core 注入；未注入时直接跳过第 3 档落中继，见 [`dial`]，里程碑 C5）。
     pub(crate) punch_dialer: OnceLock<Arc<dyn PunchDialer>>,
+    /// 停机信号：[`Self::shutdown`] 触发后 accept 循环退出、监听端口释放。
+    ///
+    /// 此前 accept 循环是个没有出口的 `loop`，`Core::shutdown()` 停了 discovery 却停不了
+    /// 它——进程内每起一个 `TransferService` 就永久多占一个监听端口和一条常驻任务。
+    shutdown: CancellationToken,
 }
 
 impl TransferService {
@@ -321,7 +326,20 @@ impl TransferService {
             quic_endpoint: OnceLock::new(),
             relay_dialer: OnceLock::new(),
             punch_dialer: OnceLock::new(),
+            shutdown: CancellationToken::new(),
         })
+    }
+
+    /// 停止监听：accept 循环退出、TCP 端口与 QUIC 端点一并释放。
+    ///
+    /// 进行中的会话不强杀（各自的 `StopSignal` 是另一套机制），只是不再接受新连接。
+    /// 幂等：重复调用无副作用。
+    pub fn shutdown(&self) {
+        self.shutdown.cancel();
+        if let Some(endpoint) = self.quic_endpoint.get() {
+            // 让 quinn 的 accept 循环拿到 None 自然退出（见 quic::listen）。
+            endpoint.close(0u32.into(), b"shutdown");
+        }
     }
 
     /// 注入配对分流钩子（Core 在装配阶段调用一次）。重复设置无效。
@@ -419,9 +437,15 @@ impl TransferService {
         let actual = listener.local_addr()?.port();
         let acceptor = TlsAcceptor::from(Arc::new(self.identity.tls_server_config(None)?));
         let svc = self.clone();
+        let stop = self.shutdown.clone();
         tokio::spawn(async move {
             loop {
-                let Ok((tcp, peer)) = listener.accept().await else {
+                let accepted = tokio::select! {
+                    biased;
+                    () = stop.cancelled() => break,
+                    r = listener.accept() => r,
+                };
+                let Ok((tcp, peer)) = accepted else {
                     break;
                 };
                 let acceptor = acceptor.clone();

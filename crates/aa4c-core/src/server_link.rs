@@ -45,6 +45,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
+use tokio_util::sync::CancellationToken;
 
 const OP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -503,6 +504,7 @@ pub(crate) fn spawn_register_loop(
     fallback_name: String,
     fallback_save_dir: String,
     transfer: Arc<TransferService>,
+    stop: CancellationToken,
 ) -> (Arc<tokio::sync::Notify>, Arc<SignalChannel>) {
     let notify = Arc::new(tokio::sync::Notify::new());
     let notify_task = notify.clone();
@@ -514,6 +516,9 @@ pub(crate) fn spawn_register_loop(
     let signal_channel_task = signal_channel.clone();
     tokio::spawn(async move {
         loop {
+            if stop.is_cancelled() {
+                break;
+            }
             if let Err(e) = run_persistent_session(
                 &store,
                 &identity,
@@ -530,6 +535,8 @@ pub(crate) fn spawn_register_loop(
                 tracing::debug!(error = %e, "persistent server session ended, will retry");
             }
             tokio::select! {
+                biased;
+                () = stop.cancelled() => break,
                 () = tokio::time::sleep(IDLE_POLL) => {}
                 () = notify_task.notified() => {}
             }
