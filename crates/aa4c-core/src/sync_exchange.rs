@@ -23,6 +23,7 @@ use aa4c_store::Store;
 use aa4c_transfer::TransferService;
 use aa4c_types::{CoreEvent, DeviceId, RemoteIndexEntry, Result, TrustLevel};
 use tokio::sync::broadcast::error::RecvError;
+use tokio_util::sync::CancellationToken;
 
 use crate::orchestrate::resolve_addr;
 use crate::EventSender;
@@ -131,6 +132,7 @@ pub(crate) fn spawn_exchange_loop(
     fallback_save_dir: String,
     transfer: Arc<TransferService>,
     events: EventSender,
+    stop: CancellationToken,
 ) {
     let mut sub = events.subscribe();
     tokio::spawn(async move {
@@ -148,6 +150,8 @@ pub(crate) fn spawn_exchange_loop(
         tick.tick().await; // 首次 tick 立即完成，上面已经拉过一次，跳过
         loop {
             tokio::select! {
+                biased;
+                () = stop.cancelled() => break,
                 _ = tick.tick() => {
                     refresh_all_full_trust(
                         &store,

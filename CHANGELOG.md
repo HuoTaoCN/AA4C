@@ -46,6 +46,11 @@
 
 ### Fixed
 
+- **`Core::shutdown()` 停不掉后台**（起因是集成测试整套跑不通，查下去是产品代码的真 bug）。此前它只停 discovery / download / AI，而传输层的 **accept 循环**、同步扫描、索引交换、引荐、自建服务器续约这五条常驻循环全都没有出口；`DiscoveryService` 更是从没关过 `ServiceDaemon`——它自带一条 **OS 线程 + 一组 5353 组播 socket**，既不随 tokio runtime 消亡、也不受 `stop()` 影响。桌面端因为进程随后就退出而看不出来，但同进程内反复起停 `Core` 的场景（集成测试、将来的应用内重启）会一路堆积：每起一个 `Core` 就永久多一条 mDNS 线程和一个占着不放的监听端口，几十个守护进程一起处理局域网上的每个 mDNS 包，配对开始超时。
+  - 一个 `CancellationToken` 贯穿全部常驻循环，`shutdown()` 一次全停，监听端口随即释放。
+  - `DiscoveryService` 加 `Drop` 关掉守护进程。放 `Drop` 而不是 `stop()` 里是有讲究的：`stop()` 之后仍允许 `start()` 重开，不该在那里关；而只有 `Drop` 能覆盖**调用方没走到 `stop()`** 的路径（panic、提前 return）——失败的用例恰恰是这一种，于是原本就在泄漏的东西越滚越多。
+  - 新增 `CoreConfig::disable_discovery` 测试开关（同 `TransferConfig::disable_punch` 的既有惯例）：集成测试全部用显式地址建连，mDNS 对它们只是噪声。**这也从根上消掉了下面那条 `quic_resume_after_disconnect` 记录的同一类隐患**——"前面的用例把 mDNS 预热过、发现赢下竞速"这种跨用例污染，现在压根不会发生。
+  - 效果：`cargo test -p aa4c-core --test core` 从"整套挂一大片"变成 **24 passed，只剩 2 个 AI 环境依赖用例**（未设 `AA4C_TEST_LLAMA_SERVER_BIN`），耗时串行 239s→60s、并行 84s→**20s**。新增 `shutdown_releases_the_listening_port` 守着这条不变量——探针用"连不连得上"而不是"能不能重新绑定"，后者在 macOS 上因 `SO_REUSEADDR` 恒为真、测不出任何东西。
 - **`quic_resume_after_disconnect` 长期的偶发失败**（整套跑时约 2/3 概率红，单跑却稳过——一直被当"已知 flaky"搁着）。真因不是时序而是**用例自身的隔离问题**：它把库里的 `last_addr` 改成黑洞代理来制造"传到一半断网"，但 `resolve_peer` 是**优先用 mDNS 发现到的地址、发现不到才回落 `last_addr`**（这对生产是正确行为）。同进程里前面的用例已经把 mDNS 预热过，发现赢下竞速、代理被绕开，第一次尝试反而成功，断言随即失灵。改成直接给传输层一个 `addr` 指向代理的 `DeviceInfo`、绕过 `resolve_peer`，用例意图不变但不再和发现赛跑；整套连跑 3 次稳定只剩两个 llama-server 环境缺失的失败。
 - **数据库迁移在重建表时会删光子表数据**（本轮加迁移 012 时发现并修掉的真实隐患）：迁移一直跑在 `foreign_keys = ON` 的连接上，而 SQLite 改不了 CHECK 约束、只能「建新表 → 拷数据 → 删旧表 → 改名」，那句 `DROP TABLE` 会顺着 `transfer_files ... ON DELETE CASCADE` 把**整个传输历史的文件明细连带删掉**。现在 `migrate()` 在事务之外先关掉外键、跑完还原并做一次 `foreign_key_check`（该 PRAGMA 在事务内是 no-op，必须在外面设）。升级路径有专门的测试兜底，去掉那一行就会立刻从"2 条明细"变成"0 条"。此前的迁移都只是 `ALTER TABLE ADD COLUMN`，没触发过这条路径。
 - 下载完成后的「打开所在文件夹」实际调用的是 `openPath(savePath)`，效果是直接打开文件本身，按钮标签与行为对不上。现拆成「打开文件」（`openPath`）与「打开所在文件夹」（`revealItemInDir`）两个按钮，各自对应正确的系统调用。

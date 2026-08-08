@@ -171,6 +171,21 @@ impl DiscoveryService {
     }
 }
 
+impl Drop for DiscoveryService {
+    /// 释放 mDNS 守护进程。
+    ///
+    /// `ServiceDaemon` 自带一个**独立的 OS 线程**和一组 5353 组播 socket，两者都不随
+    /// tokio runtime 结束而消亡；[`Self::stop`] 只注销服务、停止浏览（之后仍可 `start`
+    /// 重开），刻意不碰守护进程本身。于是"谁都不再持有这个 `DiscoveryService`了"是唯一
+    /// 该回收它的时机——也只有放在 `Drop` 里，才能覆盖**调用方没能走到 `stop()`**的路径
+    /// （panic、提前 return）。此前这一层缺失：进程内每 `new` 一次就永久多一条线程，
+    /// 集成测试整套跑下来会堆到几十条，全都在处理局域网上的每一个 mDNS 包。
+    fn drop(&mut self) {
+        // best-effort：进程正在退出时 daemon 可能已经没了，报错无意义。
+        let _ = self.daemon.shutdown();
+    }
+}
+
 /// 浏览事件循环：维护设备表并发布 CoreEvent。
 async fn browse_loop(
     receiver: mdns_sd::Receiver<ServiceEvent>,

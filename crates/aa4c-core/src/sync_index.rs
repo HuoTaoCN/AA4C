@@ -17,6 +17,7 @@ use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 use tokio::io::AsyncReadExt;
 use tokio::sync::broadcast::error::RecvError;
+use tokio_util::sync::CancellationToken;
 
 use crate::EventSender;
 
@@ -69,7 +70,7 @@ pub(crate) async fn rescan_all(store: &Store) -> Result<()> {
 /// 启动后台扫描循环：文件系统监听（去抖）/ 定时 [`SCAN_INTERVAL`] / 传输完成 三者
 /// 任一触发即全量重扫，完成后广播 `CoreEvent::SyncIndexUpdated`，UI 据此刷新统一视图。
 /// 监听目录随共享范围增删自动对齐；监听不可用时静默退化为「定时 + 传输」。
-pub(crate) fn spawn_background_scan(store: Store, events: EventSender) {
+pub(crate) fn spawn_background_scan(store: Store, events: EventSender, stop: CancellationToken) {
     let mut sub = events.subscribe();
     tokio::spawn(async move {
         // 文件系统监听：事件（已去抖）汇入 fs_rx，与定时器 / 传输事件同处一个 select。
@@ -98,6 +99,8 @@ pub(crate) fn spawn_background_scan(store: Store, events: EventSender) {
                 reconcile_watches(w, &mut watched, &store).await;
             }
             tokio::select! {
+                biased;
+                () = stop.cancelled() => break,
                 _ = ticker.tick() => {}
                 // 监听不可用时禁用该分支，避免关闭的 channel 让 select 空转
                 fs = fs_rx.recv(), if watcher.is_some() => match fs {
@@ -313,7 +316,7 @@ mod tests {
             .unwrap();
 
         let (events, mut rx) = tokio::sync::broadcast::channel(16);
-        spawn_background_scan(store.clone(), events);
+        spawn_background_scan(store.clone(), events, CancellationToken::new());
         // 给首轮 reconcile 一点时间开始监听 root（此时索引仍为空，尚未触发扫描）
         tokio::time::sleep(Duration::from_millis(800)).await;
 
