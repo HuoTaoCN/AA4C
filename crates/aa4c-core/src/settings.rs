@@ -12,6 +12,7 @@ pub(crate) const KEY_AUTO_ACCEPT: &str = "auto_accept_from_trusted";
 pub(crate) const KEY_LISTEN_PORT: &str = "listen_port";
 pub(crate) const KEY_SERVER_URL: &str = "server_url";
 pub(crate) const KEY_ENABLE_REMOTE: &str = "enable_remote";
+pub(crate) const KEY_ENABLE_PORT_MAPPING: &str = "enable_port_mapping";
 pub(crate) const KEY_DOWNLOAD_DIR: &str = "download_dir";
 pub(crate) const KEY_DOWNLOAD_SPEED_LIMIT_KBPS: &str = "download_speed_limit_kbps";
 pub(crate) const KEY_DOWNLOAD_CONCURRENCY: &str = "download_concurrency";
@@ -123,6 +124,11 @@ pub(crate) async fn load(
             .unwrap_or(DEFAULT_PORT),
         server_url: get_json(store, KEY_SERVER_URL).await?,
         enable_remote: get_json(store, KEY_ENABLE_REMOTE).await?.unwrap_or(false),
+        // 默认 true：见 `Settings::enable_port_mapping` 的文档——外层 `enable_remote`
+        // 默认关闭已经保证了「不打开就不出网」，这一项是在那之内的取舍。
+        enable_port_mapping: get_json(store, KEY_ENABLE_PORT_MAPPING)
+            .await?
+            .unwrap_or(true),
         download_dir: get_json(store, KEY_DOWNLOAD_DIR)
             .await?
             .unwrap_or_else(|| default_download_dir().to_string_lossy().into_owned()),
@@ -167,6 +173,7 @@ pub(crate) async fn save(store: &Store, s: &Settings) -> Result<()> {
     set_json(store, KEY_LISTEN_PORT, &s.listen_port).await?;
     set_json(store, KEY_SERVER_URL, &s.server_url).await?;
     set_json(store, KEY_ENABLE_REMOTE, &s.enable_remote).await?;
+    set_json(store, KEY_ENABLE_PORT_MAPPING, &s.enable_port_mapping).await?;
     set_json(store, KEY_DOWNLOAD_DIR, &s.download_dir).await?;
     set_json(
         store,

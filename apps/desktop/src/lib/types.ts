@@ -85,6 +85,11 @@ export interface Settings {
   serverUrl: string | null;
   /** 远程连接总开关，默认关闭（里程碑 C2/C4）。 */
   enableRemote: boolean;
+  /**
+   * 自动在路由器上开端口（UPnP），默认开——但只在 `enableRemote` 打开时才生效
+   * （里程碑 R3）。
+   */
+  enablePortMapping: boolean;
   /** 下载目录（默认系统下载目录），必须在 saveDir 子树之外（里程碑 D1）。 */
   downloadDir: string;
   /** 下载限速（KB/s），null = 不限速。重启引擎生效（里程碑 D3）。 */

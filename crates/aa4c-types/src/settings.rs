@@ -23,6 +23,15 @@ pub struct Settings {
     pub server_url: Option<String>,
     /// 远程连接总开关，默认 **关闭**——不配置、不打开就完全不出网（CONNECT_DESIGN.md §8）。
     pub enable_remote: bool,
+    /// 自动在路由器上开端口（UPnP IGD），默认 **开**——但**只在 `enable_remote` 打开时
+    /// 才生效**（TRUST_DESIGN.md §6.2，里程碑 R3）。
+    ///
+    /// 两层闸的分工要说清：`enable_remote` 默认关闭，「不配置、不打开就完全不出网」这条
+    /// 默认安全的姿态由它保证；一旦用户主动打开了远程连接，他要的就是「能被连上」，这时
+    /// 再要求他找第二个开关才肯打洞是反的——所以这一项在那个前提下默认开（与 Transmission
+    /// 自己 `port-forwarding-enabled: true` 的默认一致）。留这个开关是因为它确实会**在用户
+    /// 的路由器上开一个端口**，有人不接受这件事，界面上必须写明白。
+    pub enable_port_mapping: bool,
     /// 下载目录（默认系统下载目录，如 `~/Downloads`），必须在 `save_dir` 子树之外——
     /// 落进 `save_dir` 会被 Inbox 自动索引、分享给全部完全信任设备（DOWNLOAD_DESIGN.md
     /// §5/§7，里程碑 D1）。
@@ -104,6 +113,7 @@ mod tests {
             listen_port: 42420,
             server_url: Some("aa4c://example.com:42420#abcd1234abcd1234".into()),
             enable_remote: true,
+            enable_port_mapping: true,
             download_dir: "/Users/huo/Downloads".into(),
             download_speed_limit_kbps: Some(500),
             download_concurrency: Some(3),
@@ -132,6 +142,7 @@ mod tests {
             "aa4c://example.com:42420#abcd1234abcd1234"
         );
         assert_eq!(json["enableRemote"], true);
+        assert_eq!(json["enablePortMapping"], true);
         assert_eq!(json["downloadDir"], "/Users/huo/Downloads");
         assert_eq!(json["downloadSpeedLimitKbps"], 500);
         assert_eq!(json["downloadConcurrency"], 3);

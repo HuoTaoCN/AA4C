@@ -10,6 +10,7 @@ mod archive;
 mod dispatch;
 mod introduce;
 mod orchestrate;
+mod portmap;
 mod server_link;
 mod settings;
 mod sync_exchange;
@@ -75,6 +76,13 @@ pub struct CoreConfig {
     /// `ServiceDaemon` 自带一条 OS 线程和一组 5353 组播 socket，并行跑十几个用例时
     /// 几十个守护进程互相挤，配对会开始超时（此前套件整套跑不通的主因之一）。
     pub disable_discovery: bool,
+    /// 不做 UPnP 自动端口映射（**测试专用开关**，同 `disable_discovery` 的既有惯例）。
+    ///
+    /// 端口映射的真实实现**会去改开发者自己路由器的配置**。而集成测试里有若干用例会打开
+    /// `enable_remote`（`portmap` 的外层闸），一旦它们的运行时间越过退避周期，测试就会在
+    /// 跑测试的人家里真开一个端口——这是不可接受的，也不能靠"反正跑得快"来指望。
+    /// 集成测试一律把这一项设为 `true`，从结构上堵死，而不是依赖时序上的巧合。
+    pub disable_port_mapping: bool,
 }
 
 impl CoreConfig {
@@ -95,6 +103,7 @@ impl CoreConfig {
             bt_spawner: None,
             ai_spawner: None,
             disable_discovery: false,
+            disable_port_mapping: false,
         }
     }
 }
@@ -263,6 +272,33 @@ impl Core {
             shutdown.clone(),
         );
 
+        // 9c. 自动端口映射（UPnP IGD，TRUST_DESIGN.md §6.2，里程碑 R3）：在路由器上给
+        //     本机传输端口开 TCP+UDP 两条映射，让有公网 IPv4 的家宽也能被直连命中连接
+        //     阶梯第 2 档。两层闸都开才动手（`enable_remote` 默认关 + `enable_port_mapping`
+        //     默认开），停机时拆掉——不能在用户的路由器上留洞。见 portmap 模块文档。
+        //
+        //     映射到的公网地址经 `PortMapState` 交给下面的注册/打洞两条路径当候选上报，
+        //     不接这一步的话映射了也没人知道，等于白做。
+        let portmap_state = portmap::PortMapState::default();
+        let upnp = if config.disable_port_mapping {
+            None
+        } else {
+            portmap::UpnpMapper::new(server_link::primary_local_ip_v4())
+        };
+        if let Some(mapper) = upnp {
+            portmap::spawn_portmap_loop(
+                store.clone(),
+                fallback_name.clone(),
+                save_dir_fallback.clone(),
+                actual_port,
+                Arc::new(mapper),
+                portmap_state.clone(),
+                shutdown.clone(),
+            );
+        } else {
+            tracing::debug!("no outbound local ip, port mapping unavailable");
+        }
+
         // 10. 自建服务器注册续约（CONNECT_DESIGN.md §3.2，里程碑 C2）：未开启远程 /
         //     未配置服务器时循环内部直接跳过，不影响任何现有行为
         let (register_notify, signal_channel) = server_link::spawn_register_loop(
@@ -272,6 +308,7 @@ impl Core {
             fallback_name.clone(),
             save_dir_fallback.clone(),
             transfer.clone(),
+            portmap_state.clone(),
             shutdown.clone(),
         );
         // 打洞拨号器（连接阶梯第 3 档，里程碑 C5）：同中继拨号器，未开启远程/未配置
@@ -283,6 +320,7 @@ impl Core {
             actual_port,
             transfer.clone(),
             signal_channel,
+            portmap_state,
         )));
 
         // 11. 下载中心（DOWNLOAD_DESIGN.md，里程碑 D1 aria2 + D2 Transmission）：只在
