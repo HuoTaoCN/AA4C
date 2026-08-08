@@ -47,6 +47,8 @@ use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use tokio_util::sync::CancellationToken;
 
+use crate::portmap::PortMapState;
+
 const OP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 未开启远程 / 未配置服务器 / 上次失败时的重新检查间隔（用于感知设置变化，以及
@@ -116,8 +118,13 @@ async fn connect(
 
 /// 本机候选端点（自报告）：回环地址打头（同机/回环测试必中），随后是尽力探测到的
 /// 主要本地 IP（UDP connect 路由查询，不实际发包；沙箱/离线环境测不出就只剩回环这条）。
-fn local_candidate_endpoints(port: u16) -> Vec<SocketAddr> {
+fn local_candidate_endpoints(port: u16, mapped: Option<SocketAddr>) -> Vec<SocketAddr> {
     let mut out = vec![SocketAddr::from(([127, 0, 0, 1], port))];
+    // UPnP 映射到的公网地址（里程碑 R3）：这是**最有价值的一个候选**——对端照它直连
+    // 就能命中连接阶梯第 2 档，跳过打洞与中继。放在最前面（回环之后），让打洞探测先试它。
+    if let Some(addr) = mapped {
+        out.push(addr);
+    }
     // IPv4 与 IPv6 各探一次（里程碑 R1，TRUST_DESIGN.md §6.1）：只报 IPv4 的话，
     // 即便双方都有公网 IPv6，对端也永远拿不到那个可以直连的地址，白白落到打洞/中继。
     for ip in [primary_local_ip_v4(), primary_local_ip_v6()]
@@ -134,7 +141,7 @@ fn local_candidate_endpoints(port: u16) -> Vec<SocketAddr> {
 
 /// "我的 OS 会用哪个本地 IP 出网" 的零依赖探测：UDP `connect` 只做内核路由查表，
 /// 不实际发包，离线也能返回结果（除非连本地路由表都没有默认路由）。
-fn primary_local_ip_v4() -> Option<std::net::IpAddr> {
+pub(crate) fn primary_local_ip_v4() -> Option<std::net::IpAddr> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
     socket.local_addr().ok().map(|a| a.ip())
@@ -219,8 +226,9 @@ async fn own_candidates(
     transfer: &Arc<TransferService>,
     addr: &ServerAddr,
     listen_port: u16,
+    mapped: Option<SocketAddr>,
 ) -> Vec<SocketAddr> {
-    let mut candidates = local_candidate_endpoints(listen_port);
+    let mut candidates = local_candidate_endpoints(listen_port, mapped);
     match resolve_reflect_addr(addr).await {
         Ok(reflect_target) => {
             match transfer
@@ -248,10 +256,11 @@ fn spawn_signal_reciprocate(
     listen_port: u16,
     from: DeviceId,
     their_candidates: Vec<SocketAddr>,
+    portmap: PortMapState,
 ) {
     tokio::spawn(async move {
         transfer.punch_probe(from.clone(), their_candidates);
-        let own = own_candidates(&transfer, &addr, listen_port).await;
+        let own = own_candidates(&transfer, &addr, listen_port, portmap.external_addr()).await;
         signal_channel.reply(from, own);
     });
 }
@@ -273,7 +282,8 @@ pub(crate) async fn register_once(
     write_message(
         &mut stream,
         &ServerMessage::Register {
-            endpoints: local_candidate_endpoints(listen_port),
+            // 仅测试用（见上方文档）：不牵扯端口映射，传 None 即可。
+            endpoints: local_candidate_endpoints(listen_port, None),
             proto: aa4c_types::PROTO_VERSION,
             allow_list,
         },
@@ -444,9 +454,13 @@ pub(crate) struct PunchDialerImpl {
     listen_port: u16,
     transfer: Arc<TransferService>,
     signal_channel: Arc<SignalChannel>,
+    /// UPnP 映射到的公网地址（里程碑 R3）：作为候选发给对端，让它有机会直接连上、
+    /// 跳过打洞本身。
+    portmap: PortMapState,
 }
 
 impl PunchDialerImpl {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         store: Store,
         fallback_name: String,
@@ -454,6 +468,7 @@ impl PunchDialerImpl {
         listen_port: u16,
         transfer: Arc<TransferService>,
         signal_channel: Arc<SignalChannel>,
+        portmap: PortMapState,
     ) -> Self {
         Self {
             store,
@@ -462,12 +477,14 @@ impl PunchDialerImpl {
             listen_port,
             transfer,
             signal_channel,
+            portmap,
         }
     }
 }
 
 impl PunchDialer for PunchDialerImpl {
     fn candidates(&self, peer_id: DeviceId) -> PunchFuture {
+        let portmap = self.portmap.clone();
         let store = self.store.clone();
         let fallback_name = self.fallback_name.clone();
         let fallback_save_dir = self.fallback_save_dir.clone();
@@ -486,7 +503,7 @@ impl PunchDialer for PunchDialerImpl {
                 Aa4cError::Network("no server configured, no punch available".into())
             })?;
             let addr = ServerAddr::parse(&server_url)?;
-            let own = own_candidates(&transfer, &addr, listen_port).await;
+            let own = own_candidates(&transfer, &addr, listen_port, portmap.external_addr()).await;
             let rx = signal_channel.request(peer_id.clone(), own);
             let candidates = timeout(SIGNAL_TIMEOUT, rx)
                 .await
@@ -518,6 +535,7 @@ impl PunchDialer for PunchDialerImpl {
 /// [`SignalChannel`]（里程碑 C5）：`PunchDialerImpl` 靠它把打洞候选请求塞进这条常驻
 /// 连接、并等待对端回信；这个 handle 跨重连持续存在，重连期间提交的请求会在下次连上
 /// 后照常发出（未发出前只是让请求方多等一会儿，最终由它自己的超时兜底）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_register_loop(
     store: Store,
     identity: Arc<Identity>,
@@ -525,6 +543,7 @@ pub(crate) fn spawn_register_loop(
     fallback_name: String,
     fallback_save_dir: String,
     transfer: Arc<TransferService>,
+    portmap: PortMapState,
     stop: CancellationToken,
 ) -> (Arc<tokio::sync::Notify>, Arc<SignalChannel>) {
     let notify = Arc::new(tokio::sync::Notify::new());
@@ -535,6 +554,7 @@ pub(crate) fn spawn_register_loop(
         pending: Mutex::new(HashMap::new()),
     });
     let signal_channel_task = signal_channel.clone();
+    let portmap_task = portmap;
     tokio::spawn(async move {
         loop {
             if stop.is_cancelled() {
@@ -550,6 +570,7 @@ pub(crate) fn spawn_register_loop(
                 &notify_task,
                 &signal_channel_task,
                 &mut outbox_rx,
+                &portmap_task,
             )
             .await
             {
@@ -579,6 +600,7 @@ async fn run_persistent_session(
     notify: &tokio::sync::Notify,
     signal_channel: &Arc<SignalChannel>,
     outbox_rx: &mut mpsc::UnboundedReceiver<(DeviceId, Vec<SocketAddr>)>,
+    portmap: &PortMapState,
 ) -> Result<()> {
     let settings = crate::settings::load(store, fallback_name, fallback_save_dir).await?;
     if !settings.enable_remote {
@@ -600,7 +622,7 @@ async fn run_persistent_session(
         write_message(
             &mut stream,
             &ServerMessage::Register {
-                endpoints: local_candidate_endpoints(listen_port),
+                endpoints: local_candidate_endpoints(listen_port, portmap.external_addr()),
                 proto: aa4c_types::PROTO_VERSION,
                 allow_list,
             },
@@ -649,6 +671,7 @@ async fn run_persistent_session(
                                     listen_port,
                                     from,
                                     candidates,
+                                    portmap.clone(),
                                 );
                             }
                         }
@@ -683,6 +706,30 @@ mod tests {
         .unwrap();
         let url = server.address_with_host("127.0.0.1");
         (server, dir, url)
+    }
+
+    /// 映射到的公网地址必须出现在候选里（里程碑 R3）。
+    ///
+    /// 这条守的是 R3 有没有用的分界：在路由器上开了洞，却不把那个地址告诉对端，
+    /// 对端还是只能打洞或走中继——映射等于白做。
+    #[test]
+    fn a_mapped_address_is_reported_as_a_candidate() {
+        let mapped: SocketAddr = "203.0.113.7:42420".parse().unwrap();
+
+        let with = local_candidate_endpoints(42420, Some(mapped));
+        assert!(
+            with.contains(&mapped),
+            "UPnP 映射到的公网地址必须作为候选发出去，否则对端根本不知道能直连"
+        );
+
+        // 没有映射时行为与 R3 之前完全一致，不多也不少
+        let without = local_candidate_endpoints(42420, None);
+        assert!(!without.contains(&mapped));
+        assert_eq!(
+            with.len(),
+            without.len() + 1,
+            "映射地址是净增的一条候选，不该顶掉既有的任何一条"
+        );
     }
 
     #[tokio::test]

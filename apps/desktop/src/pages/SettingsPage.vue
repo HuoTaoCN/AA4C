@@ -31,6 +31,7 @@ const form = reactive<Settings>({
   listenPort: 42420,
   serverUrl: null,
   enableRemote: false,
+  enablePortMapping: true,
   downloadDir: "",
   downloadSpeedLimitKbps: null,
   downloadConcurrency: null,
@@ -295,6 +296,24 @@ async function dismissIntro(id: string) {
           </label>
         </div>
         <p v-if="!form.serverUrl" class="hint muted">先填服务器地址才能打开这个开关。</p>
+
+        <div class="field row">
+          <label>自动在路由器上开端口</label>
+          <label class="switch">
+            <input
+              type="checkbox"
+              v-model="form.enablePortMapping"
+              :disabled="!form.enableRemote"
+            />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <p class="hint muted">
+          用 UPnP 让路由器把 {{ form.listenPort }} 端口转发到这台设备，对方就能直接连过来，
+          不必绕道中继，速度更快。<strong>这会在你的路由器上开一个端口</strong>；关掉 AA连接
+          时会自动收回。不放心可以关掉它——只是跨网连接更多要走中继。
+          <template v-if="!form.enableRemote">开启远程连接后这一项才生效。</template>
+        </p>
       </div>
     </section>
 

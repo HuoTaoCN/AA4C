@@ -38,6 +38,10 @@ async fn spawn_node() -> Node {
     // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
     // 几十个守护进程互相挤，配对会开始超时。
     config.disable_discovery = true;
+    // 端口映射的真实实现会去改**跑测试这台机器所在路由器**的配置。有几个用例会打开
+    // `enable_remote`（映射的外层闸），只是碰巧在退避周期内就跑完了才没真发出去——
+    // 不能靠这种巧合，直接从结构上关掉。
+    config.disable_port_mapping = true;
     let core = Core::start(config).await.expect("core starts");
     Node { core, _dir: dir }
 }
@@ -54,6 +58,10 @@ async fn spawn_node_quic() -> Node {
     // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
     // 几十个守护进程互相挤，配对会开始超时。
     config.disable_discovery = true;
+    // 端口映射的真实实现会去改**跑测试这台机器所在路由器**的配置。有几个用例会打开
+    // `enable_remote`（映射的外层闸），只是碰巧在退避周期内就跑完了才没真发出去——
+    // 不能靠这种巧合，直接从结构上关掉。
+    config.disable_port_mapping = true;
     config.transfer.prefer_quic = true;
     let core = Core::start(config).await.expect("core starts");
     Node { core, _dir: dir }
@@ -71,6 +79,10 @@ async fn spawn_node_no_punch() -> Node {
     // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
     // 几十个守护进程互相挤，配对会开始超时。
     config.disable_discovery = true;
+    // 端口映射的真实实现会去改**跑测试这台机器所在路由器**的配置。有几个用例会打开
+    // `enable_remote`（映射的外层闸），只是碰巧在退避周期内就跑完了才没真发出去——
+    // 不能靠这种巧合，直接从结构上关掉。
+    config.disable_port_mapping = true;
     config.transfer.disable_punch = true;
     let core = Core::start(config).await.expect("core starts");
     Node { core, _dir: dir }
@@ -842,6 +854,10 @@ async fn restart_marks_stale_tasks_failed() {
         // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
         // 几十个守护进程互相挤，配对会开始超时。
         config.disable_discovery = true;
+        // 端口映射的真实实现会去改**跑测试这台机器所在路由器**的配置。有几个用例会打开
+        // `enable_remote`（映射的外层闸），只是碰巧在退避周期内就跑完了才没真发出去——
+        // 不能靠这种巧合，直接从结构上关掉。
+        config.disable_port_mapping = true;
         let core = Core::start(config).await.unwrap();
         // 任务的 peer 需先存在于 devices 表（外键约束）
         core.store
@@ -885,6 +901,10 @@ async fn restart_marks_stale_tasks_failed() {
     // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
     // 几十个守护进程互相挤，配对会开始超时。
     config.disable_discovery = true;
+    // 端口映射的真实实现会去改**跑测试这台机器所在路由器**的配置。有几个用例会打开
+    // `enable_remote`（映射的外层闸），只是碰巧在退避周期内就跑完了才没真发出去——
+    // 不能靠这种巧合，直接从结构上关掉。
+    config.disable_port_mapping = true;
     let core = Core::start(config).await.unwrap();
     let tasks = core.list_transfers(10, 0).await.unwrap();
     assert_eq!(tasks.len(), 1);
@@ -1787,6 +1807,10 @@ async fn download_end_to_end_through_core_orchestration() {
     // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
     // 几十个守护进程互相挤，配对会开始超时。
     config.disable_discovery = true;
+    // 端口映射的真实实现会去改**跑测试这台机器所在路由器**的配置。有几个用例会打开
+    // `enable_remote`（映射的外层闸），只是碰巧在退避周期内就跑完了才没真发出去——
+    // 不能靠这种巧合，直接从结构上关掉。
+    config.disable_port_mapping = true;
     config.download_spawner = Some(Arc::new(ProcessSpawner::new(require_aria2c())));
     let core = Core::start(config).await.expect("core starts");
 
@@ -1873,6 +1897,10 @@ async fn bt_download_routes_through_core_orchestration() {
     // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
     // 几十个守护进程互相挤，配对会开始超时。
     config.disable_discovery = true;
+    // 端口映射的真实实现会去改**跑测试这台机器所在路由器**的配置。有几个用例会打开
+    // `enable_remote`（映射的外层闸），只是碰巧在退避周期内就跑完了才没真发出去——
+    // 不能靠这种巧合，直接从结构上关掉。
+    config.disable_port_mapping = true;
     config.download_spawner = Some(Arc::new(ProcessSpawner::new(require_on_path("aria2c"))));
     config.bt_spawner = Some(Arc::new(ProcessSpawner::new(require_on_path(
         "transmission-daemon",
@@ -2017,6 +2045,10 @@ async fn ai_suggest_lifecycle_through_core_orchestration() {
     // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
     // 几十个守护进程互相挤，配对会开始超时。
     config.disable_discovery = true;
+    // 端口映射的真实实现会去改**跑测试这台机器所在路由器**的配置。有几个用例会打开
+    // `enable_remote`（映射的外层闸），只是碰巧在退避周期内就跑完了才没真发出去——
+    // 不能靠这种巧合，直接从结构上关掉。
+    config.disable_port_mapping = true;
     config.ai_spawner = Some(Arc::new(ProcessSpawner::new(require_llama_server_bin())));
     let core = Core::start(config).await.expect("core starts");
 
@@ -2122,6 +2154,10 @@ async fn kb_lifecycle_through_core_orchestration() {
     // `ServiceDaemon` 自带一条 OS 线程 + 一组 5353 组播 socket，并行跑十几个用例时
     // 几十个守护进程互相挤，配对会开始超时。
     config.disable_discovery = true;
+    // 端口映射的真实实现会去改**跑测试这台机器所在路由器**的配置。有几个用例会打开
+    // `enable_remote`（映射的外层闸），只是碰巧在退避周期内就跑完了才没真发出去——
+    // 不能靠这种巧合，直接从结构上关掉。
+    config.disable_port_mapping = true;
     config.ai_spawner = Some(Arc::new(ProcessSpawner::new(require_llama_server_bin())));
     let core = Core::start(config).await.expect("core starts");
 
