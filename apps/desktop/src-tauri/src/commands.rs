@@ -8,9 +8,9 @@ use std::sync::Arc;
 use aa4c_core::Core;
 use aa4c_types::{
     Aa4cError, AiStatus, ArchiveEntry, ArchiveLogEntry, ArchiveRule, CoreEvent, DeviceInfo,
-    DownloadOptions, DownloadTask, KbSource, KbSourceSummary, LocalModel, PendingIntroduction,
-    Settings, Share, ShareAccess, Suggestion, SyncConflict, SyncFileEntry, SyncScope, TransferTask,
-    TrustLevel, UnifiedFile,
+    DownloadOptions, DownloadTask, KbSource, KbSourceSummary, LocalModel, LocalServerStatus,
+    PendingIntroduction, Settings, Share, ShareAccess, Suggestion, SyncConflict, SyncFileEntry,
+    SyncScope, TransferTask, TrustLevel, UnifiedFile,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -95,6 +95,13 @@ pub async fn dismiss_introduction(core: State<'_, Arc<Core>>, device_id: String)
 #[tauri::command]
 pub async fn refresh_introductions(core: State<'_, Arc<Core>>) -> CmdResult<()> {
     Ok(core.refresh_introductions().await?)
+}
+
+/// 内置服务器状态（TRUST_DESIGN.md §6.3，里程碑 R4）：含给别的设备填的完整地址，
+/// 以及那个地址「靠不靠得住」（`reach`）。
+#[tauri::command]
+pub async fn local_server_status(core: State<'_, Arc<Core>>) -> CmdResult<LocalServerStatus> {
+    Ok(core.local_server_status().await?)
 }
 
 #[tauri::command]

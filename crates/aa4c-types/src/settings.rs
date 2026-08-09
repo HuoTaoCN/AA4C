@@ -32,6 +32,23 @@ pub struct Settings {
     /// 自己 `port-forwarding-enabled: true` 的默认一致）。留这个开关是因为它确实会**在用户
     /// 的路由器上开一个端口**，有人不接受这件事，界面上必须写明白。
     pub enable_port_mapping: bool,
+    /// 在本机内置一个 `aa4c-server`，让这台常开的设备兼任汇合点，默认 **关闭**
+    /// （TRUST_DESIGN.md §6.3，里程碑 R4）。
+    ///
+    /// 门槛从「要有 VPS」降到「家里有台常开设备」。**但要诚实说清前提**：你仍然需要一个
+    /// **稳定入口**才能被找到——DDNS 或相对固定的地址。这是「零第三方」的真实边界：不需要
+    /// 服务商，但需要你自己有个能被找到的落脚点。
+    pub enable_local_server: bool,
+    /// 内置服务器监听端口，默认 42421。
+    ///
+    /// **不能与 `listen_port`（传输端口，默认 42420）相同**：传输层已经占了那个号的
+    /// TCP 与 UDP，内置服务器同样要 TCP（信令/中继）+ UDP（反射端点）。
+    pub local_server_port: u16,
+    /// 别的设备该用哪个主机名/地址找到这台内置服务器（DDNS 域名或固定 IP），可空。
+    ///
+    /// 服务器自己不知道对外可见的域名——这部分只能由用户提供。留空时界面会退而用探测到的
+    /// 公网地址（UPnP 映射拿到的）或本机局域网地址，并**如实标明**那是什么。
+    pub local_server_host: Option<String>,
     /// 下载目录（默认系统下载目录，如 `~/Downloads`），必须在 `save_dir` 子树之外——
     /// 落进 `save_dir` 会被 Inbox 自动索引、分享给全部完全信任设备（DOWNLOAD_DESIGN.md
     /// §5/§7，里程碑 D1）。
@@ -114,6 +131,9 @@ mod tests {
             server_url: Some("aa4c://example.com:42420#abcd1234abcd1234".into()),
             enable_remote: true,
             enable_port_mapping: true,
+            enable_local_server: true,
+            local_server_port: 42421,
+            local_server_host: Some("home.example.com".into()),
             download_dir: "/Users/huo/Downloads".into(),
             download_speed_limit_kbps: Some(500),
             download_concurrency: Some(3),
@@ -143,6 +163,9 @@ mod tests {
         );
         assert_eq!(json["enableRemote"], true);
         assert_eq!(json["enablePortMapping"], true);
+        assert_eq!(json["enableLocalServer"], true);
+        assert_eq!(json["localServerPort"], 42421);
+        assert_eq!(json["localServerHost"], "home.example.com");
         assert_eq!(json["downloadDir"], "/Users/huo/Downloads");
         assert_eq!(json["downloadSpeedLimitKbps"], 500);
         assert_eq!(json["downloadConcurrency"], 3);

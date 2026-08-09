@@ -2577,3 +2577,125 @@ async fn pair_and_transfer_over_ipv6() {
     a.core.shutdown().await.unwrap();
     b.core.shutdown().await.unwrap();
 }
+
+/// 内置服务器真的能当汇合点（TRUST_DESIGN.md §6.3，里程碑 R4）。
+///
+/// 场景就是这个特性存在的理由：家里那台常开的设备（H）自己兼任服务器，另外两台设备
+/// （A、B）指向它就能互相找到——**不需要一台 VPS**。
+///
+/// 这条守的是「真的能用」，不是「开关拨得动」：A 在**抹掉本地记的 B 地址**之后仍然要能
+/// 把文件送到 B，也就是说地址必须是经 H 的内置服务器查出来的。
+#[tokio::test]
+async fn an_embedded_server_works_as_a_rendezvous_point() {
+    let h = spawn_node().await; // 家里常开的那台，兼任服务器
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let b_id = b.core.self_info().id;
+
+    // —— H 打开内置服务器（保存即生效，不等 30s 轮询）——
+    let mut hs = h.core.get_settings().await.unwrap();
+    hs.enable_local_server = true;
+    hs.local_server_port = 0; // 0 = 系统分配，避免测试之间抢固定端口
+    h.core.update_settings(hs).await.unwrap();
+
+    let status = h.core.local_server_status().await.unwrap();
+    assert!(status.running, "内置服务器应当已经起来了");
+    let address = status.address.expect("有可用地址");
+    // 没填 DDNS 时**不可能**是 Configured：具体落到 Detected 还是 LanOnly 取决于这台
+    // 机器有没有公网 IPv6 / UPnP，两种都对，但都不是"用户填的地址"。
+    assert_ne!(
+        status.reach,
+        aa4c_types::LocalServerReach::Configured,
+        "没填地址时不该谎称是用户配置的"
+    );
+    // 地址里的指纹就是 H 这台设备的指纹（内置服务器复用本机身份，不另起一套）
+    let fp = &h.core.self_info().id[..16];
+    assert!(
+        address.contains(fp),
+        "内置服务器地址里的指纹应当就是本机指纹：{address}"
+    );
+
+    // 填上稳定入口之后必须如实标成 Configured，且地址里用的就是那个值——这是 §6.3
+    // 说的「你仍然需要一个稳定入口」，界面靠 reach 把话说清楚。
+    let mut hs = h.core.get_settings().await.unwrap();
+    hs.local_server_host = Some("home.example.com".into());
+    h.core.update_settings(hs).await.unwrap();
+    let configured = h.core.local_server_status().await.unwrap();
+    assert_eq!(configured.reach, aa4c_types::LocalServerReach::Configured);
+    assert!(
+        configured
+            .address
+            .as_deref()
+            .is_some_and(|a| a.contains("home.example.com")),
+        "地址里应当用用户填的那个入口：{:?}",
+        configured.address
+    );
+
+    // 测试里统一用回环连它（局域网地址在 CI 上不一定可达）
+    let server_url = {
+        let port = status.port;
+        format!("aa4c://127.0.0.1:{port}#{fp}")
+    };
+
+    // —— A 与 B 配对，然后双双指向 H 的内置服务器 ——
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "A 与 B 配对");
+
+    enable_remote(&a.core, &server_url).await;
+    enable_remote(&b.core, &server_url).await;
+
+    // 抹掉 A 本地记的 B 地址：逼它必须经 H 的服务器查（同既有远程用例的做法）
+    let mut rec = a.core.store.get_device(&b_id).await.unwrap().unwrap();
+    rec.last_addr = None;
+    a.core.store.upsert_device(&rec).await.unwrap();
+
+    // —— 经 H 的内置服务器完成一次真实传输 ——
+    let recv_dir = b._dir.path().join("inbox");
+    let src = a._dir.path().join("via-embedded.txt");
+    tokio::fs::write(&src, b"routed through the embedded server")
+        .await
+        .unwrap();
+
+    let b_core = b.core.clone();
+    let mut accept_events = b.core.subscribe();
+    let recv_dir2 = recv_dir.clone();
+    tokio::spawn(async move {
+        while let Ok(event) = accept_events.recv().await {
+            if let CoreEvent::TransferRequest { task } = event {
+                let _ = b_core
+                    .accept_transfer(&task.id, true, Some(recv_dir2.clone()))
+                    .await;
+            }
+        }
+    });
+
+    let ev_done = b.core.subscribe();
+    let task_id = retry_send_files(&a.core, &b_id, vec![src])
+        .await
+        .expect("经内置服务器解析出地址后应当能发送");
+    wait_transfer_done(ev_done, &task_id).await;
+
+    let got = tokio::fs::read(recv_dir.join("via-embedded.txt"))
+        .await
+        .expect("文件应当已送达");
+    assert_eq!(got, b"routed through the embedded server");
+
+    // —— 关掉开关：端口必须还回去 ——
+    let mut hs = h.core.get_settings().await.unwrap();
+    hs.enable_local_server = false;
+    h.core.update_settings(hs).await.unwrap();
+    assert!(
+        !h.core.local_server_status().await.unwrap().running,
+        "关掉之后不该还在跑"
+    );
+
+    h.core.shutdown().await.unwrap();
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}

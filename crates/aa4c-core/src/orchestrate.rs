@@ -9,9 +9,21 @@ use aa4c_discovery::DiscoveryService;
 use aa4c_identity::Identity;
 use aa4c_store::Store;
 use aa4c_types::{
-    Aa4cError, CoreEvent, DeviceId, DeviceInfo, PendingIntroduction, Result, ScopeKind, Settings,
-    SyncFileEntry, SyncScope, TaskId, TransferTask, TrustLevel, UnifiedFile,
+    Aa4cError, CoreEvent, DeviceId, DeviceInfo, LocalServerReach, LocalServerStatus,
+    PendingIntroduction, Result, ScopeKind, Settings, SyncFileEntry, SyncScope, TaskId,
+    TransferTask, TrustLevel, UnifiedFile,
 };
+
+/// 本机的**全局单播** IPv6（`2000::/3`），没有就返回 `None`。
+///
+/// 只认全局单播是关键：ULA（`fc00::/7`）与链路本地（`fe80::/10`）出了本网都不可路由，
+/// 拿它们当「别人能找到我的地址」发出去等于给用户一个废链接。
+fn public_ipv6() -> Option<std::net::Ipv6Addr> {
+    match crate::server_link::primary_local_ip_v6()? {
+        std::net::IpAddr::V6(v6) if (v6.segments()[0] & 0xe000) == 0x2000 => Some(v6),
+        _ => None,
+    }
+}
 
 use crate::{server_link, settings, sync_exchange, sync_index, unified, Core};
 
@@ -165,6 +177,65 @@ impl Core {
         Ok(())
     }
 
+    // —— 内置服务器（TRUST_DESIGN.md §6.3，里程碑 R4）——
+
+    /// 内置服务器当前状态，含给别的设备填的完整地址。
+    ///
+    /// 地址里的 `host` 按可靠性从高到低取，**并如实告诉界面它是哪一档**（`reach`）——
+    /// 给用户一个看着像能用、出了这个网就废的地址，比不给更糟：
+    ///
+    /// 1. **用户自己填的**域名 / 固定地址（`local_server_host`）。这是 §6.3 说的「你仍然
+    ///    需要一个稳定入口」，唯一真正可靠的一种。
+    /// 2. **本机的公网 IPv6**。它不在 NAT 后面，天然可直连——这正是 R1 打通双栈的回报。
+    ///    只认全局单播（`2000::/3`）：ULA 和链路本地出了这个网都不可路由。
+    /// 3. **UPnP 映射拿到的公网 IPv4**（里程碑 R3）。
+    /// 4. 都没有就退回**局域网地址**，并标成 `LanOnly`。
+    pub async fn local_server_status(&self) -> Result<LocalServerStatus> {
+        let settings = self.get_settings().await?;
+        let Some(server) = self.local_server.get().await else {
+            return Ok(LocalServerStatus {
+                running: false,
+                port: settings.local_server_port,
+                address: None,
+                reach: LocalServerReach::LanOnly,
+            });
+        };
+        let port = server.local_addr().port();
+
+        let (host, reach) = match settings
+            .local_server_host
+            .as_deref()
+            .map(str::trim)
+            .filter(|h| !h.is_empty())
+        {
+            Some(h) => (h.to_string(), LocalServerReach::Configured),
+            None => match public_ipv6() {
+                Some(ip) => (format!("[{ip}]"), LocalServerReach::Detected),
+                None => match self.server_portmap.external_addr() {
+                    Some(addr) => (addr.ip().to_string(), LocalServerReach::Detected),
+                    None => match crate::server_link::primary_local_ip_v4() {
+                        Some(ip) => (ip.to_string(), LocalServerReach::LanOnly),
+                        None => {
+                            return Ok(LocalServerStatus {
+                                running: true,
+                                port,
+                                address: None,
+                                reach: LocalServerReach::LanOnly,
+                            })
+                        }
+                    },
+                },
+            },
+        };
+
+        Ok(LocalServerStatus {
+            running: true,
+            port,
+            address: Some(server.address_with_host(&host)),
+            reach,
+        })
+    }
+
     /// 发起 AA 发送，返回 task_id。
     pub async fn send_files(&self, device_id: &DeviceId, paths: Vec<PathBuf>) -> Result<TaskId> {
         let peer = self.resolve_peer(device_id).await?;
@@ -209,12 +280,20 @@ impl Core {
         let old = self.get_settings().await?;
         settings::save(&self.store, &new).await?;
         if new.device_name != old.device_name {
-            self.discovery.rebroadcast(new.device_name).await?;
+            self.discovery.rebroadcast(new.device_name.clone()).await?;
         }
         if new.save_dir != old.save_dir {
             let inbox = self.store.ensure_inbox_scope(&new.save_dir).await?;
             sync_index::scan_scope(&self.store, &inbox).await?;
             let _ = self.events.send(CoreEvent::SyncIndexUpdated);
+        }
+        // 内置服务器：**保存即生效**，不等下一轮 30 秒轮询（里程碑 R4）。用户刚拨完开关
+        // 就该看到结果——界面接着还要显示「填到别的设备上的地址」，盯着一个半分钟不变的
+        // 界面猜有没有生效是很差的体验。
+        if new.enable_local_server != old.enable_local_server
+            || new.local_server_port != old.local_server_port
+        {
+            self.local_server.apply(&new).await;
         }
         // 刚打开远程 / 服务器地址变了：立即注册一次，不必等下一轮周期轮询才生效
         // （CONNECT_DESIGN.md §3.2，里程碑 C2）。

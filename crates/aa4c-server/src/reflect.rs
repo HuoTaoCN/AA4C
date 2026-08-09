@@ -22,10 +22,13 @@ use quinn::crypto::rustls::QuicServerConfig;
 
 const ALPN: &[u8] = b"aa4c-reflect";
 
-/// 绑定反射端点并启动接受循环（后台任务，随进程退出结束）。`port` 与 TCP 信令端口同号
-/// （UDP/TCP 端口namespace 独立，不冲突）；返回实际绑定端口（`port=0` 时由系统分配，
-/// 测试用；生产路径调用方已经知道自己要的端口，返回值仅供确认）。
-pub(crate) fn spawn(identity: Arc<Identity>, port: u16) -> Result<u16> {
+/// 绑定反射端点并启动接受循环（后台任务）。`port` 与 TCP 信令端口同号（UDP/TCP 端口
+/// namespace 独立，不冲突）。
+///
+/// 返回实际绑定端口与**端点句柄**：句柄给 [`crate::Server::shutdown`] 用——关掉端点，
+/// 这里的 `accept()` 会拿到 `None` 自然退出，UDP 端口随之释放。内嵌进桌面端之后这一步
+/// 是必须的：用户在设置里关掉「内置服务器」，端口就该真的还回去。
+pub(crate) fn spawn(identity: Arc<Identity>, port: u16) -> Result<(u16, quinn::Endpoint)> {
     let mut rustls_server = identity.tls_server_config(None)?;
     rustls_server.alpn_protocols = vec![ALPN.to_vec()];
     let quic_server = QuicServerConfig::try_from(rustls_server)
@@ -49,9 +52,12 @@ pub(crate) fn spawn(identity: Arc<Identity>, port: u16) -> Result<u16> {
         .map_err(|e| Aa4cError::Network(format!("reflect local_addr: {e}")))?
         .port();
 
+    // 克隆一份进接受循环，原件返回给调用方留作停机句柄（quinn 的 Endpoint 是共享句柄，
+    // 关闭任意一份即关闭整个端点）。
+    let accept_endpoint = endpoint.clone();
     tokio::spawn(async move {
         loop {
-            let Some(incoming) = endpoint.accept().await else {
+            let Some(incoming) = accept_endpoint.accept().await else {
                 break;
             };
             tokio::spawn(async move {
@@ -71,7 +77,7 @@ pub(crate) fn spawn(identity: Arc<Identity>, port: u16) -> Result<u16> {
             });
         }
     });
-    Ok(bound_port)
+    Ok((bound_port, endpoint))
 }
 
 /// 把观测到的源地址（文本形式，`SocketAddr::to_string()`）经一条新 uni 流写回并结束，
@@ -109,7 +115,7 @@ mod tests {
     async fn reflect_endpoint_reports_observed_source_address() {
         let server_dir = tempfile::tempdir().unwrap();
         let server_identity = Arc::new(Identity::load_or_generate(server_dir.path()).unwrap());
-        let port = spawn(server_identity, 0).unwrap();
+        let (port, _endpoint) = spawn(server_identity, 0).unwrap();
         let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
 
         let client_dir = tempfile::tempdir().unwrap();

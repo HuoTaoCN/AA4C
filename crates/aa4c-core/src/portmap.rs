@@ -94,13 +94,40 @@ impl PortMapState {
     }
 }
 
-/// 本轮该不该做映射：两层闸都开才做（见模块文档）。
-async fn wants_mapping(store: &Store, fallback_name: &str, fallback_save_dir: &str) -> bool {
+/// 传输端口该不该映射：两层闸都开才做（见模块文档）。
+pub(crate) async fn transfer_target(
+    store: &Store,
+    fallback_name: &str,
+    fallback_save_dir: &str,
+    transfer_port: u16,
+) -> Option<u16> {
     match crate::settings::load(store, fallback_name, fallback_save_dir).await {
-        Ok(s) => s.enable_remote && s.enable_port_mapping,
+        Ok(s) if s.enable_remote && s.enable_port_mapping => Some(transfer_port),
+        Ok(_) => None,
         Err(e) => {
             tracing::debug!(error = %e, "load settings for port mapping failed");
-            false
+            None
+        }
+    }
+}
+
+/// 内置服务器端口该不该映射（里程碑 R4）。
+///
+/// 闸与传输端口那条**不同**：这里看的是 `enable_local_server`，不是 `enable_remote`——
+/// 内置服务器在 NAT 后面而端口没转发的话，它作为汇合点等于没用。端口取当前真正在监听的
+/// 那个（服务器没起来就没什么可映射的）。
+pub(crate) async fn local_server_target(
+    store: &Store,
+    fallback_name: &str,
+    fallback_save_dir: &str,
+    local: &crate::local_server::LocalServer,
+) -> Option<u16> {
+    match crate::settings::load(store, fallback_name, fallback_save_dir).await {
+        Ok(s) if s.enable_local_server && s.enable_port_mapping => local.port().await,
+        Ok(_) => None,
+        Err(e) => {
+            tracing::debug!(error = %e, "load settings for port mapping failed");
+            None
         }
     }
 }
@@ -108,6 +135,9 @@ async fn wants_mapping(store: &Store, fallback_name: &str, fallback_save_dir: &s
 /// 已经建立的两条映射（TCP + UDP）的外部端口，用于续约与拆除。
 #[derive(Default)]
 struct Active {
+    /// 当前映射的**本机**端口。期望值变了（换端口 / 内置服务器重启）就得先拆再映——
+    /// 还在老端口上留着映射比不映射更糟。
+    local: Option<u16>,
     tcp: Option<u16>,
     udp: Option<u16>,
 }
@@ -120,6 +150,7 @@ impl Active {
 
 /// 拆掉当前全部映射并清空对外地址。**幂等**，没有映射时什么都不做。
 async fn unmap_all(mapper: &Arc<dyn PortMapper>, active: &mut Active, state: &PortMapState) {
+    active.local = None;
     if let Some(port) = active.tcp.take() {
         mapper.unmap(port, true).await;
     }
@@ -148,6 +179,7 @@ async fn map_once(
             return RETRY_AFTER;
         }
     };
+    active.local = Some(local_port);
     active.tcp = Some(tcp.external_port);
 
     let udp = match mapper.map(local_port, false, LEASE).await {
@@ -185,19 +217,33 @@ async fn map_once(
 ///
 /// 停机必须拆：留在路由器上的洞用户看不见也想不起来，而 AA4C 可能再也不启动了。租约只是
 /// 兜底（崩溃 / 断电走那条路）。
-pub(crate) fn spawn_portmap_loop(
-    store: Store,
-    fallback_name: String,
-    fallback_save_dir: String,
-    local_port: u16,
+///
+/// `desired_port` 每轮回答一次「本轮该映哪个本机端口」（`None` = 不该映）。做成闭包是因为
+/// 有两个调用方，闸与端口都不一样：传输端口看 `enable_remote` 且端口固定；内置服务器端口
+/// 看 `enable_local_server`，而且端口是**动态的**（用户可以改，服务器也可能没起来）。
+pub(crate) fn spawn_portmap_loop<F, Fut>(
+    desired_port: F,
     mapper: Arc<dyn PortMapper>,
     state: PortMapState,
     stop: CancellationToken,
-) {
+) where
+    F: Fn() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Option<u16>> + Send,
+{
     tokio::spawn(async move {
         let mut active = Active::default();
         loop {
-            let wait = if wants_mapping(&store, &fallback_name, &fallback_save_dir).await {
+            let want = desired_port().await;
+            // 期望端口变了：先把老的拆掉，否则会在老端口上留一条没人用的映射。
+            if active.local.is_some() && active.local != want {
+                tracing::info!(
+                    from = ?active.local,
+                    to = ?want,
+                    "port mapping target changed, removing the old one"
+                );
+                unmap_all(&mapper, &mut active, &state).await;
+            }
+            let wait = if let Some(local_port) = want {
                 map_once(&mapper, local_port, &mut active, &state).await
             } else {
                 // 关掉了：把已经开的洞收回去，然后按退避节奏回来看设置有没有变。
@@ -454,6 +500,34 @@ mod tests {
         // 再拆一次：不该重复发拆除请求
         unmap_all(&dyn_mapper, &mut active, &state).await;
         assert_eq!(mapper.unmapped.lock().unwrap().len(), 2, "幂等");
+    }
+
+    #[tokio::test]
+    async fn changing_the_target_port_removes_the_old_mapping_first() {
+        // 内置服务器换了端口（或者用户改了端口号）：还在老端口上留着映射，比不映射更糟——
+        // 路由器上多一条没人用的转发，对端还可能照那个地址白连一场。
+        let mapper = FakeMapper::new(false);
+        let dyn_mapper: Arc<dyn PortMapper> = mapper.clone();
+        let state = PortMapState::default();
+        let mut active = Active::default();
+
+        map_once(&dyn_mapper, 42421, &mut active, &state).await;
+        assert_eq!(active.local, Some(42421));
+
+        // 模拟循环里那一步：期望值变了就先拆
+        unmap_all(&dyn_mapper, &mut active, &state).await;
+        map_once(&dyn_mapper, 42999, &mut active, &state).await;
+
+        assert_eq!(
+            *mapper.unmapped.lock().unwrap(),
+            vec![(42421, true), (42421, false)],
+            "换端口前必须先拆掉老那条"
+        );
+        assert_eq!(active.local, Some(42999));
+        assert_eq!(
+            state.external_addr(),
+            Some("203.0.113.7:42999".parse().unwrap())
+        );
     }
 
     #[test]

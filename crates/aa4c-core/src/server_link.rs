@@ -153,7 +153,7 @@ pub(crate) fn primary_local_ip_v4() -> Option<std::net::IpAddr> {
 /// 没有 IPv6 的机器上 `bind`/`connect` 会直接失败，返回 `None`，候选列表退化成打通
 /// 双栈之前的样子。**链路本地地址不上报**：`fe80::/10` 离开本链路无法路由，而候选
 /// 端点恰恰是给跨网对端用的（`pick_addr` 那边出于同样理由排除它）。
-fn primary_local_ip_v6() -> Option<std::net::IpAddr> {
+pub(crate) fn primary_local_ip_v6() -> Option<std::net::IpAddr> {
     let socket = std::net::UdpSocket::bind("[::]:0").ok()?;
     socket.connect("[2001:4860:4860::8888]:80").ok()?;
     let ip = socket.local_addr().ok()?.ip();

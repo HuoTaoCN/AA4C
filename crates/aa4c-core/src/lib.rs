@@ -9,6 +9,7 @@
 mod archive;
 mod dispatch;
 mod introduce;
+mod local_server;
 mod orchestrate;
 mod portmap;
 mod server_link;
@@ -134,6 +135,10 @@ pub struct Core {
     save_dir_fallback: String,
     /// 唤醒自建服务器常驻连接立即重新注册（里程碑 C3，见 `server_link::spawn_register_loop`）。
     register_notify: Arc<tokio::sync::Notify>,
+    /// 内置服务器（里程碑 R4）：`None` 表示当前没开（设置里关着，或者端口被占没起来）。
+    local_server: local_server::LocalServer,
+    /// 内置服务器端口的 UPnP 映射结果（里程碑 R4）：拿它给用户显示一个真能用的对外地址。
+    server_portmap: portmap::PortMapState,
     /// 停机信号：[`Self::shutdown`] 触发后本机的全部常驻后台循环退出。
     ///
     /// 此前 `shutdown()` 只停了 discovery / download / AI，而同步扫描、索引交换、引荐、
@@ -279,24 +284,67 @@ impl Core {
         //
         //     映射到的公网地址经 `PortMapState` 交给下面的注册/打洞两条路径当候选上报，
         //     不接这一步的话映射了也没人知道，等于白做。
+        // 9d. 内置可选 server 模式（TRUST_DESIGN.md §6.3，里程碑 R4）：让家里那台常开的
+        //     设备兼任汇合点，门槛从「要有 VPS」降到「家里有台常开设备」。默认关闭；
+        //     打开后按设置启停，停机时把端口还回去。**诚实前提**：用户仍然需要一个稳定
+        //     入口（DDNS 或固定地址）才能被找到，见 local_server 模块文档。
+        let local_server = local_server::LocalServer::new(config.data_dir.clone());
+        local_server::spawn_local_server_loop(
+            store.clone(),
+            fallback_name.clone(),
+            save_dir_fallback.clone(),
+            local_server.clone(),
+            shutdown.clone(),
+        );
+
         let portmap_state = portmap::PortMapState::default();
+        let server_portmap_state = portmap::PortMapState::default();
         let upnp = if config.disable_port_mapping {
             None
         } else {
             portmap::UpnpMapper::new(server_link::primary_local_ip_v4())
         };
-        if let Some(mapper) = upnp {
-            portmap::spawn_portmap_loop(
-                store.clone(),
-                fallback_name.clone(),
-                save_dir_fallback.clone(),
-                actual_port,
-                Arc::new(mapper),
-                portmap_state.clone(),
-                shutdown.clone(),
-            );
-        } else {
-            tracing::debug!("no outbound local ip, port mapping unavailable");
+        match upnp {
+            Some(mapper) => {
+                let mapper: Arc<dyn portmap::PortMapper> = Arc::new(mapper);
+                // 传输端口：闸是 `enable_remote`
+                {
+                    let store = store.clone();
+                    let name = fallback_name.clone();
+                    let dir = save_dir_fallback.clone();
+                    portmap::spawn_portmap_loop(
+                        move || {
+                            let (store, name, dir) = (store.clone(), name.clone(), dir.clone());
+                            async move {
+                                portmap::transfer_target(&store, &name, &dir, actual_port).await
+                            }
+                        },
+                        mapper.clone(),
+                        portmap_state.clone(),
+                        shutdown.clone(),
+                    );
+                }
+                // 内置服务器端口：闸是 `enable_local_server`，端口还是动态的（里程碑 R4）
+                {
+                    let store = store.clone();
+                    let name = fallback_name.clone();
+                    let dir = save_dir_fallback.clone();
+                    let local = local_server.clone();
+                    portmap::spawn_portmap_loop(
+                        move || {
+                            let (store, name, dir, local) =
+                                (store.clone(), name.clone(), dir.clone(), local.clone());
+                            async move {
+                                portmap::local_server_target(&store, &name, &dir, &local).await
+                            }
+                        },
+                        mapper,
+                        server_portmap_state.clone(),
+                        shutdown.clone(),
+                    );
+                }
+            }
+            None => tracing::debug!("no outbound local ip, port mapping unavailable"),
         }
 
         // 10. 自建服务器注册续约（CONNECT_DESIGN.md §3.2，里程碑 C2）：未开启远程 /
@@ -439,6 +487,8 @@ impl Core {
             listen_port: actual_port,
             save_dir_fallback,
             register_notify,
+            local_server,
+            server_portmap: server_portmap_state,
             shutdown,
         }))
     }
