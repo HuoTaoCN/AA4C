@@ -76,6 +76,12 @@ cargo fmt --check && cargo clippy --workspace -- -D warnings && cargo test --wor
 
 ## 5. 手动验收清单（每个 release 前）
 
+> **V0.7「Trust / Reach」另有一份专门的真机验证清单**：
+> [docs/V0.7_VERIFICATION.md](docs/V0.7_VERIFICATION.md)。
+> 那四个里程碑（IPv6 双栈 / 信任传递 / UPnP 端口映射 / 内置服务器）的核心主张**自动化测试
+> 证明不了**——UPnP 的真实交互会改跑测试那台机器所在路由器的配置，跨网直连需要两个真实的
+> 不同网络。下面这份是通用验收，那份是 V0.7 专项。
+
 至少一组真实跨平台设备（如 macOS ↔ Windows）：
 
 - [ ] 同一 WiFi 下 10 秒内互相发现
