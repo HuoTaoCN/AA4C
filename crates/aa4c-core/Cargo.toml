@@ -13,6 +13,8 @@ aa4c-proto = { workspace = true }
 aa4c-identity = { workspace = true }
 aa4c-discovery = { workspace = true }
 aa4c-transfer = { workspace = true }
+# R4 起是正式依赖：桌面端把 aa4c-server 当库内嵌成「可选的内置服务器」
+aa4c-server = { workspace = true }
 aa4c-store = { workspace = true }
 aa4c-download = { workspace = true }
 aa4c-engine = { workspace = true }
@@ -34,5 +36,4 @@ igd-next = { version = "0.17.1", default-features = false, features = ["aio_toki
 
 [dev-dependencies]
 tempfile = { workspace = true }
-aa4c-server = { workspace = true }
 tracing-subscriber = { workspace = true }

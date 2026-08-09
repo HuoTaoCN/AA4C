@@ -28,7 +28,7 @@ pub use download::{DownloadKind, DownloadOptions, DownloadStatus, DownloadTask};
 pub use error::{Aa4cError, Result};
 pub use event::{AiEngineStatus, AiSlot, ConnectionVia, CoreEvent};
 pub use kb::{KbAnswerSource, KbDocStatus, KbDocument, KbSource, KbSourceSummary};
-pub use server_addr::ServerAddr;
+pub use server_addr::{LocalServerReach, LocalServerStatus, ServerAddr};
 pub use settings::Settings;
 pub use share::{Share, ShareAccess, ShareLink};
 pub use sync::{

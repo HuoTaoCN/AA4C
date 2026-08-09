@@ -13,6 +13,13 @@ pub(crate) const KEY_LISTEN_PORT: &str = "listen_port";
 pub(crate) const KEY_SERVER_URL: &str = "server_url";
 pub(crate) const KEY_ENABLE_REMOTE: &str = "enable_remote";
 pub(crate) const KEY_ENABLE_PORT_MAPPING: &str = "enable_port_mapping";
+pub(crate) const KEY_ENABLE_LOCAL_SERVER: &str = "enable_local_server";
+pub(crate) const KEY_LOCAL_SERVER_PORT: &str = "local_server_port";
+pub(crate) const KEY_LOCAL_SERVER_HOST: &str = "local_server_host";
+
+/// 内置服务器默认端口（里程碑 R4）：**刻意不等于** `DEFAULT_PORT`（42420）——传输层已经
+/// 占了那个号的 TCP 与 UDP，内置服务器同样两个都要。
+pub(crate) const DEFAULT_LOCAL_SERVER_PORT: u16 = 42421;
 pub(crate) const KEY_DOWNLOAD_DIR: &str = "download_dir";
 pub(crate) const KEY_DOWNLOAD_SPEED_LIMIT_KBPS: &str = "download_speed_limit_kbps";
 pub(crate) const KEY_DOWNLOAD_CONCURRENCY: &str = "download_concurrency";
@@ -129,6 +136,14 @@ pub(crate) async fn load(
         enable_port_mapping: get_json(store, KEY_ENABLE_PORT_MAPPING)
             .await?
             .unwrap_or(true),
+        // 默认关闭：内置服务器会对外开一个长期监听的端口，属于用户要主动选择的事。
+        enable_local_server: get_json(store, KEY_ENABLE_LOCAL_SERVER)
+            .await?
+            .unwrap_or(false),
+        local_server_port: get_json(store, KEY_LOCAL_SERVER_PORT)
+            .await?
+            .unwrap_or(DEFAULT_LOCAL_SERVER_PORT),
+        local_server_host: get_json(store, KEY_LOCAL_SERVER_HOST).await?,
         download_dir: get_json(store, KEY_DOWNLOAD_DIR)
             .await?
             .unwrap_or_else(|| default_download_dir().to_string_lossy().into_owned()),
@@ -174,6 +189,9 @@ pub(crate) async fn save(store: &Store, s: &Settings) -> Result<()> {
     set_json(store, KEY_SERVER_URL, &s.server_url).await?;
     set_json(store, KEY_ENABLE_REMOTE, &s.enable_remote).await?;
     set_json(store, KEY_ENABLE_PORT_MAPPING, &s.enable_port_mapping).await?;
+    set_json(store, KEY_ENABLE_LOCAL_SERVER, &s.enable_local_server).await?;
+    set_json(store, KEY_LOCAL_SERVER_PORT, &s.local_server_port).await?;
+    set_json(store, KEY_LOCAL_SERVER_HOST, &s.local_server_host).await?;
     set_json(store, KEY_DOWNLOAD_DIR, &s.download_dir).await?;
     set_json(
         store,

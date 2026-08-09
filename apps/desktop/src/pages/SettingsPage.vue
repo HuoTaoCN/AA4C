@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watchEffect } from "vue";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import TabBar from "../components/TabBar.vue";
 import { useDeviceStore } from "../stores/devices";
 import { useSettingsStore } from "../stores/settings";
 import { useToastStore } from "../stores/toast";
 import { api, asCommandError } from "../lib/api";
 import { platformIcon } from "../lib/format";
-import type { Settings, SyncScope, TrustLevel } from "../lib/types";
+import type { LocalServerStatus, Settings, SyncScope, TrustLevel } from "../lib/types";
 
 const devices = useDeviceStore();
 const settings = useSettingsStore();
@@ -32,6 +33,9 @@ const form = reactive<Settings>({
   serverUrl: null,
   enableRemote: false,
   enablePortMapping: true,
+  enableLocalServer: false,
+  localServerPort: 42421,
+  localServerHost: null,
   downloadDir: "",
   downloadSpeedLimitKbps: null,
   downloadConcurrency: null,
@@ -122,6 +126,7 @@ onMounted(async () => {
   } catch {
     // 同上：拉不到就不显示这个区块。
   }
+  await loadLocalServer();
 });
 function normalizePath(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -190,6 +195,8 @@ async function save() {
     await settings.save({ ...form });
     await devices.loadSelf();
     toast.push("success", "设置已保存");
+    // 内置服务器按设置启停有几十秒的对齐周期，这里先刷一次拿到当前状态。
+    await loadLocalServer();
   } catch (e) {
     toast.push("error", asCommandError(e).message);
   }
@@ -200,6 +207,52 @@ async function unpair(id: string) {
     await api.unpairDevice(id);
     await devices.loadDevices();
     toast.push("info", "已解除配对");
+  } catch (e) {
+    toast.push("error", asCommandError(e).message);
+  }
+}
+
+// —— 内置服务器（TRUST_DESIGN.md §6.3，里程碑 R4）——
+// 打开开关不等于别人就能找到你：还需要一个稳定入口（DDNS 或固定地址）。
+// `reach` 如实告诉用户手上这个地址属于哪一档，绝不给一个看着能用、出网就废的链接。
+const localServer = ref<LocalServerStatus | null>(null);
+const localServerHostInput = computed({
+  get: () => form.localServerHost ?? "",
+  set: (v: string) => {
+    form.localServerHost = v.trim() === "" ? null : v.trim();
+  },
+});
+const reachNote = computed(() => {
+  switch (localServer.value?.reach) {
+    case "configured":
+      return { tone: "ok", text: "用的是你填的地址，只要它一直指向这台设备就长期有效。" };
+    case "detected":
+      return {
+        tone: "warn",
+        text: "这是自动探测到的公网地址。现在能用，但家庭宽带的地址会变，变了这个链接就失效——填一个 DDNS 域名更稳。",
+      };
+    default:
+      return {
+        tone: "warn",
+        text: "只找到局域网地址，出了这个局域网就连不上。要让外面的设备找到这台机器，需要填一个 DDNS 域名或固定地址。",
+      };
+  }
+});
+
+async function loadLocalServer() {
+  try {
+    localServer.value = await api.localServerStatus();
+  } catch {
+    localServer.value = null;
+  }
+}
+
+async function copyServerAddress() {
+  const addr = localServer.value?.address;
+  if (!addr) return;
+  try {
+    await writeText(addr);
+    toast.push("success", "地址已复制，去另一台设备的「远程连接」里粘贴");
   } catch (e) {
     toast.push("error", asCommandError(e).message);
   }
@@ -313,6 +366,63 @@ async function dismissIntro(id: string) {
           不必绕道中继，速度更快。<strong>这会在你的路由器上开一个端口</strong>；关掉 AA连接
           时会自动收回。不放心可以关掉它——只是跨网连接更多要走中继。
           <template v-if="!form.enableRemote">开启远程连接后这一项才生效。</template>
+        </p>
+      </div>
+
+      <!-- 内置服务器（TRUST_DESIGN.md §6.3，里程碑 R4） -->
+      <h3 class="sub">让这台设备当中转站</h3>
+      <div class="card form">
+        <div class="field row">
+          <label>在这台设备上运行服务器</label>
+          <label class="switch">
+            <input type="checkbox" v-model="form.enableLocalServer" />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <p class="hint muted">
+          如果这台设备常年开着（台式机、NAS），可以让它兼任你自己的中转站，就不用另外租服务器了。
+          <strong>但要说清楚：光打开这个开关，外面的设备还找不到它</strong>——你还需要一个稳定的
+          入口地址，通常是给家里的宽带配一个 DDNS 域名。
+        </p>
+
+        <div class="field">
+          <label>别人用什么地址找到这台设备</label>
+          <input
+            v-model="localServerHostInput"
+            type="text"
+            placeholder="例如 home.example.com（DDNS 域名）"
+            :disabled="!form.enableLocalServer"
+          />
+        </div>
+
+        <div class="field">
+          <label>服务器端口</label>
+          <input
+            v-model.number="form.localServerPort"
+            type="number"
+            min="1"
+            max="65535"
+            :disabled="!form.enableLocalServer"
+          />
+        </div>
+        <p v-if="form.localServerPort === form.listenPort" class="hint warn">
+          不能和上面的传输端口（{{ form.listenPort }}）用同一个号，两边都要占这个端口。
+        </p>
+
+        <template v-if="localServer?.running && localServer.address">
+          <div class="field">
+            <label>把这个地址填到你的其它设备上</label>
+            <div class="dir">
+              <code class="path">{{ localServer.address }}</code>
+              <button class="btn btn-ghost small" @click="copyServerAddress">复制</button>
+            </div>
+          </div>
+          <p class="hint" :class="reachNote.tone === 'warn' ? 'warn' : 'muted'">
+            {{ reachNote.text }}
+          </p>
+        </template>
+        <p v-else-if="form.enableLocalServer" class="hint muted">
+          服务器还没起来。保存设置后稍等一会儿；如果一直起不来，多半是这个端口已经被别的程序占了。
         </p>
       </div>
     </section>

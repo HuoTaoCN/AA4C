@@ -30,6 +30,7 @@ use aa4c_types::{Aa4cError, DeviceId, Result};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio_rustls::TlsAcceptor;
+use tokio_util::sync::CancellationToken;
 
 /// 注册续约 TTL（CONNECT_DESIGN.md §12 已确认决定：60s，客户端约每 TTL/3 续约一次）。
 pub const REGISTER_TTL: Duration = Duration::from_secs(60);
@@ -83,7 +84,10 @@ pub struct ServerConfig {
 }
 
 /// 已启动的服务器句柄：持有身份与注册表，供查询状态 / 测试内嵌使用。
-/// 接受循环在后台任务里跑，随进程退出结束（本里程碑不做显式优雅关闭）。
+///
+/// 后台跑三条常驻任务（TCP 接受循环、中继会话回收、反射端点），全部由 [`Server::shutdown`]
+/// 统一停止。V0.7 里程碑 R4 之前这里没有优雅关闭——独立部署时进程退出即可，但桌面端把它
+/// 内嵌成「可选的内置服务器」之后就不行了：用户在设置里关掉开关，端口必须真的还回去。
 pub struct Server {
     identity: Arc<Identity>,
     registrations: Mutex<HashMap<DeviceId, Registration>>,
@@ -96,6 +100,11 @@ pub struct Server {
     /// 现在从根上不存在第二个会调用 `Register` 的连接了），所以这里直接覆盖即可。
     pushable: Mutex<HashMap<DeviceId, mpsc::UnboundedSender<ServerMessage>>>,
     local_addr: SocketAddr,
+    /// 停机信号：接受循环与回收循环各自在下一个 select 点退出。
+    shutdown: CancellationToken,
+    /// 反射端点句柄（best-effort 绑定失败时为 `None`）：停机时关掉它，让那边的
+    /// `accept()` 拿到 `None` 自然退出、UDP 端口释放。
+    reflect_endpoint: Mutex<Option<quinn::Endpoint>>,
 }
 
 impl Server {
@@ -114,6 +123,21 @@ impl Server {
     pub fn address_with_host(&self, host: &str) -> String {
         let fp = &self.device_id()[..16.min(self.device_id().len())];
         format!("aa4c://{host}:{}#{fp}", self.local_addr.port())
+    }
+
+    /// 停止服务器：三条常驻任务全部退出，TCP 与 UDP 端口一并释放。
+    ///
+    /// 已经建立的连接不强杀，只是不再接受新连接。**幂等**，重复调用无副作用。
+    pub fn shutdown(&self) {
+        self.shutdown.cancel();
+        if let Some(endpoint) = self
+            .reflect_endpoint
+            .lock()
+            .expect("reflect endpoint lock")
+            .take()
+        {
+            endpoint.close(0u32.into(), b"shutdown");
+        }
     }
 }
 
@@ -144,18 +168,27 @@ pub async fn run(config: ServerConfig) -> Result<Arc<Server>> {
         .local_addr()
         .map_err(|e| Aa4cError::Network(e.to_string()))?;
 
+    let shutdown = CancellationToken::new();
     let server = Arc::new(Server {
         identity,
         registrations: Mutex::new(HashMap::new()),
         relay_sessions: Mutex::new(HashMap::new()),
         pushable: Mutex::new(HashMap::new()),
         local_addr,
+        shutdown: shutdown.clone(),
+        reflect_endpoint: Mutex::new(None),
     });
 
     let srv = server.clone();
+    let stop = shutdown.clone();
     tokio::spawn(async move {
         loop {
-            let (tcp, peer) = match listener.accept().await {
+            let accepted = tokio::select! {
+                biased;
+                () = stop.cancelled() => break,
+                r = listener.accept() => r,
+            };
+            let (tcp, peer) = match accepted {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(error = %e, "accept failed");
@@ -178,9 +211,14 @@ pub async fn run(config: ServerConfig) -> Result<Arc<Server>> {
     });
 
     let reaper = server.clone();
+    let stop = shutdown.clone();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(RELAY_REAP_INTERVAL).await;
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => break,
+                () = tokio::time::sleep(RELAY_REAP_INTERVAL) => {}
+            }
             let now = Instant::now();
             reaper
                 .relay_sessions
@@ -193,7 +231,13 @@ pub async fn run(config: ServerConfig) -> Result<Arc<Server>> {
     // 打洞探测端点（里程碑 C5，连接阶梯第 3 档）：best-effort，绑不上只警告——没有它
     // 只是打洞这一档失效，其余阶梯（直连/中继）不受影响，同 QUIC 对设备端的降级惯例。
     match reflect::spawn(server.identity.clone(), local_addr.port()) {
-        Ok(port) => tracing::info!(port, "reflect endpoint listening"),
+        Ok((port, endpoint)) => {
+            *server
+                .reflect_endpoint
+                .lock()
+                .expect("reflect endpoint lock") = Some(endpoint);
+            tracing::info!(port, "reflect endpoint listening");
+        }
         Err(e) => {
             tracing::warn!(error = %e, "reflect endpoint unavailable, NAT hole punching disabled")
         }
@@ -450,6 +494,49 @@ mod tests {
     use tokio_rustls::rustls::pki_types::ServerName;
     use tokio_rustls::TlsConnector;
 
+    /// `shutdown()` 必须真的停掉后台——**监听端口释放是最容易验证的那个证据**。
+    ///
+    /// 独立部署时进程退出就够了，所以 R4 之前这里根本没有优雅关闭；但桌面端把它内嵌成
+    /// 「可选的内置服务器」之后，用户在设置里关掉开关，端口就该真的还回去。
+    #[tokio::test]
+    async fn shutdown_releases_the_listening_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = run(ServerConfig {
+            data_dir: dir.path().to_path_buf(),
+            listen_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        })
+        .await
+        .unwrap();
+        let port = server.local_addr().port();
+
+        // 探针用"连不连得上"而不是"能不能重新绑定"：`SO_REUSEADDR`（tokio 默认开）会让
+        // 重新绑定在 macOS 上恒成功，那个探针测不出任何东西。
+        assert!(
+            tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .is_ok(),
+            "运行中的服务器当然连得上"
+        );
+
+        server.shutdown();
+
+        let mut refused = false;
+        for _ in 0..50 {
+            if tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .is_err()
+            {
+                refused = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(refused, "shutdown 之后端口必须释放，否则接受循环还在跑");
+
+        // 幂等：重复调用不该出错
+        server.shutdown();
+    }
+
     async fn start_test_server() -> Arc<Server> {
         let dir = tempfile::tempdir().unwrap();
         run(ServerConfig {
@@ -613,6 +700,8 @@ mod tests {
             relay_sessions: Mutex::new(HashMap::new()),
             pushable: Mutex::new(HashMap::new()),
             local_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 42430)),
+            shutdown: CancellationToken::new(),
+            reflect_endpoint: Mutex::new(None),
         };
         let addr = server.address_with_host("example.com");
         assert!(addr.starts_with("aa4c://example.com:42430#"));

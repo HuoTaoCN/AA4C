@@ -129,6 +129,7 @@ pub fn run() {
             commands::confirm_introduction,
             commands::dismiss_introduction,
             commands::refresh_introductions,
+            commands::local_server_status,
             commands::send_files,
             commands::accept_transfer,
             commands::cancel_transfer,

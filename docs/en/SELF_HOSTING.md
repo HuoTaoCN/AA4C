@@ -6,6 +6,20 @@ If you only use AA4C on a LAN, you **need no server at all** — devices connect
 
 You need one when devices on **different networks** should reach each other: the NAS at home and the laptop at work, or a share link sent to a friend in another city. That requires a machine both sides can reach, to handle **signaling** (finding each other) and, when hole punching fails, **relaying**. You deploy that machine yourself.
 
+> **Read this first: you may not need a separate deployment.** Since V0.7 the desktop app
+> ships an **embedded server**. If you have a machine at home that stays on — a desktop or a
+> NAS — just turn on Settings → Remote → "Use this device as a relay". No extra machine to
+> rent, none of the commands below.
+>
+> This document is for running a dedicated VPS, or running on a machine with no desktop app
+> at all (a headless server, Docker, a container on a NAS). Both are identical on the wire,
+> and clients use the same address format either way.
+>
+> **Either way, one requirement does not go away**: other devices have to be able to find the
+> machine — a stable public address, or a DDNS hostname. That is the real boundary of "no
+> third-party provider".
+
+
 ## Why self-hosted only?
 
 AA4C ships **no official public nodes**. That is a deliberate product decision:

@@ -90,6 +90,12 @@ export interface Settings {
    * （里程碑 R3）。
    */
   enablePortMapping: boolean;
+  /** 在本机内置一个 aa4c-server，让这台常开设备兼任汇合点，默认关闭（里程碑 R4）。 */
+  enableLocalServer: boolean;
+  /** 内置服务器端口，默认 42421（不能与 listenPort 相同）。 */
+  localServerPort: number;
+  /** 别的设备该用哪个域名/地址找到这台内置服务器（DDNS 或固定 IP），null = 未填。 */
+  localServerHost: string | null;
   /** 下载目录（默认系统下载目录），必须在 saveDir 子树之外（里程碑 D1）。 */
   downloadDir: string;
   /** 下载限速（KB/s），null = 不限速。重启引擎生效（里程碑 D3）。 */
@@ -130,6 +136,25 @@ export interface Settings {
   aiEmbeddingModel: string | null;
   /** AI 引擎空闲多久后自动退出释放内存（分钟），默认 10（ARCHIVE_DESIGN.md §3.3）。 */
   aiIdleTimeoutMinutes: number;
+}
+
+/**
+ * 内置服务器地址里的 host 是从哪来的（里程碑 R4）——决定那个地址**能不能跨网用**。
+ *
+ * - `configured`：用户自己填的域名/固定地址，唯一真正可靠的一种。
+ * - `detected`：自动探到的公网地址（公网 IPv6 或 UPnP 拿到的公网 IPv4）；现在能用，
+ *   但家宽地址会变，变了链接就失效。
+ * - `lanOnly`：只找到局域网地址，**出了这个局域网就没用**。
+ */
+export type LocalServerReach = "configured" | "detected" | "lanOnly";
+
+/** 内置服务器当前状态（里程碑 R4）。 */
+export interface LocalServerStatus {
+  running: boolean;
+  port: number;
+  /** 给别的设备填的完整地址 `aa4c://host:port#指纹`；没在跑时为 null。 */
+  address: string | null;
+  reach: LocalServerReach;
 }
 
 /** 一次连接实际走的档位（里程碑 C4 连接质量 + C5 打洞，见 CONNECT_DESIGN.md §2）。

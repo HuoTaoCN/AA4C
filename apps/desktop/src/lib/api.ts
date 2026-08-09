@@ -14,6 +14,7 @@ import type {
   KbSource,
   KbSourceSummary,
   LocalModel,
+  LocalServerStatus,
   PendingIntroduction,
   Settings,
   Share,
@@ -48,6 +49,9 @@ export const api = {
   dismissIntroduction: (deviceId: string) =>
     invoke<void>("dismiss_introduction", { deviceId }),
   refreshIntroductions: () => invoke<void>("refresh_introductions"),
+
+  // —— 内置服务器（TRUST_DESIGN.md §6.3，里程碑 R4）——
+  localServerStatus: () => invoke<LocalServerStatus>("local_server_status"),
 
   sendFiles: (deviceId: string, paths: string[]) =>
     invoke<string>("send_files", { deviceId, paths }),
