@@ -177,11 +177,19 @@ To let two devices sync with each other, choose "Yes, this is my device" in the 
 
 ### Devices not showing up? Check the firewall first
 
-AA4C uses **TCP 42420** (transfer) and **UDP 5353** (mDNS discovery) on the LAN:
+AA4C uses these ports:
+
+| Port | Purpose | When |
+|---|---|---|
+| **TCP 42420** | File transfer, pairing | Always |
+| **UDP 42420** | QUIC (cross-network transfers go over this) | Always |
+| **UDP 5353** | mDNS discovery | Always |
+| **TCP + UDP 42421** | Embedded server (V0.7 and later) | **Only when you turn on "Use this device as a relay"** |
 
 - **Windows**: accept the firewall prompt on first run and make sure **Private networks** is ticked
 - **macOS**: click **Allow** when asked whether to accept incoming connections
-- **Linux (ufw)**: `sudo ufw allow 42420/tcp && sudo ufw allow 5353/udp`
+- **Linux (ufw)**: `sudo ufw allow 42420/tcp && sudo ufw allow 42420/udp && sudo ufw allow 5353/udp`
+  (add `sudo ufw allow 42421/tcp && sudo ufw allow 42421/udp` if you enable the embedded server)
 - Many corporate and public networks enable client isolation or block multicast, which makes discovery impossible — try an ordinary home WiFi
 
 More troubleshooting in the [FAQ](docs/en/FAQ.md).

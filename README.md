@@ -177,11 +177,19 @@ aria2、Transmission 是 GPL 组件。AA4C **不复制它们的源码、不链�
 
 ### 找不到设备？先查防火墙
 
-AA4C 在局域网用 **TCP 42420**（传输）与 **UDP 5353**（mDNS 设备发现）通信：
+AA4C 用到这些端口：
+
+| 端口 | 用途 | 什么时候用到 |
+|---|---|---|
+| **TCP 42420** | 文件传输、配对 | 一直 |
+| **UDP 42420** | QUIC（跨网传输走这条） | 一直 |
+| **UDP 5353** | mDNS 设备发现 | 一直 |
+| **TCP + UDP 42421** | 内置服务器（V0.7 起） | **只在你打开「让这台设备当中转站」时** |
 
 - **Windows**：首次运行会弹防火墙询问，务必勾选 **「专用网络」**
 - **macOS**：首次运行弹「是否允许接受传入连接」，点**允许**
-- **Linux（ufw）**：`sudo ufw allow 42420/tcp && sudo ufw allow 5353/udp`
+- **Linux（ufw）**：`sudo ufw allow 42420/tcp && sudo ufw allow 42420/udp && sudo ufw allow 5353/udp`
+  （开了内置服务器再加 `sudo ufw allow 42421/tcp && sudo ufw allow 42421/udp`）
 - 部分公司网络 / 公共 WiFi 会开启「客户端隔离」或屏蔽组播，设备之间根本无法互相看到——换一个普通家用 WiFi 重试
 
 更多排查见 [常见问题](docs/FAQ.md)。

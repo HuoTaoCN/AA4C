@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aa4c-ai"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aa4c-engine",
  "aa4c-store",
@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-core"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aa4c-ai",
  "aa4c-discovery",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-desktop"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aa4c-core",
  "aa4c-download",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-discovery"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aa4c-types",
  "blake3",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-download"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aa4c-engine",
  "aa4c-store",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-engine"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aa4c-types",
  "tempfile",
@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-identity"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aa4c-proto",
  "aa4c-store",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-proto"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aa4c-types",
  "bincode",
@@ -145,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-server"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aa4c-identity",
  "aa4c-proto",
@@ -163,7 +163,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-store"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aa4c-types",
  "rusqlite",
@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-transfer"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aa4c-identity",
  "aa4c-proto",
@@ -195,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "aa4c-types"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "bs58",
  "serde",
