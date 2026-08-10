@@ -636,7 +636,14 @@ mod tests {
             "知识库里提到了什么可以被检索的内容？".into(),
         );
 
-        let ask_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        // 180s 而不是 60s：这一步是**真的**让 llama-server 生成一段回答，而 CI 的共享
+        // runner 比开发机慢得多（本机整套 aa4c-ai 26s 跑完，macOS runner 上这一条卡在
+        // 60s 的上限）。被守的断言是「回答最终会到」，不是「60 秒内到」——时限只是防止
+        // 挂死的活性保护，不是被测对象本身。同 `core.rs` 里 `HEAVY = 90s` 的既有先例。
+        //
+        // **说明**：这个失败在本机复现不出来（本机跑同一份固件全绿），所以这是按 CI 日志
+        // 推断的修，需要下一次 CI 结果确认。
+        let ask_deadline = tokio::time::Instant::now() + Duration::from_secs(180);
         let mut got_delta = false;
         let mut done_sources = Vec::new();
         let mut saw_done = false;

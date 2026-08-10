@@ -921,6 +921,35 @@ async fn restart_marks_stale_tasks_failed() {
 
 /// 启动一个内嵌 aa4c-server，返回其句柄（身份数据目录需存活至测试结束，一并返回）
 /// 与 `aa4c://127.0.0.1:port#fp` 地址。
+/// 找到测试用的 `llama-server`：先看环境变量，再退回 PATH。
+///
+/// **必须有 PATH 兜底**：CI 的 macOS 腿是 `brew install llama.cpp`，它把可执行文件装到
+/// PATH 上却**不设** `AA4C_TEST_LLAMA_SERVER_BIN`（Linux/Windows 两条腿是解压官方产物、
+/// 顺手写了这个变量）。此前这里只读环境变量，于是 macOS 上这两个用例必挂——CI 因此红了
+/// 一周多没人发现。`aa4c_ai::util::require_llama_server` 早就是这么写的，这里当初是照抄
+/// 时漏了一半。
+fn llama_server_bin() -> PathBuf {
+    if let Ok(p) = std::env::var("AA4C_TEST_LLAMA_SERVER_BIN") {
+        return PathBuf::from(p);
+    }
+    let exe = if cfg!(windows) {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    };
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(exe);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    panic!(
+        "llama-server not found in PATH and AA4C_TEST_LLAMA_SERVER_BIN not set — \
+         see ARCHIVE_DESIGN.md §3.1/HANDOFF.md"
+    );
+}
+
 async fn spawn_server() -> (Arc<aa4c_server::Server>, tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
     let server = aa4c_server::run(aa4c_server::ServerConfig {
@@ -2023,12 +2052,7 @@ async fn ai_suggest_lifecycle_through_core_orchestration() {
     use aa4c_download::ProcessSpawner;
 
     fn require_llama_server_bin() -> PathBuf {
-        match std::env::var("AA4C_TEST_LLAMA_SERVER_BIN") {
-            Ok(p) => PathBuf::from(p),
-            Err(_) => {
-                panic!("AA4C_TEST_LLAMA_SERVER_BIN not set — see ARCHIVE_DESIGN.md §3.1/HANDOFF.md")
-            }
-        }
+        llama_server_bin()
     }
     fn require_tiny_gguf() -> PathBuf {
         match std::env::var("AA4C_TEST_TINY_GGUF") {
@@ -2132,12 +2156,7 @@ async fn kb_lifecycle_through_core_orchestration() {
     use aa4c_download::ProcessSpawner;
 
     fn require_llama_server_bin() -> PathBuf {
-        match std::env::var("AA4C_TEST_LLAMA_SERVER_BIN") {
-            Ok(p) => PathBuf::from(p),
-            Err(_) => {
-                panic!("AA4C_TEST_LLAMA_SERVER_BIN not set — see ARCHIVE_DESIGN.md §3.1/HANDOFF.md")
-            }
-        }
+        llama_server_bin()
     }
     fn require_tiny_gguf() -> PathBuf {
         match std::env::var("AA4C_TEST_TINY_GGUF") {

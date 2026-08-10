@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI 自 2026-08-02 起一直是红的**，发布 v0.7.0-preview 时才注意到——整个 V0.7 是在一条红着的 CI 上做完的。两个原因都早于 V0.7 一周，与它无关：
+  - CI 的 macOS 腿 `brew install llama.cpp` 把可执行文件装到 PATH 上却**不设** `AA4C_TEST_LLAMA_SERVER_BIN`（Linux/Windows 解压官方产物时顺手设了），而 `crates/aa4c-core/tests/core.rs` 里那份 `require_llama_server_bin` 从 `aa4c_ai::util::require_llama_server` 抄过来时**漏了 PATH 兜底**，于是 macOS 上两个用例必挂。补上兜底、抽成一份共用实现。**已在本地验证**：下了 CI 用的同一份 GGUF 固件后，两个用例从 panic 变成全过。
+  - `kb` 问答用例的 ask 阶段只给 60s，而那一步是真让 llama-server 生成一段回答，共享 runner 上不够。放宽到 180s（同 `core.rs` 里 `HEAVY = 90s` 的既有先例）。**本地复现不出来**（本机整套 26s 跑完），是照 CI 日志推断的修，待下一次 CI 确认。
+  - 顺带把「怎么在本地跑起这些 AI 用例」写进了 HANDOFF：缺环境变量时它们是**显式 panic**，看起来和真失败一模一样，很容易被当成环境问题放过去——这正是这次红了一周没被发现的原因。
+
 ## [0.7.0-preview] - 2026-08-10
 
 > **V0.7「Trust / Reach」：让「我的几台设备」在不同网络下自己连成一片，不注册任何账号。**
