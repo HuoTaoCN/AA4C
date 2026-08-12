@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-lightgrey.svg)](#platform-support)
-[![Release](https://img.shields.io/badge/release-v0.5.0--preview-green.svg)](https://github.com/HuoTaoCN/AA4C/releases)
+[![Release](https://img.shields.io/badge/release-v0.7.0--preview.1-green.svg)](https://github.com/HuoTaoCN/AA4C/releases)
 
 > [中文](README.md) · English
 
@@ -291,7 +291,9 @@ Environment setup notes and known pitfalls are in [HANDOFF.md](HANDOFF.md); conv
 
 ## Status and roadmap
 
-**Current release: v0.5.0-preview** — everything from V0.1 through V0.5 (transfer / sync / share / download / archive and AI) is implemented and shipped in the preview build.
+**Current release: v0.7.0-preview.1** — V0.1 through V0.5 and V0.7 are all implemented. V0.6
+(tap-to-pair / off-grid) has a finalized design but is not built yet; the NFC and WiFi Direct
+capabilities it needs exist **only on Android** (see TOUCH_DESIGN.md §1.1).
 
 | Version | Codename | Goal | Status |
 |---------|----------|------|--------|
@@ -301,7 +303,15 @@ Environment setup notes and known pitfalls are in [HANDOFF.md](HANDOFF.md); conv
 | V0.4 | Download | Unified download center (HTTP/FTP + BT/magnet) | ✅ Released |
 | V0.5 | AI | Rule-based archiving, model library, AI suggestions, local knowledge base | ✅ Released (preview) |
 | V0.6 | Touch / Direct | Tap-to-pair (NFC), off-grid connectivity (WiFi Direct / Bluetooth) | 📐 Design finalized, not yet implemented |
+| V0.7 | Trust / Reach | Trust introduction, IPv6 dual-stack, UPnP, embedded server | ⚠️ Implemented, **cross-network paths not yet verified on real hardware** |
 | V1.0 | Ecosystem | All platforms + plugin system + developer SDK | 📋 Planned |
+
+> **Why V0.7 says "not yet verified" rather than "released"**: all four milestones are built and
+> the automated tests pass, but the three things they exist to prove — direct cross-network
+> connections, UPnP actually opening a port on the router, and an embedded server being reachable
+> from outside — cannot be established on a development machine. Real UPnP would reconfigure the
+> developer's own router, and the rest needs two genuinely separate networks. To help verify, see
+> [docs/V0.7_VERIFICATION.md](docs/V0.7_VERIFICATION.md).
 
 Detailed scheduling is in [ROADMAP.md](ROADMAP.md).
 

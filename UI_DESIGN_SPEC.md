@@ -3,6 +3,12 @@
 > AA 交互设计规范。技术栈：Tauri 2 + Vue3 + TypeScript + Pinia，**桌面端与 Android 共享同一前端**。
 > 与 [API_DESIGN.md](API_DESIGN.md) §9 的 Tauri Commands / Events 一一对应。
 > §2–§8 以桌面布局为基准描述；Android 的差异集中在 §10。
+>
+> **覆盖范围**：§3 的页面规格写到里程碑 C6（分享页）为止，**未包含**后续新增的下载页
+> （V0.4）、归档与模型库 / 知识库页（V0.5）——那几页的交互设计分别在
+> [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md) 与 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md) 里描述。
+> 而 §6（状态与文案规范）、**§7（术语表，强制）**、§8（视觉基调）是**全局约束，对所有页面
+> 一律有效**，新页面同样要照着来。
 
 ## 1. 设计原则
 

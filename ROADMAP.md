@@ -9,16 +9,20 @@
 
 ## 总览
 
-| 版本 | 代号 | 连接阶段 | 目标 | 预计周期 |
-|------|------|----------|------|----------|
-| V0.1 | Alpha | AA Nearby | 完成第一次 AA（局域网） | 4 周 |
-| V0.2 | Beta | AA Sync | 完成持续同步 + 信任分级 + 跨设备索引 | +4 周（累计 8 周） |
-| V0.3 | Connect | AA Connect | 突破局域网（NAT 穿透 / P2P / Relay）+ 好友分享 | +4 周（累计 12 周） |
-| V0.4 | Download | — | 统一文件入口（下载中心） | +4 周（累计 16 周） |
-| V0.5 | AI | — | AI 归档（分类 / 标签 / 知识库） | +4 周（累计 20 周） |
-| V0.6 | Touch/Direct | AA Touch / AA Direct | 碰一碰连接 / 脱网连接 | +4 周（累计 24 周） |
-| V0.7 | Trust/Reach | — | 信任传递（引荐确认）+ IPv6 双栈 / 降低自建门槛 | +4 周（累计 28 周） |
-| V1.0 | Ecosystem | — | 完整连接平台（桌面 + 移动/iPad + NAS + Docker + 插件） | 持续演进 |
+| 版本 | 代号 | 连接阶段 | 目标 | 状态 |
+|------|------|----------|------|------|
+| V0.1 | Alpha | AA Nearby | 完成第一次 AA（局域网） | ✅ 已实现并发布 |
+| V0.2 | Beta | AA Sync | 完成持续同步 + 信任分级 + 跨设备索引 | ✅ 已实现并发布 |
+| V0.3 | Connect | AA Connect | 突破局域网（NAT 穿透 / P2P / Relay）+ 好友分享 | ✅ C1–C6 全部实现并发布 |
+| V0.4 | Download | — | 统一文件入口（下载中心） | ✅ D1–D3 全部实现，随 `v0.4.0` 正式版发布 |
+| V0.5 | AI | — | AI 归档（分类 / 标签 / 知识库） | ✅ AI1–AI5 全部实现，随 `v0.5.0-preview` 发布 |
+| V0.6 | Touch/Direct | AA Touch / AA Direct | 碰一碰连接 / 脱网连接 | 📐 设计定稿，**尚未实现** |
+| V0.7 | Trust/Reach | — | 信任传递（引荐确认）+ IPv6 双栈 / 降低自建门槛 | ⚠️ R1–R4 全部实现，**跨网部分待真机验证** |
+| V1.0 | Ecosystem | — | 完整连接平台（桌面 + 移动/iPad + NAS + Docker + 插件） | 📋 持续演进 |
+
+> 上表的「状态」列是**当前真实状态**（每次里程碑收尾时更新）。V0.6 排在 V0.7 前面是当初的
+> 规划顺序，实际实现顺序是先做的 V0.7——V0.6 依赖的 NFC / WiFi Direct 能力仅 Android 具备，
+> 且需要真机才能验证，所以让位给了不依赖特殊硬件的 V0.7。
 
 ---
 
@@ -84,7 +88,7 @@
 - 统一任务中心
 - Lua 插件系统预留（私有 Tracker/PT、搜索、自动分类等站点化需求，实现是 V0.4 之后的独立里程碑）
 
-> 设计详见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)（v3：D2 换 Transmission + Lua 插件预留边界）；实现计划见 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md)（D1–D3，D1 细化到步骤级）。**里程碑 D1（Aria2/HTTP-FTP）已实现**；D2（Transmission/BT-Magnet）、D3（任务中心打磨）仍是设计稿。V0.4 仅桌面三平台，不含 Android。
+> 设计详见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)（v3：D2 换 Transmission + Lua 插件预留边界）；实现计划见 [V0.4_IMPLEMENTATION_PLAN.md](V0.4_IMPLEMENTATION_PLAN.md)（D1–D3，D1 细化到步骤级）。**里程碑 D1（Aria2/HTTP-FTP）、D2（Transmission/BT-Magnet）、D3（统一任务中心打磨）全部已实现**，随 `v0.4.0` 正式版发布（含引擎二进制打包分发管线）。V0.4 仅桌面三平台，不含 Android。
 
 ---
 

@@ -1,7 +1,24 @@
-# AA4C API Design（V0.1）
+# AA4C API Design（V0.1 基线）
 
-> 本文档定义 V0.1 阶段所有 Rust 模块的公共接口、传输协议和 Tauri 前后端契约。
-> **这是接口的唯一事实来源**：实现必须与本文档一致，接口变更必须先更新本文档。
+> **这份文档是 V0.1 的接口基线与设计原则，不是当前接口面的完整清单。**
+>
+> 它定义了 V0.1 阶段各 Rust 模块的公共接口、以及 Tauri 前后端契约的**形状**——分层怎么切、
+> 错误怎么收敛、Command 与 Core 方法怎么一一对应。这些原则一直有效，后续版本新增的接口全部
+> 照它的模子长出来。
+>
+> **但它不再是接口的唯一事实来源。** V0.2 之后陆续新增的 Command 没有逐条回填，到 V0.7 为止
+> 实际已有 **60 个** Command（V0.1 基线只有其中十来个）。想知道当前到底有哪些接口、签名是
+> 什么，以这三处为准：
+>
+> | 要查什么 | 看哪里 |
+> |---|---|
+> | 当前全部 Command 与签名 | [`apps/desktop/src/lib/api.ts`](apps/desktop/src/lib/api.ts)（TS 封装，一处集中） |
+> | 后端实现与参数转换 | [`apps/desktop/src-tauri/src/commands.rs`](apps/desktop/src-tauri/src/commands.rs) |
+> | 各能力的设计背景 | 对应设计文档：DOWNLOAD_DESIGN / ARCHIVE_DESIGN / SYNC_DESIGN / CONNECT_DESIGN / TRUST_DESIGN |
+>
+> 为什么不逐条回填：Command 与 Core 方法是 1:1 的，签名在 `api.ts` 里一眼可见且**编译器保证
+> 与后端一致**（`vue-tsc` 会卡住不匹配），而 Markdown 表格没有任何机制保证它跟得上代码——
+> 与其维护一份注定会漂移的副本，不如说清楚该去哪里看。
 
 ## 1. 设计原则
 
@@ -394,7 +411,7 @@ impl Core {
     pub fn self_info(&self) -> DeviceInfo;
     pub fn listen_port(&self) -> u16;
 
-    // §9 的 11 个 Command 在 Core 上有一一对应的编排方法，Tauri 层只做转发：
+    // 每个 Command 在 Core 上都有一一对应的编排方法，Tauri 层只做转发。V0.1 基线的那批：
     // list_devices / start_pairing / confirm_pairing / unpair_device /
     // send_files / accept_transfer / cancel_transfer / list_transfers /
     // get_settings / update_settings
@@ -418,6 +435,9 @@ pub struct CoreConfig {
 > Android 特有的原生能力（多播锁、MediaStore 导出）由 Kotlin 插件实现，不改变本节的 Command / Event 接口。
 
 ### 9.1 Commands（前端 `invoke`）
+
+> **下表是 V0.1 基线 + 里程碑 C6（分享链接），不是全集**——当前实际有 60 个 Command。
+> 完整清单见 [`apps/desktop/src/lib/api.ts`](apps/desktop/src/lib/api.ts)（见本文档开头的说明）。
 
 | Command | 参数 | 返回 | 说明 |
 |---------|------|------|------|
@@ -448,12 +468,15 @@ pub struct CoreConfig {
 
 所有 Command 失败时返回 `{ code: string, message: string }`，`code` 取 `Aa4cError` 的变体名（如 `not_paired`）。
 
-> 本表未逐一列出 V0.2/V0.3 陆续新增的全部 Command（如 `set_trust_level`、同步/统一视图相关的
-> 几个 Command），也未追加 V0.4（下载中心批量操作等）、V0.5（归档/AI，见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)）
-> 与 V0.7 R2（信任引荐：`list_pending_introductions` / `confirm_introduction` /
-> `dismiss_introduction` / `refresh_introductions`，见 [TRUST_DESIGN.md](TRUST_DESIGN.md) §5）
-> 新增的 Command——它们与上面列出的同构（Core 方法 1:1 映射），签名以 `apps/desktop/src/lib/api.ts`
-> 为准；本表只保证覆盖 V0.1 基线 + 里程碑 C6（分享链接）新增部分。
+> 本表**只覆盖 V0.1 基线 + 里程碑 C6（分享链接）**。后续版本新增的 Command 一律与上表同构
+> （Core 方法 1:1 映射），未逐条回填：
+>
+> - **V0.2/V0.3**：`set_trust_level`、同步与统一视图相关的若干 Command
+> - **V0.4**：下载中心（批量操作、限速等，见 [DOWNLOAD_DESIGN.md](DOWNLOAD_DESIGN.md)）
+> - **V0.5**：归档与 AI（见 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md)）
+> - **V0.7**：信任引荐 `list_pending_introductions` / `confirm_introduction` /
+>   `dismiss_introduction` / `refresh_introductions`，内置服务器 `local_server_status`
+>   （见 [TRUST_DESIGN.md](TRUST_DESIGN.md) §5/§6.3）
 
 ### 9.2 Events（前端 `listen`）
 

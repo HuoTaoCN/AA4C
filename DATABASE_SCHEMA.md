@@ -1,6 +1,10 @@
-# AA4C Database Schema（V0.1）
+# AA4C Database Schema
 
 > SQLite 数据库设计。与 [API_DESIGN.md](API_DESIGN.md) 中的 `aa4c-store` 接口对应。
+>
+> **本文档随版本持续更新**，不是某一版的快照：§2 是 V0.1 基线，§4x 各节按里程碑追加，
+> 当前迁移到 `013_introductions.sql`（V0.7 R2）。每节标题里的「已实现 / 未实现」是**当前
+> 真实状态**——真正的事实来源是 `crates/aa4c-store/src/migrations/` 目录本身。
 
 ## 1. 总体约定
 
@@ -394,7 +398,7 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
   只被整体读写、从不参与查询条件，且插件系统（DOWNLOAD_DESIGN.md §10）将来可能再加字段。
   这与上面"`category` 列现在不加"的克制不冲突——那是**推测性**字段，这是已经在用的字段。
 
-## 4g. V0.5 表结构（归档，里程碑 AI1，设计定稿未实现）
+## 4g. V0.5 表结构（归档，里程碑 AI1，已实现）
 
 > 对应 [ARCHIVE_DESIGN.md](ARCHIVE_DESIGN.md) §4、[V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)。
 > 迁移文件 `009_archive.sql`（user_version=9）。复用现有 `settings` KV 表新增两个 key：
