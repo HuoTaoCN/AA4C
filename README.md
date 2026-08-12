@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-lightgrey.svg)](#平台支持)
-[![Release](https://img.shields.io/badge/release-v0.5.0--preview-green.svg)](https://github.com/HuoTaoCN/AA4C/releases)
+[![Release](https://img.shields.io/badge/release-v0.7.0--preview.1-green.svg)](https://github.com/HuoTaoCN/AA4C/releases)
 
 > 中文 · [English](README.en.md)
 
@@ -299,7 +299,8 @@ cargo fmt --check && cargo clippy --workspace -- -D warnings && cargo test --wor
 
 ## 项目状态与路线
 
-**当前版本：v0.5.0-preview** —— V0.1 至 V0.5 的能力（传输 / 同步 / 分享 / 下载 / 归档与 AI）均已实现并随预览版发布。
+**当前版本：v0.7.0-preview.1** —— V0.1 至 V0.5 与 V0.7 的能力均已实现。V0.6（碰一碰 / 脱网连接）
+设计定稿但尚未实现，它依赖的 NFC 与 WiFi Direct 能力**仅 Android 具备**（见 TOUCH_DESIGN.md §1.1）。
 
 | 版本 | 代号 | 目标 | 状态 |
 |------|------|------|------|
@@ -309,7 +310,13 @@ cargo fmt --check && cargo clippy --workspace -- -D warnings && cargo test --wor
 | V0.4 | Download | 统一下载中心（HTTP/FTP + BT/磁力） | ✅ 已发布 |
 | V0.5 | AI | 规则归档、模型库、AI 建议、本地知识库 | ✅ 已发布（预览） |
 | V0.6 | Touch / Direct | 碰一碰配对（NFC）、脱网连接（WiFi Direct / 蓝牙） | 📐 设计定稿，待实现 |
+| V0.7 | Trust / Reach | 信任传递（引荐确认）、IPv6 双栈、UPnP、内置服务器 | ⚠️ 已实现，**跨网部分待真机验证** |
 | V1.0 | Ecosystem | 全平台 + 插件系统 + 开发者 SDK | 📋 规划中 |
+
+> **V0.7 为什么标「待验证」而不是「已发布」**：四个里程碑代码都完成、自动化测试也全绿，但它们
+> 真正要证明的三件事——**跨网直连、UPnP 真的在路由器上开了端口、内置服务器能被外网找到**——
+> 在开发机上验不了（真实 UPnP 会改开发者自己路由器的配置；跨网需要两个真实的不同网络）。
+> 想帮忙验证的话见 [docs/V0.7_VERIFICATION.md](docs/V0.7_VERIFICATION.md)。
 
 详细排期见 [ROADMAP.md](ROADMAP.md)。
 
