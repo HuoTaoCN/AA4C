@@ -25,6 +25,18 @@ pub struct LlamaClient {
     auth_header: String,
 }
 
+/// [`LlamaClient::verify_auth`] 的结果。
+///
+/// 单列出「不是我们那个」而不是并进错误：这两种情况的处置完全不同——连不上是「再等等」，
+/// 而 401 是「这个端口没戏了，换一个重来」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthProbe {
+    /// 200：认我们的 key，确实是我们拉起的那个进程。
+    Ours,
+    /// 401：端口上蹲着**别人的** llama-server（另一个实例 / 崩溃残留的孤儿 / 别的软件）。
+    NotOurs,
+}
+
 impl LlamaClient {
     pub fn new(port: u16, api_key: &str) -> Self {
         Self {
@@ -44,6 +56,29 @@ impl LlamaClient {
                 "llama-server health check returned http {}",
                 resp.status
             )))
+        }
+    }
+
+    /// 确认端口那头**确实是我们自己拉起的那个** `llama-server`——即它认我们这把
+    /// `LLAMA_API_KEY`。
+    ///
+    /// 为什么 [`Self::health`] 不够：llama.cpp 的 `/health` **不受 API key 保护**（实测：
+    /// 不带任何 Authorization 也返回 200；`/v1/models` 同样不受保护，`/props` 与 `/slots`
+    /// 才受）。而端口是 `probe_free_port` 探来的——「绑 :0 读端口再释放」与引擎真正 bind
+    /// 之间有竞态窗口，那个端口上完全可能是**别人的** llama-server（另一个 AA4C 实例、
+    /// 上次崩溃残留的孤儿、或者别的软件）。只看 `/health` 的话它照样返 200，我们判定
+    /// 「就绪」，然后第一次真正调用直接 401——健康检查还一路报着「正常」。
+    ///
+    /// 401 单独用 [`Aa4cError::Unauthorized`] 表达，好让 `spawn` 能把它与「还没起来」
+    /// 区分开：前者重试同一个端口毫无意义，得换个端口重来。
+    pub async fn verify_auth(&self) -> Result<AuthProbe> {
+        let resp = self.request("GET", "/props", None).await?;
+        match resp.status {
+            200 => Ok(AuthProbe::Ours),
+            401 => Ok(AuthProbe::NotOurs),
+            other => Err(Aa4cError::Unavailable(format!(
+                "llama-server /props returned http {other}"
+            ))),
         }
     }
 

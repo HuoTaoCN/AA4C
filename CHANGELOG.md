@@ -6,6 +6,11 @@
 
 ### Fixed
 
+- **AI 引擎会把别人的 `llama-server` 当成自己的**（Windows CI 报 `http 401` 查出来的真 bug，不是测试抖动）。拉起引擎的端口是 `probe_free_port` 探来的——「绑 `:0` 读端口再释放」与引擎真正 bind 之间有竞态窗口，那个端口上完全可能是**别人的** llama-server（另一个 AA4C 实例、上次崩溃残留的孤儿、或别的软件）。而就绪门只看 `/health`，**实测确认 llama.cpp 的 `/health` 不受 `LLAMA_API_KEY` 保护**（`/v1/models` 同样不受，`/props` 与 `/slots` 才受）——于是它照样返 200，我们判定「就绪」，第一次真正调用直接 401，健康检查却一路报着「正常」。
+  - 就绪门加第二步：`/health` 通过后再打一次受保护的 `/props`，401 即判定「这不是我们拉起的那个」。
+  - 撞上了就**杀掉刚拉起的进程、换个端口重来**（最多三次），而不是失败或误判成功。
+  - 这不只是测试问题：生产里用同一套逻辑起引擎，撞上时用户会看到 AI 功能每次都失败，且健康状态显示正常——「彻底不工作且看不出为什么」。
+  - 测试 `readiness_rejects_a_llama_server_that_is_not_ours` 直接构造这个局面（起一个用别的 key 的 llama-server，拿不同的 key 去连）。**验证过它能抓到旧行为**：把 `verify_auth` 那步去掉后测试立刻变红。
 - **CI 自 2026-08-02 起一直是红的**，发布 v0.7.0-preview 时才注意到——整个 V0.7 是在一条红着的 CI 上做完的。两个原因都早于 V0.7 一周，与它无关：
   - CI 的 macOS 腿 `brew install llama.cpp` 把可执行文件装到 PATH 上却**不设** `AA4C_TEST_LLAMA_SERVER_BIN`（Linux/Windows 解压官方产物时顺手设了），而 `crates/aa4c-core/tests/core.rs` 里那份 `require_llama_server_bin` 从 `aa4c_ai::util::require_llama_server` 抄过来时**漏了 PATH 兜底**，于是 macOS 上两个用例必挂。补上兜底、抽成一份共用实现。**已在本地验证**：下了 CI 用的同一份 GGUF 固件后，两个用例从 panic 变成全过。
   - `kb` 问答用例的 ask 阶段只给 60s，而那一步是真让 llama-server 生成一段回答，共享 runner 上不够。放宽到 180s（同 `core.rs` 里 `HEAVY = 90s` 的既有先例）。**本地复现不出来**（本机整套 26s 跑完），是照 CI 日志推断的修，待下一次 CI 确认。
