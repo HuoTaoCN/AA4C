@@ -44,6 +44,23 @@
   32 个用例（好几个各自也起 llama-server）在一台三核共享机器上并行抢资源，整套跑了 100.93s。
   改成墙钟时间预算轮询（同 `kb::tests` 里那条已经换过一次的用例），预算 180s。同文件里另一条
   `for _ in 0..50` 一并换掉——同一个写法，不留第二处。
+- **非流式 AI 请求会被空闲巡查任务半路杀掉**（上一条改完之后 CI 露出来的下一层：批量跑完了，但
+  建议本身带着 `network error: connection closed before http headers completed`）。这是**真 bug，
+  且此前就被记录过、只是一直靠加时间绕**——`AiService::ensure_running` 拿到 `LlamaClient` 后就
+  主动放开槽位大锁（一次推理动辄几十秒到几分钟，全程持锁会让并发请求互相排队），巡查任务因此
+  能在请求进行中拿到锁检查 `last_used`，而 `last_used` 上次更新还停在**请求开始之前**。于是任何
+  单次耗时超过 `idle_timeout` 的请求都会被判成「空闲」，进程被关掉，等着的那个请求直接收到连接
+  被关。**流式路径（`chat_completion_stream`）从一开始就有这层保护**（每收到一个 token 续一次
+  命），非流式的 `chat_completion` / `embeddings` 两条漏了。
+  - 生产上一样成立：慢机器、大模型、长回复，或者一批几百个 chunk 的嵌入，任何一条都够。
+  - `lazy_starts_on_first_request_and_idle_reaper_stops_it` 的注释里白纸黑字记着这个竞态，
+    处理方式是把 `idle_timeout` 从 500ms 一路加到 10s。现在根因修掉了，那条注释也改成
+    「**别再靠加这个数字解决**」。
+  - 修法：新增 `keep_alive_while`，请求在飞的整个期间每 500ms 续一次命，两条非流式路径都包上。
+    代价（请求卡死则进程不被回收）与流式路径的既有取舍完全一致。
+  - 回归测试 `a_request_in_flight_keeps_its_slot_alive` 不起真进程，用慢 future 量「请求进行当中
+    `last_used` 最久落后多少」。**验证过它抓得住**：删掉续命那个分支，落后量从 <1s 涨到 ≈1.82s，
+    连跑 3 次全红。
 
 ### Changed
 

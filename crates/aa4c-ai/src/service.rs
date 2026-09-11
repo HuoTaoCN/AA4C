@@ -88,18 +88,17 @@ impl AiService {
         service
     }
 
+    /// 非流式聊天补全。整个请求期间持续给槽位"续命"，理由见 [`keep_alive_while`]。
     pub async fn chat_completion(&self, request: Value) -> Result<Value> {
         let (client, last_used) = self.ensure_running(SlotKind::Chat).await?;
-        let result = client.chat_completion(request).await;
-        *last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-        result
+        keep_alive_while(&last_used, client.chat_completion(request)).await
     }
 
+    /// 批量嵌入。同 [`Self::chat_completion`]：一批几百个 chunk 在 CPU 上算完
+    /// 完全可能超过 `idle_timeout`，所以也要全程续命。
     pub async fn embeddings(&self, request: Value) -> Result<Value> {
         let (client, last_used) = self.ensure_running(SlotKind::Embedding).await?;
-        let result = client.embeddings(request).await;
-        *last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-        result
+        keep_alive_while(&last_used, client.embeddings(request)).await
     }
 
     /// 流式聊天补全：内部再包一层转发 channel，让后台转发任务在每收到一个
@@ -241,6 +240,48 @@ fn slot_label(kind: SlotKind) -> &'static str {
 /// 周期性检查两个槽位是否已经空闲超过 `idle_timeout`，超过就优雅退出释放
 /// 内存。`service` 是 `Weak` 引用——`AiService` 被整体 drop 后 `upgrade()`
 /// 返回 `None`，这个循环自然结束，不需要额外的关闭信号。
+/// 请求在飞的整个期间，每 [`KEEP_ALIVE_TICK`] 刷新一次这个槽位的 `last_used`。
+///
+/// **不这样做会被巡查任务半路杀掉。** `ensure_running` 拿到 `LlamaClient` 之后就
+/// 主动放开了槽位大锁（一次推理动辄几十秒到几分钟，全程持锁会让并发请求互相排队），
+/// 巡查任务因此能在请求进行中拿到锁并检查 `last_used`——而 `last_used` 上一次更新
+/// 还停在**请求开始之前**。于是任何耗时超过 `idle_timeout` 的单次请求都会被判成
+/// "空闲"，进程被关掉，正在等的那个请求收到 `connection closed before http headers
+/// completed`。
+///
+/// 流式路径（[`AiService::chat_completion_stream`]）从一开始就有这层保护——每收到一个
+/// token 就续一次命——非流式的两条却漏了，直到 2026-09-11 CI 的 macOS 腿把它暴露出来：
+/// 共享 runner 上同一个测试二进制里几个用例各自起 llama-server 互相抢核，一次本机
+/// 0.75s 的生成拖过了那条用例设的 30s `idle_timeout`。生产上同样成立——慢机器、大模型、
+/// 长回复，任何一条都够。
+///
+/// 代价是"请求卡死则进程不会被回收"，这与流式路径的既有取舍完全一致：判断依据是
+/// "这个槽位还有人在用吗"，不是"这个槽位有没有在产出"。
+async fn keep_alive_while<T>(
+    last_used: &Arc<StdMutex<Instant>>,
+    fut: impl std::future::Future<Output = T>,
+) -> T {
+    tokio::pin!(fut);
+    *last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+    let mut ticker = tokio::time::interval(KEEP_ALIVE_TICK);
+    ticker.tick().await; // interval 的第一拍立即完成，先吃掉它
+    loop {
+        tokio::select! {
+            out = &mut fut => {
+                *last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+                return out;
+            }
+            _ = ticker.tick() => {
+                *last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+            }
+        }
+    }
+}
+
+/// 续命节奏。必须明显小于巡查周期的下限（`AiService::start` 里那个 `max(1s)`），
+/// 否则续得比查得慢，等于没续。
+const KEEP_ALIVE_TICK: Duration = Duration::from_millis(500);
+
 async fn janitor_loop(service: std::sync::Weak<AiService>, tick: Duration) {
     loop {
         tokio::time::sleep(tick).await;
@@ -278,6 +319,42 @@ mod tests {
     use super::*;
     use crate::util::{require_llama_server, require_tiny_model};
     use aa4c_engine::ProcessSpawner;
+
+    /// 请求在飞的整个期间，`last_used` 必须一直被刷新——否则巡查任务会在请求
+    /// 走完之前把进程杀掉（见 [`keep_alive_while`]）。
+    ///
+    /// 不起真进程：这里要验的是续命机制本身，用一个"慢 future"代替慢推理即可。
+    /// 判据是**请求进行当中** `last_used` 最久落后了多少：续着命的话不会超过一个
+    /// 续命周期多一点；不续的话会一路涨到整个请求时长。
+    /// **验证过它抓得住**：把 `keep_alive_while` 里 `ticker.tick()` 那个分支删掉，
+    /// 落后量立刻涨到 ≈2s，断言变红。
+    #[tokio::test]
+    async fn a_request_in_flight_keeps_its_slot_alive() {
+        let last_used = Arc::new(StdMutex::new(Instant::now()));
+        let watcher = last_used.clone();
+        let worst = Arc::new(StdMutex::new(Duration::ZERO));
+        let recorder = worst.clone();
+        let probe = tokio::spawn(async move {
+            for _ in 0..9 {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let behind = watcher.lock().unwrap().elapsed();
+                let mut w = recorder.lock().unwrap();
+                if behind > *w {
+                    *w = behind;
+                }
+            }
+        });
+
+        keep_alive_while(&last_used, tokio::time::sleep(Duration::from_secs(2))).await;
+        probe.await.unwrap();
+
+        let behind = *worst.lock().unwrap();
+        assert!(
+            behind < Duration::from_secs(1),
+            "请求进行中 last_used 最久落后了 {behind:?}——续命没生效，\
+             巡查任务会在这段时间里把进程当成空闲杀掉"
+        );
+    }
 
     /// 未配置模型的槽位直接 `Unavailable`，不尝试拉起进程——同下载能力
     /// 缺失时的既有降级语义。
@@ -319,14 +396,17 @@ mod tests {
             AiConfig {
                 chat_model: Some(model),
                 embedding_model: None,
-                // 500ms→2s 都在本机稳定，但真实 CI 上连续两次真机验证都在这个
-                // 精确的位置炸了——`aa4c-ai` 一个测试二进制里有 5 个测试并发拉起
-                // 真实 llama-server，共享 runner 的 CPU 被这几个真实进程同时抢
-                // 的时候，一次推理请求的端到端延迟能被拖到超过之前给的 2-4s
-                // 余量（`AiService` 文档记录过的已知竞态窗口：巡查任务在请求还
-                // 没走完时把进程杀了）。10s 是"哪怕全部并发测试同时抢 CPU 也
-                // 大概率跑得完一次极小模型的单轮推理"这个量级，代价只是这一个
-                // 测试本身多跑几秒，比继续小幅加时间再踩一次坑划算。
+                // 历史：500ms→2s 在本机都稳，真实 CI 上连续两次炸在这个精确位置
+                // ——`aa4c-ai` 一个测试二进制里好几个用例并发拉起真实 llama-server
+                // 抢共享 runner 的 CPU，一次推理的端到端延迟能拖过给的余量，巡查
+                // 任务就在请求还没走完时把进程杀了。当时是靠一路加时间绕过去的
+                // （最后落在 10s）。
+                //
+                // **那个竞态本身已经修掉了**（`keep_alive_while`：请求在飞的整个
+                // 期间持续续命），所以这里不必再为它留余量。10s 保留下来只是给
+                // 这条用例自己的"拉起 + 一次推理"留出共享 runner 上的执行时间，
+                // **再遇到类似失败不要靠继续加这个数字解决**——先确认是不是又有
+                // 哪条路径漏了续命。
                 idle_timeout: Duration::from_secs(10),
                 state_dir: dir.path().to_path_buf(),
             },
