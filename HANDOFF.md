@@ -77,6 +77,7 @@
 | 文档对齐 v0.7（第一轮） | ✅ | `62e0fe3` | 修四类漂移：两份 README 的徽章与「当前版本」还写着 v0.5.0-preview；ROADMAP 把已发布的 D2/D3 说成设计稿；DATABASE_SCHEMA 把归档表说成「未实现」而 `009_archive.sql` 就躺在迁移目录里。ROADMAP 总览表这次加了「状态」列。**这一轮有遗漏**，见下一行 |
 | **文档对齐（第二轮）+ V0.7 用户文档** | ✅ | 见本次提交 | 上一轮漏掉的：四份设计文档的状态行仍写着「设计稿/草案」（TRUST_DESIGN 甚至写「未实现」，而 R1–R4 早已发布）、PROTOCOL 头部写 `PROTO_VERSION=4`（实际 6）、本文档自己停在 08-07 且 §四标题指向 V0.6、AGENTS 必读清单把 V0.1 计划当「当前阶段」。**更大的缺口是用户文档**：USER_GUIDE / FAQ / OPEN_AND_SECURE 中英六份里 `引荐`/`中转站`/`IPv6` 命中 **0** 次——用户装上 `v0.7.0-preview.1` 会看到两个新开关和「待确认的设备」，文档里一个字都没有。本轮中英各补一套 |
 | **发送会话最后一条 `TaskDone` 会丢；CI 红了 29 天（已修）** | ✅ | 见本次提交 | Windows CI 上 `quic_roundtrip_transfer` 报 `connection lost` 查出来的**真 bug**。`write_message` 返回只代表数据进了本地发送缓冲区；而 `TaskDone` 是会话最后一条消息、后面没有任何应答，写完就返回 → `stream` 被丢弃 → QUIC 上连带丢掉 `QuicDuplex` 持有的 `quinn::Connection` → quinn 立即关连接，把还排在队里的 `TaskDone` 一起冲掉。**生产影响比测试失败严重**：文件那时已经完整落盘、哈希也过了，接收方却把这次传输记成失败。**同一个坑此前踩过一次**（C5 的索引交换路径，`dispatch.rs::finish_write_side`），当时的注释断言「发送会话天然靠 `TaskDone`/`FileAck` 的最后一轮往返把连接拖住」——**那句是错的**，`FileAck` 在 `TaskDone` 之前。修法：`finish_write_side` 提升为 `aa4c-transfer` 公共函数（加了排空上限），`drive`/`serve_fetch` 两条发送路径在 `TaskDone` 之后都调用，`aa4c-core` 改用同一份。回归测试走真实 quinn 端点，**验证过它抓得住**（掏空函数体连跑 10 次全红），抓不住的边界也写进了测试注释。另一半原因是 `ci.yml` 四条 `curl -fsSL` 一次失败就挂（macOS 死在 `curl: (60)` 证书错误），统一加 `--retry 5 --retry-all-errors --retry-delay 3`——**`--retry` 单独用不够**，退出码 60 要 `--retry-all-errors` 才重试。**排查教训**：quinn 的 `ConnectionLost` Display 就一句 `connection lost`，**把底层 `ConnectionError` 吞了**，CI 日志看不出是超时/重置/主动关；第一版假设（keep-alive 2s vs 空闲超时 8s 太紧）就是这么被带偏的，对时间戳才排除——整个用例从 core 启动到失败只有 ~100ms，8s 超时根本没机会触发，超时值最终一个字没改 |
+| **CI 修绿过程中露出的另外三层（含又一个真 bug）** | ✅ | 见本次提交 | ①`h2` 0.4.15 命中 RUSTSEC-2026-0258（2026-08-17 公布）→ 升 0.4.19。②`real_tiny_model_produces_schema_valid_suggestion` 用 `for _ in 0..100` 固定循环次数等事件——**固定次数的预算是「N 次事件或 N×超时」的较小者**，不匹配的事件白吃配额，实际能等多久取决于事件流形状 → 改成墙钟预算（180s，同 `kb::tests` 的先例），同文件另一条 `for _ in 0..50` 一并换掉。③**非流式 AI 请求会被空闲巡查任务半路杀掉**（真 bug）：`ensure_running` 拿到 client 就放开槽位大锁（长请求不能全程持锁），巡查任务因此能在请求进行中检查 `last_used`，而它还停在**请求开始之前** → 单次超过 `idle_timeout` 的请求必被当成空闲杀掉，调用方收到 `connection closed before http headers completed`。流式路径（每 token 续命）一开始就防了，非流式的 `chat_completion`/`embeddings` 漏了。**此前已被记录、只是一直靠把 `idle_timeout` 从 500ms 加到 10s 绕过去**；这次修根因（`keep_alive_while`，请求在飞期间每 500ms 续一次），注释改成「别再靠加数字解决」。回归测试用慢 future 量「请求进行中 `last_used` 最久落后多少」，**验证过抓得住**（删掉续命分支 → 从 <1s 涨到 ≈1.82s，3/3 红）。**结果：`gh run view 34558094699` 七个 job 全绿，自 2026-08-12 以来第一次** |
 
 整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。**V0.3「AA Connect」六个里程碑（C1–C6）全部完成**：广域网 QUIC 会话层、自建信令+中继服务器、远程同步/发送接入完整连接阶梯、NAT 打洞、分享链接，一整条「局域网直连 → 公网直连 → 打洞 → 中继」的连接阶梯贯通，外加脱离设备配对关系的能力型分享。**V0.3 遗留的跨服务器好友寻址 gap 已补完**：配对时交换 `server_hint`，两个用户各自搭独立服务器也能互相找到对方地址（跨服务器中继/打洞信令联邦仍是独立后置项目，未做）。**V0.4「Download」四个里程碑（D1 Aria2/HTTP-FTP、D2 Transmission/BT-Magnet + 引擎二进制正式打包分发管线、D3 统一任务中心打磨）全部实现并已随 `v0.4.0` 正式版打包发布**：新 crate `aa4c-download` 同时管两个引擎、下载页支持直链+magnet、真实 `tauri dev` 走查跑通（sidecar 拉起、Tauri capability 权限、孤儿进程防护三平台均实测有效），BT/Magnet 下载与 D3 的批量操作/限速/错误人话转译在正式安装包里都真正可用。**V0.5「AI」五个里程碑（AI1 规则式归档 + AI2 llama-server 引擎接入 + AI3 AI 标签/分类建议 + AI4 本地知识库 + AI5 收尾）全部已实现，并已随 `v0.5.0-preview` 打包发布**（三平台安装包 + Android arm64 APK + `aa4c-server` Linux 二进制，含首次真实验证通过的 Linux AppImage，GitHub Release，prerelease）。**V0.2 同步五个里程碑（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取 / 冲突标记）全部落地**（SYNC_DESIGN.md §10）；线路协议已升到 `proto=5`（V0.4 起，`PairServerHint`）并对各阶段新增消息按版本 gate（与更旧对端握手自动协商降级）。**真机 GUI 走查已人工跑通**（`scripts/dev-two-nodes.sh` 起两实例：配对 → 互标我的设备 → 黄「可下载」→ 点黄拉取转绿 → 同名不同内容「多版本」并列，均正常）。
 
@@ -238,7 +239,23 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 后面任何一个方向都是在裸奔——所以本轮先修了它，**两条都修完了**（见第一节表格最后一行）：
 第一条查下去是**产品代码的真 bug**，不是测试抖动；第二条是 workflow 缺重试。本机
 `cargo test --workspace`（带 AI 环境变量）/ `clippy -D warnings` / `fmt --check` / `pnpm build`
-全过，**真机 CI 三平台是否全绿要等推送后确认**。
+全过。**推上去之后 CI 又露出了三层**（都与 TaskDone 那条无关，只是被它挡在后面），
+一并修完，`gh run view 34558094699` **七个 job 全绿**——这是自 2026-08-12 以来第一次：
+
+1. `cargo audit`：`h2` 0.4.15 命中 RUSTSEC-2026-0258（2026-08-17 公布，正好落在上一次绿 CI 之后）
+   → `cargo update -p h2` 到 0.4.19。
+2. `real_tiny_model_produces_schema_valid_suggestion` 在 macOS 腿超时（本机独占 0.75s）→ 它用的是
+   `for _ in 0..100` 固定循环次数，**固定次数的预算是「N 次事件或 N×超时」的较小者**，任何不匹配的
+   事件都白吃一次配额 → 改成墙钟预算（同 `kb::tests` 已经换过的那条）。
+3. 换完预算，批量跑完了，但建议本身带着 `connection closed before http headers completed`
+   → **又一个真 bug**：非流式 `chat_completion`/`embeddings` 在请求进行中不刷新 `last_used`，
+   单次耗时超过 `idle_timeout` 就被巡查任务当成空闲把进程杀了。流式路径一开始就有这层保护，
+   非流式两条漏了。**这个竞态此前就被记录在
+   `lazy_starts_on_first_request_and_idle_reaper_stops_it` 的注释里，处理方式是把 `idle_timeout`
+   从 500ms 一路加到 10s**——这次修了根因（`keep_alive_while`），那条注释也改成「别再靠加数字解决」。
+
+**这三层的共同教训**：一条红 CI 只会告诉你最先撞上的那个错误。红了 29 天意味着期间累积的问题
+是**叠着**的，修完第一个要接着推、接着看，不能修完一个就当收工。
 
 **其余候选方向**（由用户指定）——
 1. **V0.7 真机验证**：R1 的公网 IPv6 跨网直连、R3 的 UPnP、R4 的内置服务器跨网可达，本机都验不了（见下方说明）。这是目前最有价值的一步——代码写完了，但「在你自己的网络里真的连通」还没被证实过。**照着 [docs/V0.7_VERIFICATION.md](docs/V0.7_VERIFICATION.md) 做**：A 组单机、B 组同局域网两台、C 组两个不同网络，按序推进，前面过不了后面必然过不了。

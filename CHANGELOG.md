@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+> 本节的全部改动已在 `main` 上跑过完整 CI：`gh run view 34558094699` 七个 job 全绿（Windows / macOS / Linux 三平台测试 + lint + 依赖审计 + 前端 + Android 哨兵）——**自 2026-08-12 以来第一次**。
+
 ### Fixed
 
 - **发送会话最后一条 `TaskDone` 可能永远发不出去，接收方把一次成功的传输记成失败**（Windows CI 上
