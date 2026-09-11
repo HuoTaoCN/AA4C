@@ -324,10 +324,13 @@ mod tests {
             }])
             .unwrap();
 
+        // 按墙钟预算等，不按固定循环次数——理由见下面那条真实模型用例的注释。
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut saw_progress = false;
-        for _ in 0..50 {
+        while tokio::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if let Ok(Ok(CoreEvent::AiSuggestProgress { done, total })) =
-                tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+                tokio::time::timeout(remaining, rx.recv()).await
             {
                 assert_eq!(done, 1);
                 assert_eq!(total, 1);
@@ -402,10 +405,20 @@ mod tests {
             }])
             .unwrap();
 
+        // 拿截止时间而不是固定循环次数（同 `kb::tests` 里那条已经换过一次的用例）：
+        // `for _ in 0..N` 的预算是「N 次事件或 N×超时」的**较小者**——任何一条不匹配
+        // 的事件都白白吃掉一次配额，实际能等多久取决于事件流的形状，不取决于你写的
+        // 那个时间。这里等的是 llama-server 冷启动 + 加载模型 + 生成一次，本机独占
+        // 时 0.75s 就完了，但 CI 的 macOS 腿要和同一个二进制里另外 32 个用例（其中
+        // 好几个各自也起 llama-server）抢一台三核共享机器——**2026-09-11 实测就是在
+        // 这里超时**（整个 aa4c-ai 套件在那台机器上跑了 100.93s）。180s 沿用上一次
+        // 放宽 kb 问答用例时定下的量级。
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
         let mut done = false;
-        for _ in 0..100 {
+        while tokio::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if let Ok(Ok(CoreEvent::AiSuggestProgress { done: d, total })) =
-                tokio::time::timeout(Duration::from_millis(500), rx.recv()).await
+                tokio::time::timeout(remaining, rx.recv()).await
             {
                 assert_eq!(d, 1);
                 assert_eq!(total, 1);
