@@ -4,6 +4,50 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **发送会话最后一条 `TaskDone` 可能永远发不出去，接收方把一次成功的传输记成失败**（Windows CI 上
+  `quic_roundtrip_transfer` 报 `transfer failed (b side): io error: connection lost` 查出来的**真
+  bug**，不是测试抖动）。`write_message` 返回只代表数据进了本地发送缓冲区，不代表送达对端；而
+  `TaskDone` 是会话最后一条消息、后面没有任何应答，写完就返回意味着 `stream` 随即被丢弃——QUIC 上
+  这会连带丢掉 `QuicDuplex` 持有的 `quinn::Connection`，quinn 据此立即关连接，把还排在队里的
+  `TaskDone` 一起冲掉。接收方停在等 `TaskDone` 上，报 `connection lost`。
+  - **生产影响比测试失败严重**：文件那时其实已经完整落盘、哈希也校验通过了，接收方却把这次传输
+    标成失败。TCP 因为内核发送缓冲区宽容得多不容易触发，所以只在 QUIC（跨网直连/打洞/中继）上出现。
+  - 这个坑**此前踩过一次**：索引交换路径在里程碑 C5 撞上并修好了（`dispatch.rs` 的
+    `finish_write_side`）。当时的注释断言「发送会话天然靠 `TaskDone`/`FileAck` 的最后一轮往返把连接
+    拖到双方都确认完成」——**这句是错的**：`FileAck` 在 `TaskDone` 之前，`TaskDone` 之后再没有往返。
+    修法就是把同一个收尾用到发送路径上：`finish_write_side` 提升成 `aa4c-transfer` 的公共函数
+    （顺带给它加了排空上限，对端不回也不关时不再永久挂住），`drive`（推送）与 `serve_fetch`（拉取）
+    两条发送路径在 `TaskDone` 之后都调用它，`aa4c-core` 改用同一份、删掉重复实现。
+  - 回归测试 `finish_write_side_flushes_the_last_message_before_the_stream_dies` 走真实 quinn 端点。
+    **验证过它抓得住**：把 `finish_write_side` 的函数体掏空，连跑 10 次全红。边界也写进了测试注释：
+    只删 `shutdown()`、留下等待的话它抓不住（本机回环上光是多等一会儿就够 quinn 把数据发出去）。
+  - **排查过程本身暴露了一个问题**：quinn 的 `WriteError::ConnectionLost` / `ReadError::ConnectionLost`
+    的 Display 就是干巴巴一句 `connection lost`，**把底层 `ConnectionError` 吞掉了**——CI 日志里看不出
+    到底是超时、重置还是对端主动关。第一版假设（keep-alive 2s / 空闲超时 8s 太紧）就是这么被带偏的，
+    直到对时间戳才排除：整个用例从 core 启动到失败只有 ~100ms，8s 的空闲超时根本没机会触发。
+- **CI 自 2026-08-12 起再次转红，红了 29 天没人发现**。`v0.7.0-preview.1` 的 changelog 写着「CI 现在是
+  绿的」——那句话在写下的那一刻是真的，紧接着的两次 main 推送就把它推翻了。这是同一个坑第二次踩
+  （上一次红了一周）。除了上面那条真 bug，另一个原因是 **`ci.yml` 里四条 `curl -fsSL` 一次失败就整条腿
+  挂掉**：macOS 腿死在 `curl: (60) SSL certificate problem: self signed certificate`，runner 侧的瞬时
+  网络故障。四条统一加 `--retry 5 --retry-all-errors --retry-delay 3`——**`--retry` 单独用不够**，它只
+  重试 HTTP 5xx 与超时，退出码 60 这类连接/证书层面的错误必须再加 `--retry-all-errors`；这一点写进了
+  workflow 注释。校验和比对照旧，重试不放松验证。
+
+### Changed
+
+- 文档与仓库真实状态对齐（第二轮，上一轮 `62e0fe3` 有遗漏）：四份设计文档的状态行（TRUST_DESIGN 还
+  写着「设计稿，未实现」，而 R1–R4 早已发布）、PROTOCOL 头部的 `PROTO_VERSION`（写 4，实际 6，现改成
+  一张版本→能力→章节的表）、HANDOFF（停在 08-07，§四标题还指向 V0.6）、AGENTS 必读清单（把 V0.1 计划
+  当「当前阶段」）。
+- **补齐 V0.7 的用户文档**（中英各一套）。此前 `引荐`/`中转站`/`IPv6` 在 USER_GUIDE / FAQ /
+  OPEN_AND_SECURE 六份文件里命中 0 次——用户装上 `v0.7.0-preview.1` 会看到两个新开关和自己冒出来的
+  「待确认的设备」，文档里一个字都没有。新增：引荐流程与为什么要用户亲手确认、两个新开关（含
+  `enable_port_mapping` **默认为 true**、只是被默认关闭的 `enable_remote` 罩着这个容易搞错的事实）、
+  内置中转站要配 DDNS 才真的可达、IPv6 防火墙是独立规则集，以及信任传递的安全模型（收方重算
+  `BLAKE3(公钥)`、引荐不覆盖既有信任、为什么不做 Syncthing 式自动引荐）。
+
 ## [0.7.0-preview.1] - 2026-08-12
 
 > 与 `v0.7.0-preview` **功能完全相同**，重打是为了把下面两条修复带进安装包。V0.7 的四个

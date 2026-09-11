@@ -62,6 +62,34 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> AsyncDuplex
 /// 配对（[`IncomingPairDispatch`]）范围仍限局域网 TCP，未纳入此抽象（V0.3 未做远程配对）。
 pub type SharedStream = Box<dyn AsyncDuplex>;
 
+/// 会话最后一条消息写完之后、丢弃流之前的**优雅收尾**：半关闭写侧，再等对端也收工。
+///
+/// QUIC 上这一步是必需的，不是保险。`write_message` 返回只代表数据进了本地发送缓冲区，
+/// **不代表已经送达对端**；而丢弃 [`crate::quic::QuicDuplex`] 会连带丢掉它持有的
+/// `quinn::Connection`，quinn 据此立即关闭连接——排队中还没发出去的最后一条消息会被
+/// 连同连接一起冲掉。对端那边看到的就是一句 `connection lost`，而且它**吞掉了底层
+/// 原因**（quinn 的 `WriteError::ConnectionLost` / `ReadError::ConnectionLost` 的 Display
+/// 里不带 source），所以现场极难还原。TCP 因为内核发送缓冲区宽容得多，不容易触发。
+///
+/// 做法：先 `shutdown`（QUIC 下对应 `SendStream::finish`，把排队数据连同 FIN 一起送出），
+/// 再读到对端也关掉它那侧为止。读到什么、读错什么都无所谓——只要这次读**完成**了
+/// （干净 EOF 也好、对端直接重置也好），就说明连接层面已经有明确结果，可以放心丢弃。
+///
+/// 等待有上限：对端如果既不回也不关（被卡住、或恶意），不能把这个任务永久挂住。超时了
+/// 就直接返回——该送的数据在 `shutdown` 那步已经尽力送过了。
+pub async fn finish_write_side<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    stream: &mut S,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let _ = stream.shutdown().await;
+    let mut discard = [0u8; 1];
+    let _ = tokio::time::timeout(FINISH_DRAIN_TIMEOUT, stream.read(&mut discard)).await;
+}
+
+/// [`finish_write_side`] 等对端收工的上限。只是等一次「对方也关了」的信号，
+/// 正常情况下是毫秒级；给足余量即可，不需要和业务超时（`TransferConfig::timeout`）挂钩。
+const FINISH_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// 统一监听器读到 `PairRequest` 后的配对分流钩子。
 ///
 /// 由 aa4c-core 注入 `PairingManager` 适配器，使传输层不感知配对语义
