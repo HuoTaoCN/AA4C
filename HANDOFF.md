@@ -76,6 +76,7 @@
 | v0.7.0-preview.1 发布 | ✅ | `7b35e69` | 与 `v0.7.0-preview` **功能完全相同**，重打是为了把上面两条修复（AI 引擎误认 + CI 三条腿）带进安装包。清单版本号维持 0.7.0（同此前 preview 号的惯例） |
 | 文档对齐 v0.7（第一轮） | ✅ | `62e0fe3` | 修四类漂移：两份 README 的徽章与「当前版本」还写着 v0.5.0-preview；ROADMAP 把已发布的 D2/D3 说成设计稿；DATABASE_SCHEMA 把归档表说成「未实现」而 `009_archive.sql` 就躺在迁移目录里。ROADMAP 总览表这次加了「状态」列。**这一轮有遗漏**，见下一行 |
 | **文档对齐（第二轮）+ V0.7 用户文档** | ✅ | 见本次提交 | 上一轮漏掉的：四份设计文档的状态行仍写着「设计稿/草案」（TRUST_DESIGN 甚至写「未实现」，而 R1–R4 早已发布）、PROTOCOL 头部写 `PROTO_VERSION=4`（实际 6）、本文档自己停在 08-07 且 §四标题指向 V0.6、AGENTS 必读清单把 V0.1 计划当「当前阶段」。**更大的缺口是用户文档**：USER_GUIDE / FAQ / OPEN_AND_SECURE 中英六份里 `引荐`/`中转站`/`IPv6` 命中 **0** 次——用户装上 `v0.7.0-preview.1` 会看到两个新开关和「待确认的设备」，文档里一个字都没有。本轮中英各补一套 |
+| **发送会话最后一条 `TaskDone` 会丢；CI 红了 29 天（已修）** | ✅ | 见本次提交 | Windows CI 上 `quic_roundtrip_transfer` 报 `connection lost` 查出来的**真 bug**。`write_message` 返回只代表数据进了本地发送缓冲区；而 `TaskDone` 是会话最后一条消息、后面没有任何应答，写完就返回 → `stream` 被丢弃 → QUIC 上连带丢掉 `QuicDuplex` 持有的 `quinn::Connection` → quinn 立即关连接，把还排在队里的 `TaskDone` 一起冲掉。**生产影响比测试失败严重**：文件那时已经完整落盘、哈希也过了，接收方却把这次传输记成失败。**同一个坑此前踩过一次**（C5 的索引交换路径，`dispatch.rs::finish_write_side`），当时的注释断言「发送会话天然靠 `TaskDone`/`FileAck` 的最后一轮往返把连接拖住」——**那句是错的**，`FileAck` 在 `TaskDone` 之前。修法：`finish_write_side` 提升为 `aa4c-transfer` 公共函数（加了排空上限），`drive`/`serve_fetch` 两条发送路径在 `TaskDone` 之后都调用，`aa4c-core` 改用同一份。回归测试走真实 quinn 端点，**验证过它抓得住**（掏空函数体连跑 10 次全红），抓不住的边界也写进了测试注释。另一半原因是 `ci.yml` 四条 `curl -fsSL` 一次失败就挂（macOS 死在 `curl: (60)` 证书错误），统一加 `--retry 5 --retry-all-errors --retry-delay 3`——**`--retry` 单独用不够**，退出码 60 要 `--retry-all-errors` 才重试。**排查教训**：quinn 的 `ConnectionLost` Display 就一句 `connection lost`，**把底层 `ConnectionError` 吞了**，CI 日志看不出是超时/重置/主动关；第一版假设（keep-alive 2s vs 空闲超时 8s 太紧）就是这么被带偏的，对时间戳才排除——整个用例从 core 启动到失败只有 ~100ms，8s 超时根本没机会触发，超时值最终一个字没改 |
 
 整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。**V0.3「AA Connect」六个里程碑（C1–C6）全部完成**：广域网 QUIC 会话层、自建信令+中继服务器、远程同步/发送接入完整连接阶梯、NAT 打洞、分享链接，一整条「局域网直连 → 公网直连 → 打洞 → 中继」的连接阶梯贯通，外加脱离设备配对关系的能力型分享。**V0.3 遗留的跨服务器好友寻址 gap 已补完**：配对时交换 `server_hint`，两个用户各自搭独立服务器也能互相找到对方地址（跨服务器中继/打洞信令联邦仍是独立后置项目，未做）。**V0.4「Download」四个里程碑（D1 Aria2/HTTP-FTP、D2 Transmission/BT-Magnet + 引擎二进制正式打包分发管线、D3 统一任务中心打磨）全部实现并已随 `v0.4.0` 正式版打包发布**：新 crate `aa4c-download` 同时管两个引擎、下载页支持直链+magnet、真实 `tauri dev` 走查跑通（sidecar 拉起、Tauri capability 权限、孤儿进程防护三平台均实测有效），BT/Magnet 下载与 D3 的批量操作/限速/错误人话转译在正式安装包里都真正可用。**V0.5「AI」五个里程碑（AI1 规则式归档 + AI2 llama-server 引擎接入 + AI3 AI 标签/分类建议 + AI4 本地知识库 + AI5 收尾）全部已实现，并已随 `v0.5.0-preview` 打包发布**（三平台安装包 + Android arm64 APK + `aa4c-server` Linux 二进制，含首次真实验证通过的 Linux AppImage，GitHub Release，prerelease）。**V0.2 同步五个里程碑（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取 / 冲突标记）全部落地**（SYNC_DESIGN.md §10）；线路协议已升到 `proto=5`（V0.4 起，`PairServerHint`）并对各阶段新增消息按版本 gate（与更旧对端握手自动协商降级）。**真机 GUI 走查已人工跑通**（`scripts/dev-two-nodes.sh` 起两实例：配对 → 互标我的设备 → 黄「可下载」→ 点黄拉取转绿 → 同名不同内容「多版本」并列，均正常）。
 
@@ -234,9 +235,12 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
   `curl: (60) SSL certificate problem`。runner 侧的瞬时网络问题，而那行 `curl -fsSL` 没有任何重试。
 
 **这是同一个坑第二次踩**（上次是「红了一周，发版时才注意到」）。没有绿 CI 就没有回归保护，
-后面任何一个方向都是在裸奔——所以本轮先修它。
+后面任何一个方向都是在裸奔——所以本轮先修了它，**两条都修完了**（见第一节表格最后一行）：
+第一条查下去是**产品代码的真 bug**，不是测试抖动；第二条是 workflow 缺重试。本机
+`cargo test --workspace`（带 AI 环境变量）/ `clippy -D warnings` / `fmt --check` / `pnpm build`
+全过，**真机 CI 三平台是否全绿要等推送后确认**。
 
-**其余候选方向**（修完 CI 之后由用户指定）——
+**其余候选方向**（由用户指定）——
 1. **V0.7 真机验证**：R1 的公网 IPv6 跨网直连、R3 的 UPnP、R4 的内置服务器跨网可达，本机都验不了（见下方说明）。这是目前最有价值的一步——代码写完了，但「在你自己的网络里真的连通」还没被证实过。**照着 [docs/V0.7_VERIFICATION.md](docs/V0.7_VERIFICATION.md) 做**：A 组单机、B 组同局域网两台、C 组两个不同网络，按序推进，前面过不了后面必然过不了。
 2. **V0.6 T1.0（AA Touch 前置实证）**：需要用户配合真实 Android 设备跑通 HCE 广播 + 官方 NFC 插件读取的最小闭环（TOUCH_DESIGN.md §10 第 1-2 条）。
 3. **NAT-PMP / PCP**（R3 的补充）：只做了 UPnP IGD（理由见 TRUST_DESIGN.md §7.3）。要补的话需要先引一个读系统路由表的依赖来发现网关。
