@@ -1,6 +1,6 @@
 # AA4C User Guide
 
-> Applies to v0.5.0-preview · [中文](../USER_GUIDE.md) · [Project home](../../README.en.md)
+> Applies to v0.7.0-preview.1 · [中文](../USER_GUIDE.md) · [Project home](../../README.en.md)
 
 This guide walks through every feature of AA4C. If something is not working, check the [FAQ and troubleshooting](FAQ.md) first.
 
@@ -8,6 +8,7 @@ This guide walks through every feature of AA4C. If something is not working, che
 
 1. [Installation](#1-installation)
 2. [First run: pairing two devices](#2-first-run-pairing-two-devices)
+   · [Two devices that are never on the same network](#two-devices-that-are-never-on-the-same-network)
 3. [Interface overview](#3-interface-overview)
 4. [Transfer: AA a file across](#4-transfer-aa-a-file-across)
 5. [Sync: keep folders consistent across devices](#5-sync-keep-folders-consistent-across-devices)
@@ -66,6 +67,35 @@ Pairing is not "here, take all my files". Trust has four levels:
 | **Unknown** | Discovered, not paired | ❌ | Rejected |
 
 **Pairing lands on Friend by default** — least privilege. Only devices you explicitly promote ever see your sync index.
+
+### Two devices that are never on the same network
+
+The flow above needs both devices on the same LAN, because comparing the six digits means
+seeing both screens. Your home desktop and your office desktop will never manage that, and you
+are not going to carry one of them back and forth.
+
+**Let a device that has been to both places introduce them** — usually your phone:
+
+1. At home, pair your phone with the **home computer** (the flow above; mark both as your own device).
+2. At the office, pair your phone with the **office computer**.
+3. From then on the phone passes each one the other's **fingerprint**, along with "this is also
+   your device". Both computers show an entry — on desktop under *Settings → Paired devices*,
+   under the heading **Pending devices**, reading *your "Phone" says this is also your device*.
+4. Click **Show fingerprint**, check it against what the other device displays, and if it matches
+   click **This is my device**. Once both sides have done that, the two computers fully trust each
+   other — even though they are never on the same network.
+
+Anything you do not recognise, or do not want: click **Ignore**.
+
+> **Why you still have to click.** An introduction **carries a fingerprint and creates no trust
+> whatsoever**. The introducer does not get to decide; you do. This is deliberate — some
+> comparable tools add the device automatically when an introducer vouches for it, at the cost of
+> trust spreading down the device chain without bound, and of devices you deleted reappearing on
+> the next round. AA4C records your **Ignore** so the same device does not keep coming back.
+>
+> **Do check the fingerprint.** A malicious introducer cannot produce a fingerprint that checks
+> out — the receiving side recomputes it locally — but this glance is still your last gate, for
+> exactly the same reason as comparing the six digits when pairing.
 
 ---
 
@@ -329,8 +359,36 @@ Each entry offers a shortcut:
 |---------|---------|
 | Self-hosted server address | Of the form `aa4c://host:port#fingerprint`, pointing at your own `aa4c-server` |
 | Enable remote connectivity | **Off by default.** While off, AA4C stays entirely on the LAN and makes no internet connections. The toggle is disabled until an address is filled in |
+| Open the port on my router automatically | **On by default, but nothing happens until remote connectivity is also on** — and that is off by default, so out of the box this does nothing. Once active, the router forwards the transfer port to this device so peers can connect directly instead of going through a relay, which is faster. **This opens a port on your router**; it is withdrawn when you quit AA4C. Turn it off if you would rather not, at the cost of more cross-network traffic going through the relay |
 
 See the [self-hosting guide](SELF_HOSTING.md) for deployment.
+
+### Make this device the relay
+
+If you have a device that is always on (a desktop, a NAS), it can double as your own relay so you
+do not have to rent a server — *Settings → Remote connectivity → **Make this device the relay***,
+then turn on "Run a server on this device".
+
+| Setting | Meaning |
+|---------|---------|
+| Run a server on this device | Starts an `aa4c-server` inside this device; functionally identical to a separately deployed one |
+| What address others use to find this device | The address your other devices use to reach it — usually a DDNS domain such as `home.example.com` |
+| Server port | Cannot be the same number as the transfer port; both need to hold that port |
+
+Once it is on and saved, the panel shows **"Put this address on your other devices"** — copy it
+and paste it into the "Self-hosted server address" field on your other devices.
+
+> ⚠️ **Turning the switch on is not enough for the outside world to find it.** Two more things
+> are needed:
+>
+> 1. **A stable entry address.** A home broadband address changes, and the link dies with it —
+>    hence the DDNS recommendation. The hint line tells you which case you are in: the address
+>    you filled in / an auto-detected public address / a LAN address only. "LAN address only"
+>    means nothing outside this network can reach you.
+> 2. **The router must allow that port through.** "Open the port on my router automatically"
+>    covers the transfer port only; the relay's port is on you.
+>
+> The [self-hosting guide](SELF_HOSTING.md) covers DDNS, firewalls and IPv6 in detail.
 
 ### Download
 
@@ -365,6 +423,10 @@ See the [self-hosting guide](SELF_HOSTING.md) for deployment.
 Lists every paired device, where you can:
 - Change the trust level (Friend ↔ Full trust)
 - **Unpair**: the peer immediately loses the right to connect to you
+
+When a device has been introduced to you, a **Pending devices** block appears at the top of this
+page — click "This is my device" or "Ignore". See
+[§2 Two devices that are never on the same network](#two-devices-that-are-never-on-the-same-network).
 
 ---
 
