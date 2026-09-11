@@ -11,7 +11,7 @@
 3. [API_DESIGN.md](API_DESIGN.md) —— 模块接口契约（不得随意更改公共接口）
 4. [PROTOCOL.md](PROTOCOL.md) —— 传输协议规范（协议变更必须保持版本兼容）
 5. [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md) —— 数据库表结构
-6. [V0.1_IMPLEMENTATION_PLAN.md](V0.1_IMPLEMENTATION_PLAN.md) —— 当前阶段的实现步骤
+6. [ROADMAP.md](ROADMAP.md) 的状态总览表 + [HANDOFF.md](HANDOFF.md) §一「当前进度」/§四「下一步」—— **当前真实进度与下一步的权威来源**（各版本的实现步骤在 `V0.x_IMPLEMENTATION_PLAN.md`，按 ROADMAP 指到的那一份看，不要默认 V0.1）
 7. [TESTING.md](TESTING.md) —— 测试规范与必测项
 
 ## 产品原则

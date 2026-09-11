@@ -1,6 +1,6 @@
 # AA4C 同步与信任分级设计（V0.2）
 
-> 状态：**设计草案**，对应 [ROADMAP.md](ROADMAP.md) V0.2。本文档是落地前的设计依据，不含实现代码。
+> 状态：**已全部实现并发布**（V0.2，随 `v0.2.0` 系列打包）。对应 [ROADMAP.md](ROADMAP.md) V0.2；本文档是当初的落地依据，不含实现代码。其中 §2 的信任分级定义至今仍是**权威来源**，V0.7 的信任传递（[TRUST_DESIGN.md](TRUST_DESIGN.md)）直接建立在它之上。
 > 关联：信任分级权威定义见 [PROJECT_VISION.md](PROJECT_VISION.md) §十；表结构见 [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md)；线路协议见 [PROTOCOL.md](PROTOCOL.md)；界面见 [UI_DESIGN_SPEC.md](UI_DESIGN_SPEC.md)。
 
 ## 1. 背景与目标

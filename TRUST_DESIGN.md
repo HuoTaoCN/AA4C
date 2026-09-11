@@ -1,6 +1,7 @@
-# AA4C 设备信任传递与跨网可达设计（V0.7 设计稿）
+# AA4C 设备信任传递与跨网可达设计（V0.7「Trust / Reach」）
 
-> 状态：**设计稿，未实现**。本文回答一个具体问题——「我的手机、家里的电脑、单位的电脑，怎么在不同网络下连成一个文件空间，且不需要注册任何账号」。
+> 状态：**里程碑 R1–R4 全部已实现**，随 `v0.7.0-preview` / `v0.7.0-preview.1` 打包发布（R1 IPv6 双栈见 §7.2、R2 信任传递见 §7.1、R3 UPnP 端口映射见 §7.3、R4 内置服务器见 §7.4，四节都记了实现相对本设计稿的偏差）。**但跨网部分尚未真机验证**——自动化测试只覆盖到回环与假后端，「两台在不同网络的设备真的连上了」这件事还没被证实过，验证清单见 [docs/V0.7_VERIFICATION.md](docs/V0.7_VERIFICATION.md)。
+> 本文回答一个具体问题——「我的手机、家里的电脑、单位的电脑，怎么在不同网络下连成一个文件空间，且不需要注册任何账号」。
 > 关联：连接阶梯与自建服务器见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)；信任分级的权威定义见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §2 与 [PROJECT_VISION.md](PROJECT_VISION.md) §十；线路协议见 [PROTOCOL.md](PROTOCOL.md)；表结构见 [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md)。
 
 ## 1. 背景与目标
