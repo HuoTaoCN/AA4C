@@ -26,7 +26,7 @@ jobs:
       # 子进程，不需要额外设 LD_LIBRARY_PATH（那是 test job 才要操心的事）。
       - name: Install llama-server (Linux, official prebuilt, unpack only)
         run: |
-          curl -fsSL -o llama.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/b10175/llama-b10175-bin-ubuntu-x64.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o llama.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/b10175/llama-b10175-bin-ubuntu-x64.tar.gz"
           mkdir -p "$RUNNER_TEMP/llama"
           tar xzf llama.tar.gz -C "$RUNNER_TEMP/llama"
           dirname "$(find "$RUNNER_TEMP/llama" -name llama-server -type f)" >> "$GITHUB_PATH"
@@ -77,7 +77,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: bash
         run: |
-          curl -fsSL -o aria2.zip "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o aria2.zip "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
           unzip -j aria2.zip "*/aria2c.exe" -d "$RUNNER_TEMP/aria2"
           echo "$RUNNER_TEMP/aria2" >> "$GITHUB_PATH"
       # aa4c-download 的 D2 集成测试驱动真实 transmission-daemon（见
@@ -118,7 +118,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
-          curl -fsSL -o llama.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/b10175/llama-b10175-bin-ubuntu-x64.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o llama.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/b10175/llama-b10175-bin-ubuntu-x64.tar.gz"
           mkdir -p "$RUNNER_TEMP/llama"
           tar xzf llama.tar.gz -C "$RUNNER_TEMP/llama"
           bin_dir="$(dirname "$(find "$RUNNER_TEMP/llama" -name llama-server -type f)")"
@@ -140,12 +140,19 @@ jobs:
       # 微型 GGUF 测试固件（ARCHIVE_DESIGN.md §3.1 第 6 点：来源/SHA256 已实证），
       # 三平台共用同一份，走我们自己的 engines/test-fixtures release（不依赖第
       # 三方 URL 稳定性，engines.yml 惯例）。
+      #
+      # 每条 curl 都带 `--retry 5 --retry-all-errors --retry-delay 3`：runner 侧的瞬时
+      # 网络故障会让整条腿挂掉（2026-08-12 的 macOS 腿就是 `curl: (60) SSL certificate
+      # problem: self signed certificate` 死在这一步，主分支因此红了 29 天）。
+      # **`--retry` 单独用不够**——它只重试 HTTP 5xx 与超时，退出码 60 这种连接/证书
+      # 层面的错误必须再加 `--retry-all-errors` 才会重试（curl ≥ 7.71，三平台 runner
+      # 都满足）。校验和比对照旧，重试只是给瞬时故障一次机会，不放松验证。
       - name: Download tiny GGUF test fixture
         shell: bash
         run: |
           set -euo pipefail
           dest="$RUNNER_TEMP/stories260K.gguf"
-          curl -fsSL -o "$dest" "https://github.com/HuoTaoCN/AA4C/releases/download/engines/test-fixtures/stories260K.gguf"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o "$dest" "https://github.com/HuoTaoCN/AA4C/releases/download/engines/test-fixtures/stories260K.gguf"
           # 剥掉可能的前导反斜杠：GNU coreutils 的 sha256sum 在文件名（这里是
           # $RUNNER_TEMP，Windows 上是反斜杠路径）含反斜杠时，会整行加一个
           # `\` 转义前缀标记——真机 Windows CI 实测确认，awk 按空白切分会把

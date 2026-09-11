@@ -260,3 +260,102 @@ pub(crate) fn peer_device_id(connection: &quinn::Connection) -> Result<DeviceId>
         .ok_or_else(|| Aa4cError::Protocol("quic peer certificate chain is empty".into()))?;
     aa4c_identity::device_id_from_cert(cert)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// 起一对真实的 QUIC 端点（服务端 + 客户端），返回已建好 bidi 流的两侧。
+    ///
+    /// 走的是生产同一套配置（`transport_config`、证书固定的 mTLS、双栈 socket），
+    /// 只是省掉了 `listen` 里的 accept 循环——这里要手工拿到服务端那侧的流对象。
+    /// 两个 `Endpoint` 一并返回：端点被丢弃会带走它的连接，测试期间必须让它们活着。
+    async fn connected_pair() -> (QuicDuplex, QuicDuplex, Vec<quinn::Endpoint>) {
+        let server_dir = tempfile::tempdir().unwrap();
+        let client_dir = tempfile::tempdir().unwrap();
+        let server_id = Identity::load_or_generate(server_dir.path()).unwrap();
+        let client_id = Identity::load_or_generate(client_dir.path()).unwrap();
+
+        let mut rustls_server = server_id.tls_server_config(None).unwrap();
+        rustls_server.alpn_protocols = vec![ALPN.to_vec()];
+        let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
+            QuicServerConfig::try_from(rustls_server).unwrap(),
+        ));
+        server_config.transport_config(transport_config());
+        let server_endpoint = quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            Some(server_config),
+            aa4c_proto::net::bind_udp_dual_stack(0).unwrap(),
+            quinn::default_runtime().unwrap(),
+        )
+        .unwrap();
+        let port = server_endpoint.local_addr().unwrap().port();
+
+        let accepting = server_endpoint.clone();
+        let accept = tokio::spawn(async move {
+            let connection = accepting.accept().await.unwrap().await.unwrap();
+            let (send, recv) = connection.accept_bi().await.unwrap();
+            QuicDuplex::new(connection, recv, send)
+        });
+
+        let client_endpoint = quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            None,
+            aa4c_proto::net::bind_udp_dual_stack(0).unwrap(),
+            quinn::default_runtime().unwrap(),
+        )
+        .unwrap();
+        let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+        let mut client = connect(&client_endpoint, &client_id, server_id.device_id(), addr)
+            .await
+            .unwrap();
+        // open_bi 是惰性的：不写一个字节，服务端的 accept_bi 永远不会返回。
+        client.write_all(b"hi").await.unwrap();
+        client.flush().await.unwrap();
+        let mut server = accept.await.unwrap();
+        let mut hello = [0u8; 2];
+        server.read_exact(&mut hello).await.unwrap();
+        (client, server, vec![client_endpoint, server_endpoint])
+    }
+
+    /// 会话最后一条消息写完就直接丢流——正是 `finish_write_side` 要防的那个局面。
+    ///
+    /// 这条**不做强断言**：本机（macOS 回环）上 10/10 都丢，但「必然丢」是时序结论，
+    /// 换平台换负载都可能变，写死它就是把偶发行为当契约。它的作用是把危险写成可执行的
+    /// 现场，与下面那条对照着看。真正的回归护栏是下面那条。
+    #[tokio::test]
+    async fn dropping_the_stream_right_after_a_write_can_lose_it() {
+        let (mut client, mut server, _endpoints) = connected_pair().await;
+        client.write_all(b"TaskDone").await.unwrap();
+        drop(client); // 连 Connection 一起丢：quinn 立即关连接
+        let mut buf = [0u8; 8];
+        // 读到的要么是 0 字节（连接没了），要么恰好赶上送达——两种都可能，所以只断言
+        // 「不保证送达」：这里不能断言必然丢，那才是把偶发行为写死。
+        let got = server.read_exact(&mut buf).await;
+        if got.is_ok() {
+            assert_eq!(&buf, b"TaskDone");
+        }
+    }
+
+    /// 同样的写入，改走 `finish_write_side`：必须送达。这条是真正的回归护栏——
+    /// **实测确认它抓得住**：把 `finish_write_side` 的函数体掏空，连跑 10 次全红。
+    ///
+    /// 边界说清楚：只删掉里面的 `shutdown()`、留下那次等待，它**抓不住**——本机回环上
+    /// 光是「多等一会儿再丢连接」就足够让 quinn 把数据发出去。`shutdown()` 仍然要留着
+    /// （它给对端一个明确的 EOF，让排空立刻结束而不是干等到超时），只是这条测试证明不了
+    /// 它单独的必要性。
+    #[tokio::test]
+    async fn finish_write_side_flushes_the_last_message_before_the_stream_dies() {
+        let (mut client, mut server, _endpoints) = connected_pair().await;
+        client.write_all(b"TaskDone").await.unwrap();
+        let reader = tokio::spawn(async move {
+            let mut buf = [0u8; 8];
+            server.read_exact(&mut buf).await.unwrap();
+            buf
+        });
+        crate::finish_write_side(&mut client).await;
+        drop(client);
+        assert_eq!(&reader.await.unwrap(), b"TaskDone");
+    }
+}

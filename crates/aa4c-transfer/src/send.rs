@@ -114,7 +114,14 @@ async fn drive(svc: &Arc<TransferService>, job: &SendJob, signal: &StopSignal) -
         signal,
         &resume,
     )
-    .await
+    .await?;
+    // `TaskDone` 是本会话最后一条消息，之后没有任何应答把连接「拖」到双方都确认完成
+    // ——写完就返回的话 `stream` 随即被丢弃，QUIC 上那条还排在发送缓冲区里的 TaskDone
+    // 会被连同连接一起冲掉，接收方就停在等 TaskDone 上，报 `connection lost`（详见
+    // `finish_write_side` 的文档）。**这不只是测试抖动**：文件其实已经完整落盘并校验
+    // 通过了，接收方却把这次传输记成失败。
+    crate::finish_write_side(&mut stream).await;
+    Ok(())
 }
 
 /// 文件发送主循环（与连接建立解耦，便于协议级测试）。
@@ -388,7 +395,10 @@ pub(crate) async fn serve_fetch<S: AsyncRead + AsyncWrite + Unpin>(
         &cancel,
         &HashMap::new(),
     )
-    .await
+    .await?;
+    // 同 `drive`：`TaskDone` 之后没有应答，丢流之前必须先把它送出去。
+    crate::finish_write_side(stream).await;
+    Ok(())
 }
 
 #[cfg(test)]
