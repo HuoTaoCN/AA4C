@@ -1,6 +1,6 @@
 # AA4C 归档与 AI 设计（V0.5「AI」）
 
-> 状态：**里程碑 AI1（规则式归档）、AI2（llama-server 引擎接入）、AI3（AI 标签/分类建议）、AI4（本地知识库）已实现**；AI5（收尾发布）仍是设计稿。对应 [ROADMAP.md](ROADMAP.md) V0.5（AI 归档：自动分类 / 标签 / 模型管理 / 本地知识库）；实现拆解见 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 AI1–AI5）。
+> 状态：**里程碑 AI1（规则式归档）、AI2（llama-server 引擎接入）、AI3（AI 标签/分类建议）、AI4（本地知识库）、AI5（收尾发布）全部已实现**，随 `v0.5.0-preview` 打包发布（AI5 的补记与三轮发布 CI 的实战教训见 §11）。对应 [ROADMAP.md](ROADMAP.md) V0.5（AI 归档：自动分类 / 标签 / 模型管理 / 本地知识库）；实现拆解见 [V0.5_IMPLEMENTATION_PLAN.md](V0.5_IMPLEMENTATION_PLAN.md)（里程碑 AI1–AI5）。
 >
 > **本文档的关键外部事实已在规划阶段真机实证（不是从网页/文档抄的），标注在 §3.1**：llama.cpp 官方 release 对我们全部目标平台提供预编译二进制（这一点直接决定了引擎分发方案——对照 V0.4 D1 的教训：aria2 官方"有二进制"的说法对 2/3 平台不成立，被迫自建整条构建流水线）；`llama-server` 的环境变量配置与 `LLAMA_API_KEY` 已在本机真实二进制上验证。实现期仍需补验证的项集中列在 §11。AI1 落地时又补了一处实证：`general.file_type` 的量化枚举/名称表直接抓取 llama.cpp `master` 分支的 `include/llama.h`（`enum llama_ftype`）与 `src/llama-model-loader.cpp`（`llama_ftype_name()`），不是凭记忆猜的，见 §2.2 与 `crates/aa4c-core/src/archive/gguf.rs` 模块文档。
 >

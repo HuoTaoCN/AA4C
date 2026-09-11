@@ -1,7 +1,18 @@
 # AA4C Protocol Specification
 
 > AA 协议（AA Transfer Protocol，ATP）的权威规范。
-> **Part A（proto v1，局域网）为 V0.1 实现标准**；**Part B（proto v2+，广域网）V0.3 里程碑 C1–C6 已全部实现**，当前 `PROTO_VERSION=4`（见 §16）。
+> **Part A（proto v1，局域网）为 V0.1 实现标准**；**Part B（proto v2+，广域网）V0.3 里程碑 C1–C6 已全部实现**。
+> 当前 `PROTO_VERSION = 6`（权威定义在 `aa4c-types::PROTO_VERSION`）。各版本引入的能力：
+>
+> | 版本 | 引入 | 落点 |
+> |---|---|---|
+> | 2 | 索引交换 / 按需拉取（`SYNC_PROTO_VERSION`） | §8b、§14 |
+> | 3 | QUIC 会话层 + 断点续传（`RESUME_PROTO_VERSION`） | §10、§13 |
+> | 4 | 分享链接（`SHARE_PROTO_VERSION`） | §16 |
+> | 5 | 配对时交换 `server_hint`（`SERVER_HINT_PROTO_VERSION`） | §17 |
+> | 6 | 信任传递 / 引荐（`INTRODUCE_PROTO_VERSION`） | §18 |
+>
+> 每一档都是**只追加 `Message` 变体**、按协商版本 gate，与低版本对端自动降级（§14）。
 > [API_DESIGN.md](API_DESIGN.md) 中的协议片段是本文档的摘要，冲突时以本文档为准。
 
 ## 0. 总览

@@ -91,7 +91,17 @@ Android needs a `MulticastLock`, which AA4C acquires at startup. If it still fai
 - Confirm the app has local network / location-related permissions (some ROMs tie WiFi scanning to location)
 - Some vendor ROMs freeze background apps aggressively — add AA4C to the "unrestricted" / "allow background" list
 
-### 5. Still nothing
+### 5. Both devices have public IPv6 but still cannot connect
+
+First make sure the firewall **allows that port through on IPv6 specifically**. On many firewalls
+IPv4 and IPv6 are two separate rule sets, and adding the IPv4 rule does nothing for IPv6 — this is
+by far the most common cause.
+
+Then confirm you are actually in the cross-network case (devices on the same LAN never take this
+path). Crossing networks also requires both sides to have a self-hosted server address configured
+with remote connectivity on — see the [self-hosting guide](SELF_HOSTING.md).
+
+### 6. Still nothing
 
 Restart AA4C on both ends to force a fresh announcement. If that does not help, open an [issue](https://github.com/HuoTaoCN/AA4C/issues) with your OS, network setup and firewall state.
 
@@ -111,6 +121,16 @@ Each device derives those digits **independently**, and they never cross the net
 ### We paired, but the other device does not see my synced files
 
 Pairing lands on **Friend** by default, and friends do not take part in cross-device indexing. Go to *Settings → Paired devices* and promote the peer to **Full trust** — assuming it really is your own device.
+
+### My home computer and my office computer are never on the same network — how do I pair them?
+
+Pairing requires comparing six digits, which requires both devices on the same LAN. Two desktops
+will never manage that.
+
+**Let your phone introduce them**: pair the phone with the home computer at home, pair it with the
+office computer at the office, and from then on the phone carries each one the other's fingerprint.
+You confirm once on each computer. Full walkthrough in
+[User Guide §2, Two devices that are never on the same network](USER_GUIDE.md#two-devices-that-are-never-on-the-same-network).
 
 ### How do I unpair?
 
@@ -189,6 +209,49 @@ Yes. Revoke it under "My shares" and it dies immediately. You can also set a 1 h
 ### Does sharing make the recipient a trusted device?
 
 No. Sharing and pairing are independent, and a share covers **that one file** only.
+
+### What are "Pending devices"? Is it safe to confirm one?
+
+Those were **introduced** by another device — your phone, say, knows both your home computer and
+your office computer, so it carries each one the other's fingerprint along with "this is also your
+device".
+
+**An introduction creates no trust by itself.** It only parks a fingerprint there; the two devices
+trust each other only once you click "This is my device". Before you do, click "Show fingerprint"
+and check it against what the other device displays. A malicious introducer cannot produce a
+fingerprint that checks out — the receiving side recomputes it locally — but that glance is still
+your last gate.
+
+If you do not want it, click "Ignore". **Ignoring is recorded**, so the same device will not keep
+coming back.
+
+### Should I turn off "Open the port on my router automatically"?
+
+It is **on by default**, but there is an outer gate: **"Enable remote connectivity" is off by
+default, and both have to be on before anything happens**. Change nothing and AA4C never touches
+your router.
+
+Once remote connectivity is on, it takes effect: the router forwards the transfer port to this
+device so peers connect directly instead of going through a relay, which is considerably faster.
+The cost is **an open port on your router**, withdrawn when you quit AA4C. Turn it off if you would
+rather not — cross-network traffic then goes through the relay more often, and is slower.
+
+If your ISP puts you behind carrier-grade NAT (your public address falls in `100.64.x.x`), opening
+the port does nothing for you: the mapping is on your own router, and there is another layer
+outside it.
+
+### I turned on "Make this device the relay" and other devices still cannot reach it
+
+**The switch alone is not enough.** Two more things are needed:
+
+1. **A stable entry address.** A home broadband address changes, so configure a DDNS domain and
+   put it in "What address others use to find this device". The hint line tells you which case you
+   are in — "LAN address only" means nothing outside this network can reach you.
+2. **The router must allow the relay's port through.** "Open the port on my router automatically"
+   covers the transfer port only, not this one.
+
+The relay port also cannot be the same number as the transfer port. See the
+[self-hosting guide](SELF_HOSTING.md).
 
 ### Why is there no official relay server?
 

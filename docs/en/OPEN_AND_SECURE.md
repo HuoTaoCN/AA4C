@@ -131,7 +131,7 @@ The complete threat model and reporting process are in [SECURITY.md](../../SECUR
 | Layer | Mechanism |
 |-------|-----------|
 | Device identity | Ed25519 keypair; DeviceId = BLAKE3(public key), unforgeable |
-| Establishing trust | Two-way 6-digit PIN, visually compared. **Each side derives it independently and it never crosses the network** — a man-in-the-middle cannot make both sides agree |
+| Establishing trust | Two-way 6-digit PIN, visually compared. **Each side derives it independently and it never crosses the network** — a man-in-the-middle cannot make both sides agree. Devices on different networks go through **an introduction plus one user confirmation** (see "How trust travels" below); the introduction itself creates no trust |
 | Channel encryption | TLS 1.3 with a self-signed certificate **pinned** to the device fingerprint (= DeviceId). No CA is involved, so a compromised CA ecosystem is irrelevant |
 | Integrity | Per-file BLAKE3 verification with automatic retransmission on mismatch |
 | Path safety | The receiver sanitizes relative paths, rejecting `..` and absolute paths (path traversal defense) |
@@ -141,11 +141,37 @@ The complete threat model and reporting process are in [SECURITY.md](../../SECUR
 | Local engines | aria2 / Transmission / llama-server bind `127.0.0.1` and authenticate with a **secret regenerated at every start** — unreachable from the LAN |
 | Child processes | The direct-link engine reconnects and respawns automatically after a crash, and orphan protection stops stray processes surviving the app |
 
+### How trust travels, and why it is never automatic
+
+Your home computer and your office computer will never share a LAN, and comparing a PIN requires
+sharing one. AA4C resolves that by letting a device that knows both — usually your phone —
+**introduce** them: it carries each one the other's **fingerprint**.
+
+Three constraints hold this together, and all three are required:
+
+1. **An introduction carries a fingerprint and creates no trust.** Receiving one only adds a
+   "Pending devices" entry on the other machine; the user has to click "This is my device" for the
+   two to actually trust each other. The introducer does not get to decide.
+2. **The receiving side recomputes the fingerprint.** Each introduced entry carries the public key,
+   and the receiver recomputes `DeviceId = BLAKE3(public key)` to check it matches —
+   **a malicious introducer cannot produce a fingerprint that checks out**.
+3. **An introduction never overwrites trust you already set.** If the introduced device is already
+   one of your full-trust devices, an incoming introduction leaves its trust level alone and
+   certainly cannot demote it back to unpaired.
+
+**Why not automatic introductions.** Some comparable tools (Syncthing's introducer, for instance)
+add the device as soon as an introducer vouches for it. That saves a click at two documented costs:
+trust spreads down the device chain without bound, and devices you deleted come back on the next
+round. So AA4C insists on the click, and records **Ignore** as a durable marker rather than
+deleting the row — an ignored device does not keep reappearing.
+
+The full design and its trade-offs are in [TRUST_DESIGN.md](../../TRUST_DESIGN.md) (Chinese).
+
 ### Scope
 
 **In scope**: LAN eavesdropping, man-in-the-middle, forged device identity, path traversal, transfers initiated by unpaired devices, tampering in transit, protocol-level DoS, a relay server trying to read content (end-to-end encryption means it only sees ciphertext).
 
-**Explicitly out of scope**: a compromised device (malware, rooted OS), a user who skips the PIN check and pairs with an attacker, traffic analysis (an observer learns that two devices are exchanging data and how much, but not what), and physical access to an unlocked device.
+**Explicitly out of scope**: a compromised device (malware, rooted OS), a user who skips the PIN check and pairs with an attacker, **a user who confirms an introduction without checking the fingerprint** (the fingerprint check stops forgery, not you personally vouching for a device you do not recognise), traffic analysis (an observer learns that two devices are exchanging data and how much, but not what), and physical access to an unlocked device.
 
 Stating what is *not* covered matters as much as stating what is.
 
@@ -178,6 +204,17 @@ Stating what is *not* covered matters as much as stating what is.
 ### The only case where AA4C reaches the internet on its own
 
 Exactly one: **you filled in a server address and enabled remote connectivity**. AA4C then connects to **the server you deployed**, to register its endpoint and look up peers. There are no other outbound connections.
+
+**The two switches added in V0.7 are equally inert until you act**:
+
+- **Open the port on my router automatically**: on by default, but it sits under "Enable remote
+  connectivity" — **both gates have to be open before it acts** (they are two independent gates in
+  the code). Remote connectivity is off by default, so out of the box AA4C never touches your
+  router. When it does act, the action happens only on your own router, and is torn down when you
+  quit AA4C.
+- **Make this device the relay**: it listens on that port only while you have the switch on, and
+  not at all otherwise. What it runs is `aa4c-server`, so its visibility is exactly what
+  "What a self-hosted server can see" below describes — except that this server is your own computer.
 
 **No update checks, no remote configuration fetches, no automatic tracker-list syncing** — that last one is a deliberate trade-off. Comparable tools periodically pull public tracker lists from GitHub, which means the app regularly contacts a third-party address on its own. That conflicts with "no outbound traffic unless configured", so AA4C only supports pasting trackers in manually.
 

@@ -1,6 +1,6 @@
 # AA4C 远程连接与分享设计（V0.3）
 
-> 状态：**设计定稿（v2，经评审修订）**，对应 [ROADMAP.md](ROADMAP.md) V0.3（AA Connect）。本文档是落地依据，不含实现代码；实现拆解见 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)。
+> 状态：**里程碑 C1–C6 全部已实现**（v2 设计定稿经评审修订后落地，随 `v0.3.0-preview` 打包发布），对应 [ROADMAP.md](ROADMAP.md) V0.3（AA Connect）。实现拆解见 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)，各里程碑的落地状态与实现偏差见 §12 的已确认决策清单。**仍未做**：§12「多服务器联邦」——中继与打洞的信令至今只连自己配置的服务器，跨服务器的联邦需要服务器间协议，是独立的、更大的项目。
 > 关联：线路层权威见 [PROTOCOL.md](PROTOCOL.md) Part B（proto ≥ 3 广域网）；信任分级见 [PROJECT_VISION.md](PROJECT_VISION.md) §十；表结构见 [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md)；同步复用见 [SYNC_DESIGN.md](SYNC_DESIGN.md)；界面见 [UI_DESIGN_SPEC.md](UI_DESIGN_SPEC.md)。
 > 评审修订（相对初稿）：服务器身份改为**密钥对 + 地址内指纹固定**；配对证明（proof）方案**删除**，改为**注册时上传允许名单 + 挑战应答**；Rendezvous 与 Relay **合并为单进程 `aa4c-server`**；信令协议**复用帧层 bincode 长连接**（不用 HTTP/WS）；设置收敛为**单 `server_url`**（默认关闭远程）；分享**仅限已索引内容**；里程碑顺序 **Relay 提前到打洞之前**。
 

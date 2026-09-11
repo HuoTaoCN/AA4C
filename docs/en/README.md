@@ -10,6 +10,7 @@
 | ❓ [FAQ and troubleshooting](FAQ.md) | Something is wrong — devices not found, transfers failing, downloads stuck, AI unavailable |
 | 🖥️ [Self-hosting guide](SELF_HOSTING.md) | You want devices on different networks to reach each other |
 | 🔓 [Open, Free and Secure](OPEN_AND_SECURE.md) | You want to know where your data goes, how privacy and security are handled, and where the license boundary sits |
+| ✅ [V0.7 hands-on verification](../V0.7_VERIFICATION.md) | You want to help verify V0.7's cross-network connectivity — automated tests cannot prove that two devices on different networks actually connect. Groups A/B/C, easiest first (Chinese) |
 
 **Suggested path for new users**: [README](../../README.en.md) quick start → [User Guide §2](USER_GUIDE.md#2-first-run-pairing-two-devices) to pair your first two devices → [FAQ](FAQ.md) when something breaks.
 
