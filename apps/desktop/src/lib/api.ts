@@ -10,6 +10,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AiStatus,
+  DeviceReachability,
   ArchiveEntry,
   ArchiveLogEntry,
   ArchiveRule,
@@ -53,6 +54,9 @@ export interface PluginInfo {
 
 export const api = {
   pluginManifest: () => invoke<PluginInfo[]>("plugin_manifest"),
+
+  /** 每台已配对设备当下的可达性（V0.8 F2）：首页的设备状态图靠它。 */
+  listReachability: () => invoke<DeviceReachability[]>("list_reachability"),
 
   getSelfDevice: () => invoke<DeviceInfo>("get_self_device"),
   listDevices: () => invoke<DeviceInfo[]>("list_devices"),

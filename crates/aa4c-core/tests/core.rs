@@ -471,6 +471,68 @@ async fn pausing_a_task_we_did_not_originate_is_rejected() {
     a.core.shutdown().await.unwrap();
 }
 
+/// 可达性由**既有的**索引交换轮次顺带记录（V0.8「Focus」F2）：配对并升到完全信任之后，
+/// 拉一次索引就该在可达性快照里留下「连上了，走的局域网直连」。
+///
+/// 这条守的是 F2 的整个论点：连接阶梯以前算完就扔（`fetch_index` 原本是
+/// `let (mut stream, _via) = ...`），界面上因此只有在线/离线两个状态，而
+/// 「我的几台设备在任何网络下连成一片」恰恰是这个产品唯一不可替代的能力。
+#[tokio::test]
+async fn reachability_is_recorded_by_the_index_exchange_it_rides_on() {
+    use aa4c_types::{ConnectionVia, ReachState, TrustLevel};
+
+    let a = spawn_node().await;
+    let b = spawn_node().await;
+    let a_id = a.core.self_info().id;
+    let b_id = b.core.self_info().id;
+
+    // 还没配对：快照里没有任何设备（列的是已配对设备）。
+    assert!(a.core.list_reachability().await.unwrap().is_empty());
+
+    let ev_a = a.core.subscribe();
+    let ev_b = b.core.subscribe();
+    a.core.pairing.start_pairing(&peer_info(&b)).await.unwrap();
+    let (ok_a, ok_b) = tokio::join!(
+        timeout(WAIT, drive_pairing(a.core.clone(), ev_a)),
+        timeout(WAIT, drive_pairing(b.core.clone(), ev_b)),
+    );
+    assert!(ok_a.unwrap() && ok_b.unwrap(), "both sides pair");
+
+    // 配对了但还没探测过——必须是 `Unknown`，**不能是 Unreachable**：
+    // 说「连不上」是在编造一个我们并不知道的事实。
+    let snap = a.core.list_reachability().await.unwrap();
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].device_id, b_id);
+    assert_eq!(snap[0].state, ReachState::Unknown);
+
+    // 两边互升完全信任，A 侧升级会立即拉一次索引（顺带就是一次探测）。
+    b.core
+        .set_trust_level(&a_id, TrustLevel::Full)
+        .await
+        .unwrap();
+    a.core
+        .set_trust_level(&b_id, TrustLevel::Full)
+        .await
+        .unwrap();
+
+    let snap = a.core.list_reachability().await.unwrap();
+    assert_eq!(snap[0].state, ReachState::Reachable, "刚拉到索引，必然可达");
+    assert_eq!(
+        snap[0].via,
+        Some(ConnectionVia::Lan),
+        "两个实例都在回环上，走的就是局域网直连"
+    );
+    assert!(snap[0].last_ok_at.is_some());
+    assert!(snap[0].reason.is_none());
+
+    // 解除配对之后不该继续挂在状态图上。
+    a.core.unpair_device(&b_id).await.unwrap();
+    assert!(a.core.list_reachability().await.unwrap().is_empty());
+
+    a.core.shutdown().await.unwrap();
+    b.core.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn index_exchange_gated_by_full_trust() {
     use aa4c_types::TrustLevel;
@@ -501,7 +563,7 @@ async fn index_exchange_gated_by_full_trust() {
     let b_addr = peer_info(&b).addr.unwrap();
 
     // —— A 仍是 B 眼中的 friend：B 拒绝交出索引（回空批次，不泄露任何文件名）——
-    let items = a
+    let (items, _via) = a
         .core
         .transfer
         .fetch_index(&b.core.self_info().id, Some(b_addr))
@@ -514,13 +576,16 @@ async fn index_exchange_gated_by_full_trust() {
         .set_trust_level(&a_id, TrustLevel::Full)
         .await
         .unwrap();
-    let items = a
+    let (items, via) = a
         .core
         .transfer
         .fetch_index(&b.core.self_info().id, Some(b_addr))
         .await
         .unwrap();
     assert_eq!(items.len(), 1, "full device receives the shared file");
+    // V0.8 F2：这条调用顺带就是一次可达性探测，档位不该再被丢掉。
+    // 两个实例都在回环上，所以必然是局域网直连。
+    assert_eq!(via, aa4c_types::ConnectionVia::Lan);
     // 限定路径：顶层段是共享文件夹名（last path segment）
     assert_eq!(items[0].rel_path, "shared/doc.txt");
     assert_eq!(items[0].size, 2);
@@ -1876,7 +1941,7 @@ async fn introduction_lets_two_never_paired_devices_trust_each_other() {
     w.core.add_sync_scope(shared).await.unwrap();
     w.core.rescan_sync().await.unwrap();
 
-    let items = h
+    let (items, _via) = h
         .core
         .transfer
         .fetch_index(&w_id, peer_info(&w).addr)

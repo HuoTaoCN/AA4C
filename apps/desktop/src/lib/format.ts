@@ -2,6 +2,8 @@
 
 import type {
   ConnectionVia,
+  ReachFailure,
+  ReachState,
   DownloadStatus,
   Platform,
   TransferStatus,
@@ -172,4 +174,32 @@ export function connectionViaText(via: ConnectionVia | undefined): string {
 export function connectionViaTone(via: ConnectionVia | undefined): "ok" | "warn" | "" {
   if (!via) return "";
   return via === "relay" ? "warn" : "ok";
+}
+
+/** 可达状态 → 人话。`unknown` 说「正在检查」而不是「离线」——
+ * 我们确实还不知道，说成离线是在编造事实。 */
+export function reachStateText(state: ReachState): string {
+  switch (state) {
+    case "reachable":
+      return "已连接";
+    case "unreachable":
+      return "连不上";
+    default:
+      return "正在检查…";
+  }
+}
+
+/** 连不上的原因 → 人话 + **下一步**（UI_DESIGN_SPEC §6：光说坏了没用，要说怎么办）。
+ * 不出现 NAT / STUN / mDNS 这类词（AGENTS.md UI 规则）。 */
+export function reachFailureText(reason: ReachFailure | undefined): string {
+  switch (reason) {
+    case "not_on_lan_and_remote_off":
+      return "不在同一个网络，而且远程连接没开。把两台设备连到同一个 WiFi，或在设置里打开远程连接。";
+    case "peer_refused":
+      return "对方拒绝了连接，多半是版本太旧。确认两台设备都升级到最新版。";
+    case "unreachable":
+      return "试过了连不上。确认对方开着 AA连接，并检查防火墙有没有放行。";
+    default:
+      return "";
+  }
 }

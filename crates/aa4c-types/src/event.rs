@@ -174,6 +174,11 @@ pub enum CoreEvent {
     /// 本机同步索引发生变化（扫描完成），UI 应重新拉取统一文件视图。
     SyncIndexUpdated,
 
+    /// 某台设备的可达性变了（V0.8「Focus」F2）：能不能连上、走的哪一档。
+    /// **只在确实变了时才发**——探测是每 30 秒一轮的，每轮都发会让首页的状态图
+    /// 无谓地闪（同 `IntroductionsUpdated` 的既有取舍）。UI 收到后重新拉快照。
+    ReachabilityUpdated,
+
     /// 收到了新的设备引荐（TRUST_DESIGN.md §5，里程碑 R2），UI 应重新拉取待确认列表。
     /// 只在**确实新增**了待确认记录时发——周期交换每轮都会把同一批引荐再收一遍，
     /// 每轮都发事件会让界面无谓地闪。
@@ -289,6 +294,7 @@ impl CoreEvent {
             Self::TransferPaused { .. } => "transfer_paused",
             Self::SyncIndexUpdated => "sync_index_updated",
             Self::IntroductionsUpdated => "introductions_updated",
+            Self::ReachabilityUpdated => "reachability_updated",
             Self::DownloadProgress { .. } => "download_progress",
             Self::DownloadDone { .. } => "download_done",
             Self::DownloadFailed { .. } => "download_failed",

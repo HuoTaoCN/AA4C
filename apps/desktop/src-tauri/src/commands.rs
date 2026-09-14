@@ -260,6 +260,15 @@ pub async fn plugin_invoke(
     Ok(core.plugin_invoke(&plugin, method, payload).await?)
 }
 
+/// 每台已配对设备当下的可达性：能不能连上、走的哪一档、上次连上是什么时候
+/// （V0.8「Focus」F2）。首页的设备状态图靠它。
+#[tauri::command]
+pub async fn list_reachability(
+    core: State<'_, Arc<Core>>,
+) -> CmdResult<Vec<aa4c_types::DeviceReachability>> {
+    Ok(core.list_reachability().await?)
+}
+
 /// 本次构建装了哪些插件。前端据此决定「更多」分区显示什么、设置页画哪些表单。
 #[tauri::command]
 pub async fn plugin_manifest(core: State<'_, Arc<Core>>) -> CmdResult<Vec<Value>> {
@@ -308,6 +317,7 @@ pub fn event_payload(event: &CoreEvent) -> Value {
         }
         CoreEvent::SyncIndexUpdated => Value::Null,
         CoreEvent::IntroductionsUpdated => Value::Null,
+        CoreEvent::ReachabilityUpdated => Value::Null,
         CoreEvent::DownloadProgress {
             task_id,
             downloaded_bytes,

@@ -168,6 +168,32 @@ export interface LocalServerStatus {
  * （AGENTS.md UI 规则）。 */
 export type ConnectionVia = "lan" | "public_v4" | "public_v6" | "punch" | "relay";
 
+/** 一台设备当下的可达状态（V0.8「Focus」F2）。
+ *
+ * `unknown` **不是「离线」**——界面上要说「正在检查」。说成离线是在编造一个
+ * 我们并不知道的事实（刚启动、还没轮到探测时就是这个状态）。 */
+export type ReachState = "unknown" | "reachable" | "unreachable";
+
+/** 连不上的原因码。人话文案在 `format.ts`——后端只给稳定码，同 `errorText` 的既有约定。
+ *
+ * 分这几档的判据是**用户的下一步不同**，不是错误在代码里长什么样。 */
+export type ReachFailure =
+  | "not_on_lan_and_remote_off"
+  | "unreachable"
+  | "peer_refused";
+
+/** 一台设备的可达性快照。 */
+export interface DeviceReachability {
+  deviceId: string;
+  state: ReachState;
+  /** 最近一次**连上时**走的档位；连不上时保留上一次的值供排查。 */
+  via?: ConnectionVia;
+  /** 最近一次连上的时刻（unix 毫秒）。缺失 = 本次启动以来一次都没连上。 */
+  lastOkAt?: number;
+  /** 仅在 `state === "unreachable"` 时有值。 */
+  reason?: ReachFailure;
+}
+
 /** 共享范围种类：用户选的同步文件夹，或固定的「收到的」(自动维护)。 */
 export type ScopeKind = "folder" | "inbox";
 
