@@ -157,9 +157,42 @@ export interface LocalServerStatus {
   reach: LocalServerReach;
 }
 
-/** 一次连接实际走的档位（里程碑 C4 连接质量 + C5 打洞，见 CONNECT_DESIGN.md §2）。
- * `punch`（打洞后升级成的直连）在 UI 上并入「直连」显示，不单独暴露成第三个词。 */
-export type ConnectionVia = "direct" | "punch" | "relay";
+/** 一次连接实际走的档位（CONNECT_DESIGN.md §2 连接阶梯）。
+ *
+ * V0.8「Focus」F2 把原来的 `direct` 拆成了 `lan` / `public_v4` / `public_v6`：
+ * 「我的几台设备在任何网络下自己连成一片」是 AA4C 唯一不可替代的能力，
+ * 而合并成一个 `direct` 之后，用户根本看不出自己是在局域网里还是真的跨网连上了。
+ *
+ * `punch`（打洞打出来的直连）**在展示上仍并入「直连」**——那只是"怎么找到对方"的
+ * 手段，一旦连上就是货真价实的直连，而且"打洞"是技术词，不该出现在界面上
+ * （AGENTS.md UI 规则）。 */
+export type ConnectionVia = "lan" | "public_v4" | "public_v6" | "punch" | "relay";
+
+/** 一台设备当下的可达状态（V0.8「Focus」F2）。
+ *
+ * `unknown` **不是「离线」**——界面上要说「正在检查」。说成离线是在编造一个
+ * 我们并不知道的事实（刚启动、还没轮到探测时就是这个状态）。 */
+export type ReachState = "unknown" | "reachable" | "unreachable";
+
+/** 连不上的原因码。人话文案在 `format.ts`——后端只给稳定码，同 `errorText` 的既有约定。
+ *
+ * 分这几档的判据是**用户的下一步不同**，不是错误在代码里长什么样。 */
+export type ReachFailure =
+  | "not_on_lan_and_remote_off"
+  | "unreachable"
+  | "peer_refused";
+
+/** 一台设备的可达性快照。 */
+export interface DeviceReachability {
+  deviceId: string;
+  state: ReachState;
+  /** 最近一次**连上时**走的档位；连不上时保留上一次的值供排查。 */
+  via?: ConnectionVia;
+  /** 最近一次连上的时刻（unix 毫秒）。缺失 = 本次启动以来一次都没连上。 */
+  lastOkAt?: number;
+  /** 仅在 `state === "unreachable"` 时有值。 */
+  reason?: ReachFailure;
+}
 
 /** 共享范围种类：用户选的同步文件夹，或固定的「收到的」(自动维护)。 */
 export type ScopeKind = "folder" | "inbox";

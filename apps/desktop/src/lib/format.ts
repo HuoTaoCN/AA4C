@@ -1,6 +1,13 @@
 // 展示层格式化与文案（UI_DESIGN_SPEC.md §6 / §7：说人话、零术语）。
 
-import type { DownloadStatus, Platform, TransferStatus } from "./types";
+import type {
+  ConnectionVia,
+  ReachFailure,
+  ReachState,
+  DownloadStatus,
+  Platform,
+  TransferStatus,
+} from "./types";
 
 /** 字节数 → 人类可读（1.2 GB / 42 MB / 800 KB）。 */
 export function humanBytes(bytes: number): string {
@@ -138,4 +145,61 @@ export function taskTitle(url: string, id: string): string {
 export function timeText(createdAtMs: number): string {
   const d = new Date(createdAtMs);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** 连接档位 → 人话（AGENTS.md UI 规则：不出现 NAT / 打洞 / STUN 这类技术词）。
+ *
+ * 文案收在这一处，传输卡片与首页的设备状态图共用——两边说法不一致会让人以为
+ * 是两种不同的东西。`undefined` 返回空串：只有发起方收得到档位，接收一方本地
+ * 永远是空，**不确定就不显示**，比猜一个诚实。 */
+export function connectionViaText(via: ConnectionVia | undefined): string {
+  switch (via) {
+    case "lan":
+      return "局域网直连";
+    case "public_v4":
+      return "公网直连";
+    case "public_v6":
+      return "公网直连（IPv6）";
+    case "punch":
+      // 打洞成功后就是真直连，用户不需要关心过程（CONNECT_DESIGN.md §10）。
+      return "直连";
+    case "relay":
+      return "中继（较慢）";
+    default:
+      return "";
+  }
+}
+
+/** 档位的提示色：中继要自建服务器、而且慢，值得单独标出来。 */
+export function connectionViaTone(via: ConnectionVia | undefined): "ok" | "warn" | "" {
+  if (!via) return "";
+  return via === "relay" ? "warn" : "ok";
+}
+
+/** 可达状态 → 人话。`unknown` 说「正在检查」而不是「离线」——
+ * 我们确实还不知道，说成离线是在编造事实。 */
+export function reachStateText(state: ReachState): string {
+  switch (state) {
+    case "reachable":
+      return "已连接";
+    case "unreachable":
+      return "连不上";
+    default:
+      return "正在检查…";
+  }
+}
+
+/** 连不上的原因 → 人话 + **下一步**（UI_DESIGN_SPEC §6：光说坏了没用，要说怎么办）。
+ * 不出现 NAT / STUN / mDNS 这类词（AGENTS.md UI 规则）。 */
+export function reachFailureText(reason: ReachFailure | undefined): string {
+  switch (reason) {
+    case "not_on_lan_and_remote_off":
+      return "不在同一个网络，而且远程连接没开。把两台设备连到同一个 WiFi，或在设置里打开远程连接。";
+    case "peer_refused":
+      return "对方拒绝了连接，多半是版本太旧。确认两台设备都升级到最新版。";
+    case "unreachable":
+      return "试过了连不上。确认对方开着 AA连接，并检查防火墙有没有放行。";
+    default:
+      return "";
+  }
 }

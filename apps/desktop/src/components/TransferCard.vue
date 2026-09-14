@@ -4,7 +4,13 @@ import { useDeviceStore } from "../stores/devices";
 import { useTransferStore, type ActiveTask } from "../stores/transfer";
 import { useToastStore } from "../stores/toast";
 import { asCommandError } from "../lib/api";
-import { etaText, humanSpeed, statusText } from "../lib/format";
+import {
+  connectionViaText,
+  connectionViaTone,
+  etaText,
+  humanSpeed,
+  statusText,
+} from "../lib/format";
 
 const props = defineProps<{ task: ActiveTask }>();
 const devices = useDeviceStore();
@@ -26,22 +32,11 @@ const eta = computed(() =>
     ? etaText(props.task.totalBytes - props.task.transferredBytes, props.task.speedBps)
     : "",
 );
-// 连接质量（里程碑 C4/C5）：只有发起方收得到 via 事件，接收一方本地任务上永远是
-// undefined，这时不显示徽标——不确定就不瞎猜，比显示错误的档位更诚实。
-// `punch`（打洞后升级成的直连）在展示上并入「直连」，不单独暴露成第三个词——
-// 打洞只是"怎么找到对方"的手段，一旦连上就是货真价实的直连，用户不需要关心过程
-// （见 CONNECT_DESIGN.md §10）。
-const viaText = computed(() => {
-  switch (props.task.via) {
-    case "relay":
-      return "中继（较慢）";
-    case "direct":
-    case "punch":
-      return "直连";
-    default:
-      return "";
-  }
-});
+// 连接质量：只有发起方收得到 via 事件，接收一方本地任务上永远是 undefined，
+// 这时不显示徽标——不确定就不瞎猜，比显示错误的档位更诚实。
+// 文案与色调都取自 `lib/format`，与首页的设备状态图共用同一套说法（F2）。
+const viaText = computed(() => connectionViaText(props.task.via));
+const viaTone = computed(() => connectionViaTone(props.task.via));
 
 async function cancel() {
   try {
@@ -80,7 +75,7 @@ async function resume() {
   <div class="tc">
     <div class="row">
       <span class="title">{{ title }}</span>
-      <span v-if="viaText" class="via" :class="{ relay: task.via === 'relay' }">{{
+      <span v-if="viaText" class="via" :class="{ relay: viaTone === 'warn' }">{{
         viaText
       }}</span>
       <button v-if="canPause" class="act" title="暂停" @click="pause">⏸</button>

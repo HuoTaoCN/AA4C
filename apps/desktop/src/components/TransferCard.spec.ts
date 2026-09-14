@@ -62,11 +62,20 @@ describe("TransferCard", () => {
     expect(wrapper.text()).toContain("等待对方确认…");
   });
 
-  it("direct/punch 都归并显示为「直连」，relay 显示「中继（较慢）」", () => {
-    const direct = mount(TransferCard, { props: { task: task({ via: "direct" }) } });
-    expect(direct.text()).toContain("直连");
+  it("连接阶梯的每一档各有说法，只有 punch 并入「直连」", () => {
+    // F2 之前这里只有 direct/punch/relay 三档，而「局域网里」和「真的跨网连上了」
+    // 是用户最该分得清的两件事——合并成一个「直连」等于把核心能力藏起来。
+    const lan = mount(TransferCard, { props: { task: task({ via: "lan" }) } });
+    expect(lan.text()).toContain("局域网直连");
+    const v4 = mount(TransferCard, { props: { task: task({ via: "public_v4" }) } });
+    expect(v4.text()).toContain("公网直连");
+    const v6 = mount(TransferCard, { props: { task: task({ via: "public_v6" }) } });
+    expect(v6.text()).toContain("IPv6");
+    // 打洞只是"怎么找到对方"，连上之后就是真直连；而且"打洞"是技术词，
+    // 按 AGENTS.md 的 UI 规则不该出现在界面上。
     const punch = mount(TransferCard, { props: { task: task({ via: "punch" }) } });
     expect(punch.text()).toContain("直连");
+    expect(punch.text()).not.toContain("打洞");
     const relay = mount(TransferCard, { props: { task: task({ via: "relay" }) } });
     expect(relay.text()).toContain("中继（较慢）");
   });

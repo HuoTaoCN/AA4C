@@ -15,6 +15,7 @@ mod orchestrate;
 /// 而核心不能反过来依赖插件——trait 放核心里就成了循环）。
 pub use aa4c_plugin as plugin;
 mod portmap;
+mod reach;
 mod server_link;
 mod settings;
 mod sync_exchange;
@@ -110,6 +111,9 @@ pub struct Core {
     ///
     /// 此前是 `download` / `ai` / `suggest` / `kb` 四个具体字段。
     pub plugins: PluginRegistry,
+    /// 每台设备当下的可达性（V0.8 F2）。只存内存——可达性是**当下**的属性，
+    /// 重启后拿昨天的结论糊弄用户比说「不知道」更糟（见 `reach` 模块文档）。
+    reach: reach::ReachState_,
     events: EventSender,
     self_info: DeviceInfo,
     listen_port: u16,
@@ -233,15 +237,21 @@ impl Core {
         sync_index::spawn_background_scan(store.clone(), events.clone(), shutdown.clone());
 
         // 9. 跨设备索引交换：与全部完全信任设备交换索引摘要（里程碑 3；里程碑 C4 起
-        //    不再局限于 mDNS 在线快照，远程设备靠周期定时器兜底，见 sync_exchange 模块文档）
+        //    不再局限于 mDNS 在线快照，远程设备靠周期定时器兜底，见 sync_exchange 模块文档）。
+        //    V0.8 F2 起这条轮次顺带记录可达性——它本来就在对每台设备走完整连接阶梯，
+        //    不必另开一条 ping 循环（见 `reach` 模块文档）。
+        let reach = reach::ReachState_::default();
         sync_exchange::spawn_exchange_loop(
-            store.clone(),
-            discovery.clone(),
-            identity.clone(),
-            fallback_name.clone(),
-            save_dir_fallback.clone(),
-            transfer.clone(),
-            events.clone(),
+            sync_exchange::ExchangeCtx {
+                store: store.clone(),
+                discovery: discovery.clone(),
+                identity: identity.clone(),
+                fallback_name: fallback_name.clone(),
+                fallback_save_dir: save_dir_fallback.clone(),
+                transfer: transfer.clone(),
+                events: events.clone(),
+                reach: reach.clone(),
+            },
             shutdown.clone(),
         );
 
@@ -383,6 +393,7 @@ impl Core {
             transfer,
             pairing,
             plugins,
+            reach,
             events,
             self_info,
             listen_port: actual_port,

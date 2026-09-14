@@ -123,6 +123,10 @@ export async function startEventBridge(): Promise<UnlistenFn> {
 
     listen<null>("aa4c://sync_index_updated", () => void sync.load()),
 
+    // 某台设备的可达性变了（V0.8 F2）。只在确实变了时才发，所以直接重拉快照即可；
+    // 不弹提示——设备在局域网与中继之间切换是常态，每次都打扰用户是噪声。
+    listen<null>("aa4c://reachability_updated", () => void devices.loadReachability()),
+
     // 收到新的设备引荐（TRUST_DESIGN.md §5）：只在确实新增时才发，所以可以直接提醒用户。
     listen<null>("aa4c://introductions_updated", () => {
       void devices.loadPendingIntroductions().then(() => {

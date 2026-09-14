@@ -257,6 +257,20 @@ async fn set_json<T: serde::Serialize>(store: &Store, key: &str, value: &T) -> R
     store.set_setting(key, &raw).await
 }
 
+/// 只读一个 `enable_remote`，不去 `load()` 整份设置。
+///
+/// 调用点是每 30 秒一轮、对每台设备都跑的可达性归类（`reach::classify`），
+/// 那里只需要知道「本机出不出网」这一个事实；为它把 28 个字段全读一遍是浪费。
+/// 读不到（库出错）时按 `false` 算——保守方向：宁可告诉用户「远程连接没开」
+/// 让他去检查，也不要说「试过了连不上」把他引到错的地方排查。
+pub(crate) async fn remote_enabled(store: &Store) -> bool {
+    get_json::<bool>(store, KEY_ENABLE_REMOTE)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false)
+}
+
 /// 把 `Settings` 里属于插件的那些字段切成「插件 id → 它自己的设置」。
 ///
 /// **这是一层过渡垫片。** `Settings` 现在仍是一个 28 字段的大结构体，其中 18 个

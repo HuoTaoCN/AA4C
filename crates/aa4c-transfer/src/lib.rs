@@ -588,10 +588,10 @@ impl TransferService {
     /// 也会尝试中继（只要 Core 注入了 [`RelayDialer`]）——这正是连接阶梯第 4 档
     /// （CONNECT_DESIGN.md §2）：没配置服务器/没有中继拨号器时原样报错，行为与 V0.2 一致。
     ///
-    /// 返回值额外带上实际走的档位（`ConnectionVia`，里程碑 C4 连接质量）：局域网直连、
-    /// 公网直连、`prefer_quic` 强制的 QUIC 直连都算 `Direct`（上层/UI 不关心底层承载
-    /// 是 TCP 还是 QUIC，只关心「直连」还是「中继」），只有落到 [`dial_via_relay`] 才是
-    /// `Relay`。
+    /// 返回值额外带上实际走的档位（[`ConnectionVia`]）。**底层承载是 TCP 还是 QUIC
+    /// 仍然不区分**——那是实现细节；但**直连的三档现在要分开**（局域网 / 公网 / 打洞），
+    /// 理由见 `ConnectionVia` 的文档：那是 AA4C 唯一不可替代的能力，界面上必须看得见。
+    /// 档位由已经连上的那个地址判定（[`ConnectionVia::direct_from_addr`]），不靠猜。
     pub(crate) async fn dial(
         &self,
         peer_id: &DeviceId,
@@ -605,12 +605,12 @@ impl TransferService {
                 Aa4cError::Network("prefer_quic set but quic endpoint not available".into())
             })?;
             let stream = quic::connect(endpoint, &self.identity, peer_id, addr).await?;
-            return Ok((Box::new(stream), ConnectionVia::Direct));
+            return Ok((Box::new(stream), ConnectionVia::direct_from_addr(&addr)));
         }
 
         if let Some(addr) = addr {
             match self.dial_tcp(peer_id, addr).await {
-                Ok(stream) => return Ok((stream, ConnectionVia::Direct)),
+                Ok(stream) => return Ok((stream, ConnectionVia::direct_from_addr(&addr))),
                 Err(e) => {
                     if self.punch_dialer.get().is_none() && self.relay_dialer.get().is_none() {
                         return Err(e);
@@ -705,18 +705,23 @@ impl TransferService {
     /// 只取元数据、不取内容；调用方（Core）负责落 `remote_index` 并判定黄/红。
     ///
     /// `addr` 为 `None`（mDNS/落库地址都没解析出来）时直接尝试中继兜底，与 [`Self::send`]
-    /// 同一套语义（见 [`Self::dial`]）——索引交换本身不是用户直接发起的「任务」，不需要
-    /// 上报连接质量事件，调用方按需丢弃 `dial` 返回的 `ConnectionVia`。
+    /// 同一套语义（见 [`Self::dial`]）。
+    ///
+    /// **返回值带上这次走的档位**（V0.8 F2）。此前这里是
+    /// `let (mut stream, _via) = self.dial(...)`——每 30 秒对每台完全信任设备算出一次
+    /// 连接档位，然后原地丢掉。索引交换本身确实不需要上报连接质量事件（它不是用户
+    /// 发起的任务），但它是**全应用唯一一条周期性、对全部设备都跑的连接**，
+    /// 拿它当可达性探测正合适，不必另开一条循环去 ping。
     pub async fn fetch_index(
         &self,
         peer_id: &DeviceId,
         addr: Option<std::net::SocketAddr>,
-    ) -> Result<Vec<aa4c_proto::IndexItem>> {
+    ) -> Result<(Vec<aa4c_proto::IndexItem>, ConnectionVia)> {
         use aa4c_proto::{client_hello, read_message, write_message, Message};
         use tokio::time::timeout;
 
         let t = self.config.timeout;
-        let (mut stream, _via) = self.dial(peer_id, addr).await?;
+        let (mut stream, via) = self.dial(peer_id, addr).await?;
 
         let (hello_id, proto) = client_hello(&mut stream, self.identity.device_id()).await?;
         if &hello_id != peer_id {
@@ -740,7 +745,7 @@ impl TransferService {
                 Message::IndexEntries { entries, last } => {
                     items.extend(entries);
                     if last {
-                        return Ok(items);
+                        return Ok((items, via));
                     }
                 }
                 Message::Cancel { reason, .. } => {

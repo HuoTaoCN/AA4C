@@ -38,6 +38,7 @@ onMounted(async () => {
     await Promise.all([
       devices.loadSelf(),
       devices.loadDevices(),
+      devices.loadReachability(),
       settings.load(),
       transfer.loadHistory(),
       sync.load(),

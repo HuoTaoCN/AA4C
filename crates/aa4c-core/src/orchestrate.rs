@@ -93,6 +93,9 @@ impl Core {
     /// 尽快不再包含本机（CONNECT_DESIGN.md §3.3 吊销，里程碑 C2）。
     pub async fn unpair_device(&self, device_id: &DeviceId) -> Result<()> {
         self.store.remove_device(device_id).await?;
+        // 解除配对之后不该继续挂在首页的状态图上（V0.8 F2）。
+        self.reach.forget(device_id);
+        let _ = self.events.send(CoreEvent::ReachabilityUpdated);
         self.nudge_register();
         Ok(())
     }
@@ -109,20 +112,46 @@ impl Core {
                 let _ = self.events.send(CoreEvent::SyncIndexUpdated);
             }
             TrustLevel::Full => {
-                let _ = sync_exchange::fetch_one(
-                    &self.store,
-                    &self.discovery,
-                    &self.identity,
-                    &self.self_info.name,
-                    &self.save_dir_fallback,
-                    &self.transfer,
-                    &self.events,
-                    device_id,
-                )
-                .await;
+                let _ = sync_exchange::fetch_one(&self.exchange_ctx(), device_id).await;
             }
         }
         Ok(())
+    }
+
+    /// 组一份索引交换 / 可达性探测要用的上下文。
+    ///
+    /// 里面全是廉价克隆（`Store` 是一个 mpsc Sender，其余是 `Arc`），所以按需现造
+    /// 而不是在 `Core` 上常驻一份——`Core` 已经分别持有这些字段了，再存一份聚合体
+    /// 只会多一处需要保持同步的状态。
+    pub(crate) fn exchange_ctx(&self) -> sync_exchange::ExchangeCtx {
+        sync_exchange::ExchangeCtx {
+            store: self.store.clone(),
+            discovery: self.discovery.clone(),
+            identity: self.identity.clone(),
+            fallback_name: self.self_info.name.clone(),
+            fallback_save_dir: self.save_dir_fallback.clone(),
+            transfer: self.transfer.clone(),
+            events: self.events.clone(),
+            reach: self.reach.clone(),
+        }
+    }
+
+    /// 每台**已配对**设备当下的可达性快照（V0.8 F2）。
+    ///
+    /// 没探测过的设备也在结果里，状态是 `Unknown`——首页要显示全部设备，
+    /// 漏掉一台会让人以为它不见了。
+    ///
+    /// **已知范围**：探测搭在索引交换上，而索引交换只对**完全信任**设备跑，
+    /// 所以朋友级设备恒为 `Unknown`。这是有意的，理由见 `crate::reach` 模块文档。
+    pub async fn list_reachability(&self) -> Result<Vec<aa4c_types::DeviceReachability>> {
+        let ids: Vec<DeviceId> = self
+            .store
+            .list_paired_devices()
+            .await?
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        Ok(self.reach.snapshot(&ids))
     }
 
     // —— 信任传递 / 引荐（TRUST_DESIGN.md §5，里程碑 R2）——
@@ -139,17 +168,7 @@ impl Core {
     pub async fn confirm_introduction(&self, device_id: &DeviceId) -> Result<()> {
         self.store.confirm_introduction(device_id).await?;
         let _ = self.events.send(CoreEvent::IntroductionsUpdated);
-        let _ = sync_exchange::fetch_one(
-            &self.store,
-            &self.discovery,
-            &self.identity,
-            &self.self_info.name,
-            &self.save_dir_fallback,
-            &self.transfer,
-            &self.events,
-            device_id,
-        )
-        .await;
+        let _ = sync_exchange::fetch_one(&self.exchange_ctx(), device_id).await;
         self.nudge_register();
         Ok(())
     }
@@ -451,16 +470,7 @@ impl Core {
 
     /// 手动与全部完全信任设备刷新一次跨设备索引（里程碑 3；里程碑 C4 起覆盖远程设备）。
     pub async fn refresh_remote_index(&self) -> Result<()> {
-        sync_exchange::refresh_all_full_trust(
-            &self.store,
-            &self.discovery,
-            &self.identity,
-            &self.self_info.name,
-            &self.save_dir_fallback,
-            &self.transfer,
-            &self.events,
-        )
-        .await;
+        sync_exchange::refresh_all_full_trust(&self.exchange_ctx()).await;
         Ok(())
     }
 

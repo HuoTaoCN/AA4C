@@ -164,6 +164,7 @@ pub fn run() {
             commands::revoke_share,
             commands::list_share_access,
             commands::open_share,
+            commands::list_reachability,
             commands::plugin_invoke,
             commands::plugin_manifest,
         ])

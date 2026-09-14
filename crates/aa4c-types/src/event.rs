@@ -4,16 +4,81 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DeviceId, DeviceInfo, KbAnswerSource, TaskId, TransferTask};
 
-/// 一次连接实际走的档位（CONNECT_DESIGN.md §2 连接阶梯，里程碑 C4 连接质量 + C5 打洞）。
-/// 局域网直连与公网直连对上层而言无区别，合并为 `Direct`；`Punch` 是打洞成功后升级
-/// 成的 QUIC 直连（里程碑 C5）——虽然最终也是「直连」，但单独报出来是因为它经历了
-/// 候选交换这一步，值得让 UI 区分「一上来就直连」和「打洞打出来的直连」。
+/// 一次连接实际走的档位（CONNECT_DESIGN.md §2 连接阶梯）。
+///
+/// # 为什么要分这么细（V0.8「Focus」F2）
+///
+/// 此前这里只有 `Direct` / `Punch` / `Relay` 三档，注释写着「局域网直连与公网直连
+/// 对上层而言无区别」。**那个判断在 F2 被推翻了**：AA4C 唯一不可替代的能力就是
+/// 「我的几台设备在任何网络下自己连成一片」，而这条能力在界面上完全看不见——设备卡片
+/// 只显示在线/离线，用户没法知道自己现在是在局域网里、还是真的跨网连上了、
+/// 又或者只是在绕中继（慢，而且要自建服务器）。合并掉的正是最该让人看见的那一档。
+///
+/// 分档对应 CONNECT_DESIGN.md §2 的连接阶梯，从好到差：
+/// 1. [`Lan`](Self::Lan) —— 同一个局域网，最快，不出网。
+/// 2. [`PublicV4`](Self::PublicV4) / [`PublicV6`](Self::PublicV6) —— 对端有可直达的公网
+///    地址。IPv4 与 IPv6 分开是因为国内家宽普遍下发公网 IPv6 而 IPv4 在 CGNAT 后面
+///    （V0.7 R1 打通双栈的全部理由），「走的是 IPv6」对用户是有意义的信息，
+///    排查连不上时也是最有用的一条。
+/// 3. [`Punch`](Self::Punch) —— 打洞打出来的直连。最终也是直连，但经历了候选交换。
+/// 4. [`Relay`](Self::Relay) —— 经自建服务器中继兜底，最慢。
+///
+/// **扁平枚举，不是带字段的变体**：这个值在 JSON 里是一个字符串（`"lan"` /
+/// `"public_v4"` / …），前端按字符串字面量联合消费——那是本项目既有的约定
+/// （见下方 `transfer_connected_json_shape` 测试）。把 IPv4/IPv6 做成变体里的
+/// 一个 `bool` 会让它变成对象，既破坏约定，渲染时也还得再拆一层。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionVia {
-    Direct,
+    /// 局域网直连。
+    Lan,
+    /// 公网直连，走 IPv4。
+    PublicV4,
+    /// 公网直连，走 IPv6。
+    PublicV6,
+    /// NAT 打洞后升级成的 QUIC 直连（里程碑 C5）。
     Punch,
+    /// 经自建服务器中继（里程碑 C3）。
     Relay,
+}
+
+impl ConnectionVia {
+    /// 由一个已经连上的对端地址判定属于哪一档直连。
+    ///
+    /// 判据就是地址本身：回环、私有网段、链路本地、IPv6 ULA 都算局域网，其余算公网。
+    /// 不去问「这个地址是从 mDNS 来的还是从服务器查来的」——来源能提示但不能决定：
+    /// 服务器上注册的完全可能是一个私有地址（两台设备恰好同网段），mDNS 理论上也能
+    /// 播一个公网地址。**看地址比看来源准。**
+    pub fn direct_from_addr(addr: &std::net::SocketAddr) -> Self {
+        use std::net::IpAddr;
+        match addr.ip() {
+            IpAddr::V4(v4) => {
+                if v4.is_private() || v4.is_loopback() || v4.is_link_local() {
+                    Self::Lan
+                } else {
+                    Self::PublicV4
+                }
+            }
+            IpAddr::V6(v6) => {
+                let lan = v6.is_loopback()
+                    // fe80::/10 链路本地
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+                    // fc00::/7 唯一本地地址（ULA）
+                    || (v6.segments()[0] & 0xfe00) == 0xfc00;
+                if lan {
+                    Self::Lan
+                } else {
+                    Self::PublicV6
+                }
+            }
+        }
+    }
+
+    /// 是不是直连（相对「绕中继」而言）。中继要自建服务器、而且慢，
+    /// 界面上值得单独提示，所以这个判断会被反复用到。
+    pub fn is_direct(&self) -> bool {
+        !matches!(self, Self::Relay)
+    }
 }
 
 /// AI 引擎的两个独立槽位（对话/嵌入，ARCHIVE_DESIGN.md §3.3）——各自独立
@@ -108,6 +173,11 @@ pub enum CoreEvent {
 
     /// 本机同步索引发生变化（扫描完成），UI 应重新拉取统一文件视图。
     SyncIndexUpdated,
+
+    /// 某台设备的可达性变了（V0.8「Focus」F2）：能不能连上、走的哪一档。
+    /// **只在确实变了时才发**——探测是每 30 秒一轮的，每轮都发会让首页的状态图
+    /// 无谓地闪（同 `IntroductionsUpdated` 的既有取舍）。UI 收到后重新拉快照。
+    ReachabilityUpdated,
 
     /// 收到了新的设备引荐（TRUST_DESIGN.md §5，里程碑 R2），UI 应重新拉取待确认列表。
     /// 只在**确实新增**了待确认记录时发——周期交换每轮都会把同一批引荐再收一遍，
@@ -224,6 +294,7 @@ impl CoreEvent {
             Self::TransferPaused { .. } => "transfer_paused",
             Self::SyncIndexUpdated => "sync_index_updated",
             Self::IntroductionsUpdated => "introductions_updated",
+            Self::ReachabilityUpdated => "reachability_updated",
             Self::DownloadProgress { .. } => "download_progress",
             Self::DownloadDone { .. } => "download_done",
             Self::DownloadFailed { .. } => "download_failed",
@@ -268,6 +339,44 @@ mod tests {
         assert_eq!(json["type"], event.event_name());
     }
 
+    /// 连接档位由**地址本身**判定，不看它是从哪查来的（V0.8 F2）。
+    ///
+    /// 私有网段 / 回环 / 链路本地 / IPv6 ULA 都算局域网，其余算公网——这条直接决定
+    /// 首页状态图上每台设备显示「局域网」还是「公网」，判错就是在骗用户。
+    #[test]
+    fn the_rung_is_decided_by_the_address_not_by_where_it_came_from() {
+        use std::net::SocketAddr;
+        let via = |s: &str| ConnectionVia::direct_from_addr(&s.parse::<SocketAddr>().unwrap());
+
+        // 局域网：三段私有 IPv4 + 回环 + 链路本地
+        assert_eq!(via("192.168.1.5:42420"), ConnectionVia::Lan);
+        assert_eq!(via("10.0.0.7:42420"), ConnectionVia::Lan);
+        assert_eq!(via("172.16.3.9:42420"), ConnectionVia::Lan);
+        assert_eq!(via("127.0.0.1:42420"), ConnectionVia::Lan);
+        assert_eq!(via("169.254.1.1:42420"), ConnectionVia::Lan);
+        // 172.32 不在 172.16/12 里——这是最容易写错的一条边界
+        assert_eq!(via("172.32.0.1:42420"), ConnectionVia::PublicV4);
+
+        // 局域网：IPv6 回环 / 链路本地 fe80::/10 / ULA fc00::/7
+        assert_eq!(via("[::1]:42420"), ConnectionVia::Lan);
+        assert_eq!(via("[fe80::1]:42420"), ConnectionVia::Lan);
+        assert_eq!(via("[fd12:3456::1]:42420"), ConnectionVia::Lan);
+
+        // 公网
+        assert_eq!(via("203.0.113.7:42420"), ConnectionVia::PublicV4);
+        assert_eq!(via("[2001:db8::1]:42420"), ConnectionVia::PublicV6);
+    }
+
+    /// 中继是唯一的非直连档——界面上要单独提示（慢，而且要自建服务器）。
+    #[test]
+    fn only_relay_is_not_direct() {
+        assert!(ConnectionVia::Lan.is_direct());
+        assert!(ConnectionVia::PublicV4.is_direct());
+        assert!(ConnectionVia::PublicV6.is_direct());
+        assert!(ConnectionVia::Punch.is_direct());
+        assert!(!ConnectionVia::Relay.is_direct());
+    }
+
     /// 里程碑 C4：连接质量事件的 JSON 形状（camelCase `taskId` + snake_case 的 via 取值），
     /// 前端 `ConnectionVia` 类型按这个约定做字符串字面量联合。
     #[test]
@@ -280,6 +389,15 @@ mod tests {
         assert_eq!(json["type"], "transfer_connected");
         assert_eq!(json["data"]["taskId"], "t1");
         assert_eq!(json["data"]["via"], "relay");
+        // 细化出来的几档同样是**字符串**，不是对象——前端的字面量联合依赖这一点。
+        for (v, want) in [
+            (ConnectionVia::Lan, "lan"),
+            (ConnectionVia::PublicV4, "public_v4"),
+            (ConnectionVia::PublicV6, "public_v6"),
+            (ConnectionVia::Punch, "punch"),
+        ] {
+            assert_eq!(serde_json::to_value(v).unwrap(), serde_json::json!(want));
+        }
         assert_eq!(event.event_name(), "transfer_connected");
 
         let back: CoreEvent = serde_json::from_value(json).unwrap();
