@@ -157,9 +157,16 @@ export interface LocalServerStatus {
   reach: LocalServerReach;
 }
 
-/** 一次连接实际走的档位（里程碑 C4 连接质量 + C5 打洞，见 CONNECT_DESIGN.md §2）。
- * `punch`（打洞后升级成的直连）在 UI 上并入「直连」显示，不单独暴露成第三个词。 */
-export type ConnectionVia = "direct" | "punch" | "relay";
+/** 一次连接实际走的档位（CONNECT_DESIGN.md §2 连接阶梯）。
+ *
+ * V0.8「Focus」F2 把原来的 `direct` 拆成了 `lan` / `public_v4` / `public_v6`：
+ * 「我的几台设备在任何网络下自己连成一片」是 AA4C 唯一不可替代的能力，
+ * 而合并成一个 `direct` 之后，用户根本看不出自己是在局域网里还是真的跨网连上了。
+ *
+ * `punch`（打洞打出来的直连）**在展示上仍并入「直连」**——那只是"怎么找到对方"的
+ * 手段，一旦连上就是货真价实的直连，而且"打洞"是技术词，不该出现在界面上
+ * （AGENTS.md UI 规则）。 */
+export type ConnectionVia = "lan" | "public_v4" | "public_v6" | "punch" | "relay";
 
 /** 共享范围种类：用户选的同步文件夹，或固定的「收到的」(自动维护)。 */
 export type ScopeKind = "folder" | "inbox";
