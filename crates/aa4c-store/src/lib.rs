@@ -94,6 +94,30 @@ impl Store {
             .map_err(|_| Aa4cError::Db("store thread dropped reply".into()))?
     }
 
+    /// 在那条专职连接线程上执行任意 SQL（插件用）。
+    ///
+    /// 存在的理由：R1 把下载 / 归档 / 知识库的 CRUD 搬到了插件 crate 里，而它们
+    /// **必须**和核心共用同一条连接——下载任务要能被归档规则读到、归档条目要能进
+    /// 同步索引，拆成两个库就得自己造跨库事务。所以给出这一个逃生口，而不是给
+    /// 插件另开一个 `Store`。
+    ///
+    /// 约束（不由类型系统保证，靠约定）：
+    /// - 插件**只应**碰自己的表。新建的表按 `<插件 id>_` 前缀命名；既有表
+    ///   （`downloads` / `archive_*` / `kb_*`）保留原名，因为改名要重建表，而重建表
+    ///   正是本项目栽过跟头的那类迁移（外键关着时 `DROP TABLE` 顺着级联删光子表）。
+    /// - 迁移仍然全部住在 [`crate::migrate`]：`PRAGMA user_version` 是一条线性链，
+    ///   拆开就得重编号，重编号就得重建表。见 `plugin::PluginContext::store` 的文档。
+    ///
+    /// 闭包在专职线程上同步执行，**不要在里面阻塞或跑 async**——整条线程是全应用
+    /// 共用的，卡住它等于卡住所有数据库访问。
+    pub async fn with_conn<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    {
+        self.call(f).await
+    }
+
     // —— 设备 ——
 
     /// 插入或更新设备。`created_at` 仅在首次插入时写入，`updated_at` 总是刷新。

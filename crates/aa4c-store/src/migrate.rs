@@ -1,6 +1,12 @@
 //! 数据库迁移（DATABASE_SCHEMA.md §5）。
 //!
 //! 规则：迁移只追加、永不修改已发布的迁移；每个迁移一个事务，失败整体回滚。
+//!
+//! **迁移不随插件走。** R1 把下载 / 归档 / 知识库的 CRUD 搬进了插件 crate，但
+//! 008–011 这几条迁移留在原地：`user_version` 是一条线性计数，摘出去就得重编号，
+//! 而重编号要重建表——下面那段注释解释了重建表期间外键是关着的，`DROP TABLE` 的
+//! 隐式 DELETE 会顺着级联删光子表。为了让 crate 边界好看而冒丢用户数据的风险，
+//! 这笔账不划算。插件拿 `Store::with_conn` 操作自己的表，表名保持原样。
 
 use aa4c_types::{Aa4cError, Result};
 use rusqlite::Connection;

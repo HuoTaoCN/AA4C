@@ -11,6 +11,7 @@ mod dispatch;
 mod introduce;
 mod local_server;
 mod orchestrate;
+pub mod plugin;
 mod portmap;
 mod server_link;
 mod settings;
