@@ -1,6 +1,7 @@
 /* AA4C 全局样式（UI_DESIGN_SPEC §8：简洁、留白、圆角、跟随系统深色）。 */
 
 :root {
+  /* —— 颜色 —— */
   --aa-primary: #2f6bff;
   --aa-primary-dim: #2f6bff22;
 
@@ -11,11 +12,42 @@
   --aa-text-dim: #6b7280;
   --aa-border: #e3e6ea;
   --aa-success: #1aa251;
+  --aa-warn: #b26a00;
   --aa-danger: #e0483d;
   --aa-online: #1aa251;
 
+  /* —— 间距阶梯（UI_DESIGN_SPEC §5.1）——
+     组件里不许出现 `12px` 这类字面量，一律用这几个。F3 之前每个页面凭手感写数字，
+     于是同一种「卡片之间的距离」在六个页面上有六个值。 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* —— 字号 / 字重阶梯 —— */
+  --fs-sm: 12px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-bold: 600;
+
+  /* —— 圆角 —— */
   --aa-radius: 14px;
   --aa-radius-sm: 9px;
+  --aa-radius-lg: 20px;
+
+  /* —— 层级。散在各处的 z-index 魔数是「弹层被任务条盖住」这类 bug 的温床 —— */
+  --z-bar: 10;
+  --z-sheet: 100;
+  --z-toast: 1000;
+
+  /* —— 动效 —— */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
 
   font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui,
     "Segoe UI", Roboto, sans-serif;
@@ -25,6 +57,7 @@
   text-rendering: optimizeLegibility;
 }
 
+/* 深色模式只重定义颜色——间距 / 字号 / 圆角 / 层级不随主题变。 */
 @media (prefers-color-scheme: dark) {
   :root {
     --aa-bg: #16181d;
@@ -34,6 +67,15 @@
     --aa-text-dim: #9aa3b2;
     --aa-border: #313742;
     --aa-primary-dim: #2f6bff33;
+    --aa-warn: #e0a33d;
+  }
+}
+
+/* 系统设了「减少动态效果」就真的减少——不是可选的体贴。 */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-base: 0ms;
   }
 }
 
