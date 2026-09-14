@@ -1,25 +1,26 @@
 <script setup lang="ts">
+// 桌面外壳：顶栏 + 侧导航 + 内容区 + 全局任务条（UI_DESIGN_SPEC §2）。
 import { storeToRefs } from "pinia";
 import { useDeviceStore } from "../stores/devices";
+import { usePluginStore } from "../stores/plugins";
 import { useTransferStore } from "../stores/transfer";
 import TaskBar from "./TaskBar.vue";
-import { HOME, CAPABILITIES, UTILITY } from "../lib/nav";
+import { Icon, StatusDot } from "./ui";
+import { PRIMARY, SETTINGS } from "../lib/nav";
 
 const devices = useDeviceStore();
+const plugins = usePluginStore();
 const transfer = useTransferStore();
 const { self } = storeToRefs(devices);
-
-// 主导航：首页 + 五大能力
-const primary = [HOME, ...CAPABILITIES];
 </script>
 
 <template>
   <div class="shell">
     <header class="topbar">
-      <div class="brand"><span class="dot">◉</span> AA连接</div>
-      <div class="self" v-if="self">
+      <div class="brand">AA连接</div>
+      <div v-if="self" class="self">
         <span>{{ self.name }}</span>
-        <span class="online-dot" title="在线"></span>
+        <StatusDot tone="ok" />
       </div>
     </header>
 
@@ -27,32 +28,45 @@ const primary = [HOME, ...CAPABILITIES];
       <nav class="sidenav">
         <div class="group">
           <router-link
-            v-for="it in primary"
+            v-for="it in PRIMARY"
             :key="it.path"
             :to="it.path"
             class="navitem"
             :class="{ active: $route.path === it.path }"
           >
-            <span class="i">{{ it.icon }}</span>
-            <span class="t">{{ it.name }}</span>
-            <span v-if="!it.built" class="tag">建设中</span>
-          </router-link>
-        </div>
-
-        <div class="spacer"></div>
-
-        <div class="group">
-          <router-link
-            v-for="it in UTILITY"
-            :key="it.path"
-            :to="it.path"
-            class="navitem"
-            :class="{ active: $route.path === it.path }"
-          >
-            <span class="i">{{ it.icon }}</span>
+            <Icon :name="it.icon" />
             <span class="t">{{ it.name }}</span>
           </router-link>
         </div>
+
+        <!-- 「更多」：装了插件才出现（UI_DESIGN_SPEC §2）。
+             空的插件注册表应当得到一个只有四项导航的干净界面。 -->
+        <template v-if="plugins.navItems.length">
+          <div class="sep">更多</div>
+          <div class="group">
+            <router-link
+              v-for="it in plugins.navItems"
+              :key="it.path"
+              :to="it.path"
+              class="navitem"
+              :class="{ active: $route.path === it.path }"
+            >
+              <Icon :name="it.icon" />
+              <span class="t">{{ it.name }}</span>
+            </router-link>
+          </div>
+        </template>
+
+        <div class="spacer" />
+
+        <router-link
+          :to="SETTINGS.path"
+          class="navitem"
+          :class="{ active: $route.path === SETTINGS.path }"
+        >
+          <Icon :name="SETTINGS.icon" />
+          <span class="t">{{ SETTINGS.name }}</span>
+        </router-link>
       </nav>
 
       <main class="content"><router-view /></main>
@@ -72,27 +86,24 @@ const primary = [HOME, ...CAPABILITIES];
 .topbar {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--sp-4);
   height: 52px;
-  padding: 0 18px;
+  padding: 0 var(--sp-5);
   background: var(--aa-surface);
   border-bottom: 1px solid var(--aa-border);
   flex-shrink: 0;
 }
 .brand {
-  font-weight: 800;
-  font-size: 1.05rem;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-lg);
   letter-spacing: 0.03em;
-}
-.brand .dot {
-  color: var(--aa-primary);
 }
 .self {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-size: 0.9rem;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
 }
 .body {
@@ -103,17 +114,22 @@ const primary = [HOME, ...CAPABILITIES];
 .sidenav {
   width: 176px;
   flex-shrink: 0;
-  padding: 14px 12px;
+  padding: var(--sp-3);
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--sp-1);
   border-right: 1px solid var(--aa-border);
   background: var(--aa-surface);
 }
 .group {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--sp-1);
+}
+.sep {
+  margin: var(--sp-4) var(--sp-3) var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--aa-text-dim);
 }
 .spacer {
   flex: 1;
@@ -121,12 +137,13 @@ const primary = [HOME, ...CAPABILITIES];
 .navitem {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
   border-radius: var(--aa-radius-sm);
-  font-weight: 600;
-  font-size: 0.92rem;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-base);
   color: var(--aa-text-dim);
+  transition: background var(--motion-fast);
 }
 .navitem:hover {
   background: var(--aa-surface-2);
@@ -138,18 +155,10 @@ const primary = [HOME, ...CAPABILITIES];
 .navitem .t {
   flex: 1;
 }
-.tag {
-  font-size: 0.62rem;
-  font-weight: 600;
-  color: var(--aa-text-dim);
-  background: var(--aa-bg);
-  padding: 1px 6px;
-  border-radius: 999px;
-}
 .content {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 22px 26px;
+  padding: var(--sp-5) var(--sp-6);
 }
 </style>

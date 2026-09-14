@@ -11,6 +11,7 @@ import { useTransferStore } from "../stores/transfer";
 import { useToastStore } from "../stores/toast";
 import { asCommandError } from "../lib/api";
 import { baseName, platformIcon } from "../lib/format";
+import TransferHistory from "../components/TransferHistory.vue";
 import type { DeviceInfo } from "../lib/types";
 
 const route = useRoute();
@@ -21,8 +22,13 @@ const toast = useToastStore();
 
 const paths = ref<string[]>([]);
 const dragging = ref(false);
+// 设备页的「发送」按钮跳过来时带 `?to=<设备 id>`（`device=` 是旧参数名，一并认）。
 const selectedId = ref<string | null>(
-  typeof route.query.device === "string" ? route.query.device : null,
+  typeof route.query.to === "string"
+    ? route.query.to
+    : typeof route.query.device === "string"
+      ? route.query.device
+      : null,
 );
 
 const onlineDevices = computed(() => devices.visible.filter((d) => d.online));
@@ -91,7 +97,7 @@ async function aa() {
 
 <template>
   <div class="send">
-    <h2>AA 发送</h2>
+    <h2>发送</h2>
     <div class="steps">
       <!-- 第 1 步：选文件 -->
       <section class="step">
@@ -150,6 +156,11 @@ async function aa() {
         <button class="aa" :disabled="!canSend" @click="aa">AA！</button>
       </section>
     </div>
+
+    <!-- 记录：F3 起并入本页（UI_DESIGN_SPEC §3.2 ②）。
+         「发」和「发过什么」是同一件事的两个时态，切页会让人为了看一眼刚才
+         发成功没有而离开当前页。 -->
+    <TransferHistory @resend="paths = []" />
   </div>
 </template>
 

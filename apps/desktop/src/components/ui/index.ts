@@ -6,6 +6,7 @@ export { default as Button } from "./Button.vue";
 export { default as Card } from "./Card.vue";
 export { default as EmptyState } from "./EmptyState.vue";
 export { default as Field } from "./Field.vue";
+export { default as Icon, type IconName } from "./Icon.vue";
 export { default as ListRow } from "./ListRow.vue";
 export { default as Sheet } from "./Sheet.vue";
 export { default as StatusDot } from "./StatusDot.vue";
