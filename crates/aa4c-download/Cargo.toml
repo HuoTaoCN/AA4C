@@ -9,16 +9,19 @@ rust-version.workspace = true
 
 [dependencies]
 aa4c-types = { workspace = true }
+aa4c-plugin = { workspace = true }
 aa4c-store = { workspace = true }
 aa4c-engine = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 bs58 = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
+dirs = { workspace = true }
 # Transmission RPC 的 HTTP Basic 鉴权用（DOWNLOAD_DESIGN.md §3.6.3）。已经是
 # 依赖树里现成的传递依赖（tungstenite 的 WebSocket 握手要用），这里只是把它
 # 提升成直接依赖，不引入新的依赖体量。

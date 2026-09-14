@@ -103,11 +103,14 @@ name = "aa4c-download"
 version = "0.7.0"
 dependencies = [
  "aa4c-engine",
+ "aa4c-plugin",
  "aa4c-store",
  "aa4c-types",
  "base64 0.22.1",
  "bs58",
+ "dirs 5.0.1",
  "futures-util",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
