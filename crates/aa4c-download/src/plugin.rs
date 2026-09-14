@@ -30,7 +30,9 @@ pub struct DownloadPlugin {
     bt_spawner: Option<Arc<dyn SidecarSpawner>>,
     /// `start()` 之后才有。用 `OnceCell` 而不是 `Mutex<Option<_>>`：只写一次，
     /// 读多写少，且读路径（每次 `invoke`）不该去抢锁。
-    service: OnceCell<Arc<DownloadService>>,
+    /// 见 `ArchivePlugin::running` 的文档：裸 `OnceCell` 的 clone 是独立格子，
+    /// `start()` 往它里面写等于白写。
+    service: Arc<OnceCell<Arc<DownloadService>>>,
 }
 
 impl DownloadPlugin {
@@ -41,7 +43,7 @@ impl DownloadPlugin {
         Self {
             spawner,
             bt_spawner,
-            service: OnceCell::new(),
+            service: Arc::new(OnceCell::new()),
         }
     }
 

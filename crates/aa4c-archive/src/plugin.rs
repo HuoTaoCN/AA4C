@@ -61,7 +61,14 @@ impl ArchiveSettings {
 /// 归档规则引擎**不依赖它**，没有 AI 也完整可用（ARCHIVE_DESIGN.md §2 的核心原则）。
 struct Running {
     store: Store,
-    settings: ArchiveSettings,
+    /// **可变**，不是启动快照。两个理由：
+    /// 1. `archive_files` 每次都要用**当前**的归档根——此前 `Core` 那份实现每次调用
+    ///    都 `self.get_settings().await?` 重读一遍，改成读启动快照就是回归：用户改了
+    ///    归档根，归档动作却还往旧目录搬。
+    /// 2. `on_settings_changed` 要拿「上一次生效的值」跟新值比，才知道模型换没换。
+    ///    拿启动快照比会漏掉「A→B 再 B→A」这种来回改：第二次比下来以为没变，
+    ///    可引擎里跑的还是 B。
+    settings: std::sync::Mutex<ArchiveSettings>,
     events: tokio::sync::broadcast::Sender<aa4c_types::CoreEvent>,
     ai: Option<Arc<AiService>>,
     suggest: Option<Arc<SuggestEngine>>,
@@ -69,16 +76,21 @@ struct Running {
 }
 
 /// 归档插件。由桌面壳层构造（只有它拿得到 AI 引擎的 spawner）。
+/// **必须是 `Arc<OnceCell<_>>`，不能是裸 `OnceCell<_>`。** `start()` 拿到的是 `&self`，
+/// 而返回的 future 是 `'static` 的（`PluginFuture` 不带生命周期），所以只能把要写的
+/// 东西 clone 进去——而 clone 一个裸 `OnceCell` 得到的是**另一个独立的格子**，往它
+/// 里面 `set` 对本体毫无影响，插件于是永远停在「未启动」，每次调用都报 Unavailable。
+/// 包一层 `Arc` 才是共享同一个格子。
 pub struct ArchivePlugin {
     ai_spawner: Option<Arc<dyn SidecarSpawner>>,
-    running: OnceCell<Arc<Running>>,
+    running: Arc<OnceCell<Arc<Running>>>,
 }
 
 impl ArchivePlugin {
     pub fn new(ai_spawner: Option<Arc<dyn SidecarSpawner>>) -> Self {
         Self {
             ai_spawner,
-            running: OnceCell::new(),
+            running: Arc::new(OnceCell::new()),
         }
     }
 
@@ -196,7 +208,7 @@ impl Plugin for ArchivePlugin {
 
             let _ = cell.set(Arc::new(Running {
                 store: ctx.store,
-                settings,
+                settings: std::sync::Mutex::new(settings),
                 events: ctx.events,
                 ai,
                 suggest,
@@ -222,7 +234,7 @@ impl Plugin for ArchivePlugin {
         let r = self.running().map(|r| {
             (
                 r.store.clone(),
-                r.settings.clone(),
+                r.settings.lock().unwrap_or_else(|e| e.into_inner()).clone(),
                 r.events.clone(),
                 r.ai.clone(),
                 r.suggest.clone(),
@@ -338,6 +350,39 @@ impl Plugin for ArchivePlugin {
                 }
             };
             Ok(out)
+        })
+    }
+
+    /// 换了模型文件要立刻生效：`AiService::set_model` 把正在跑的旧进程顺手停掉，
+    /// 下一次 AI 请求用新模型懒启动，不需要重启应用（ARCHIVE_DESIGN.md §3.3）。
+    /// 这段逻辑此前住在 `Core::update_settings` 里——那是 Core 认识 AI 的最后一处。
+    fn on_settings_changed(&self, settings: Value) -> PluginFuture<()> {
+        let running = self.running.get().cloned();
+        Box::pin(async move {
+            let Some(r) = running else { return Ok(()) };
+            let new: ArchiveSettings = serde_json::from_value(settings).unwrap_or_default();
+            // 先换掉记住的那份（归档根等下一次 invoke 就要用新的），同时取出旧值比模型。
+            let old = {
+                let mut guard = r.settings.lock().unwrap_or_else(|e| e.into_inner());
+                std::mem::replace(&mut *guard, new.clone())
+            };
+            let Some(ai) = r.ai.clone() else {
+                return Ok(());
+            };
+            // **只在真的换了模型时才调 `set_model`**——它会无条件把正在跑的进程停掉，
+            // 无差别调用等于用户每存一次设置就打掉一个热着的模型。
+            if new.chat_model != old.chat_model {
+                ai.set_model(SlotKind::Chat, new.chat_model.clone().map(PathBuf::from))
+                    .await;
+            }
+            if new.embedding_model != old.embedding_model {
+                ai.set_model(
+                    SlotKind::Embedding,
+                    new.embedding_model.clone().map(PathBuf::from),
+                )
+                .await;
+            }
+            Ok(())
         })
     }
 
@@ -551,5 +596,47 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("archive.delete_rule"), "{msg}");
         assert!(!msg.contains("unknown method"), "{msg}");
+    }
+}
+
+#[cfg(test)]
+mod settings_change_tests {
+    use super::*;
+
+    /// 设置变更之后，插件记住的必须是**新值**——`archive_files` 每次都读它拿归档根。
+    ///
+    /// 这条冲着一个真实的回归来：`Core` 那份实现每次调用都重读设置，搬过来时第一版
+    /// 存的是启动快照，用户改了归档根，归档动作还往旧目录搬。
+    #[tokio::test]
+    async fn changing_settings_updates_the_root_used_by_later_calls() {
+        let plugin = ArchivePlugin::new(None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("aa4c.db")).await.unwrap();
+        let (events, _rx) = tokio::sync::broadcast::channel(16);
+
+        plugin
+            .start(PluginContext {
+                store,
+                events,
+                data_dir: dir.path().to_path_buf(),
+                settings: json!({ "archive_root": "/tmp/old" }),
+            })
+            .await
+            .unwrap();
+
+        let before = plugin.running().unwrap().settings.lock().unwrap().root();
+        assert_eq!(before, PathBuf::from("/tmp/old"));
+
+        plugin
+            .on_settings_changed(json!({ "archive_root": "/tmp/new" }))
+            .await
+            .unwrap();
+
+        let after = plugin.running().unwrap().settings.lock().unwrap().root();
+        assert_eq!(
+            after,
+            PathBuf::from("/tmp/new"),
+            "改完设置之后再归档，得用新的归档根"
+        );
     }
 }

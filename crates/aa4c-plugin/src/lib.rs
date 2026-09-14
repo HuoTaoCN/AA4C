@@ -97,6 +97,17 @@ pub trait Plugin: Send + Sync + 'static {
     /// 移到运行期——由插件自己在 `invoke` 里反序列化时保证。
     fn invoke(&self, method: String, payload: Value) -> PluginFuture<Value>;
 
+    /// 本插件的设置项被改了。
+    ///
+    /// 默认什么都不做——绝大多数设置是启动时读一次就够了。实现它的理由只有一个：
+    /// **有些改动必须立刻生效，不能等下次重启**。归档插件换模型文件就是这种——
+    /// `AiService::set_model` 会把正在跑的旧进程顺手停掉，下一次请求用新模型懒启动
+    /// （ARCHIVE_DESIGN.md §3.3）。没有这个回调，那段逻辑就只能继续赖在 `Core` 的
+    /// `update_settings` 里，而那正是本轮要拆掉的耦合。
+    fn on_settings_changed(&self, _settings: Value) -> PluginFuture<()> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// 设置项 schema，供前端的通用设置渲染器画表单。
     ///
     /// 目的是让 `SettingsPage` 不再为每个插件手写一段表单——那正是它涨到 903 行、
@@ -168,6 +179,17 @@ impl PluginRegistry {
                     }
                 }
                 Err(e) => tracing::warn!(plugin = id, error = %e, "plugin context unavailable"),
+            }
+        }
+    }
+
+    /// 广播一次设置变更。失败只记 warn——一个插件没接住新设置，不该让
+    /// 「保存设置」这个动作对用户报错。
+    pub async fn notify_settings(&self, settings: &serde_json::Map<String, Value>) {
+        for plugin in &self.plugins {
+            let own = settings.get(plugin.id()).cloned().unwrap_or(Value::Null);
+            if let Err(e) = plugin.on_settings_changed(own).await {
+                tracing::warn!(plugin = plugin.id(), error = %e, "plugin rejected new settings");
             }
         }
     }
