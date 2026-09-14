@@ -1,4 +1,4 @@
-//! 归档 / AI / 知识库插件的端到端测试（R1 之前住在 `aa4c-core/tests/core.rs`）。
+//! 归档 / AI / 知识库插件的端到端测试（F1 之前住在 `aa4c-core/tests/core.rs`）。
 //!
 //! 与下载插件的 e2e 同构：**驱动真实 `Core`**，能力走 `plugin_invoke`。
 //! 两条都要真实 `llama-server` + 微型 GGUF（`AA4C_TEST_LLAMA_SERVER_BIN` /

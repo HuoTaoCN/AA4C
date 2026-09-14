@@ -1,4 +1,4 @@
-//! 下载中心的插件外壳（R1，`aa4c_plugin::Plugin`）。
+//! 下载中心的插件外壳（F1，`aa4c_plugin::Plugin`）。
 //!
 //! 此前下载中心是焊在 `Core` 上的：`Core.download: Option<Arc<DownloadService>>`
 //! 一个字段、`orchestrate.rs` 里 10 个转发方法、`Settings` 里 12 个字段、

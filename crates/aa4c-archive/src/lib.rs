@@ -3,7 +3,7 @@
 //! `detect` 做文件类型识别（扩展名 + magic bytes），`gguf` 解析模型元数据——
 //! 两者都是无 I/O 副作用的纯读取，供规则引擎（`engine`）使用。
 //!
-//! # 为什么是独立 crate（R1）
+//! # 为什么是独立 crate（F1）
 //!
 //! 归档从 AI1 起就住在 `aa4c-core::archive` 里，1700 行——而它的对等物
 //! `aa4c-download` 一开始就是独立 crate，两者形态相同却归属不同，纯属历史原因。
@@ -12,7 +12,7 @@
 //!
 //! 唯一一处真实耦合是下载完成钩子要读 `archive_auto_enabled` / `archive_root`
 //! 两个设置项，此前走 `aa4c_core::settings`。现在本 crate 自己读——这两项本来
-//! 就该随归档插件走（R1.3 会把它们正式从 `Settings` 里摘出去），键名与默认值
+//! 就该随归档插件走（F1.3 会把它们正式从 `Settings` 里摘出去），键名与默认值
 //! 保持与 `aa4c_core::settings` 逐字一致，语义零变化。
 
 pub mod detect;
@@ -127,7 +127,7 @@ mod tests {
     /// 此前这里要凭空造一个 28 字段的 `aa4c_types::Settings` 再整体 `save`——
     /// 一个只关心 `archive_root`/`archive_auto_enabled` 的测试，却被迫声明
     /// 下载限速、BT 分享率、AI 空闲超时。那正是「设置项全挤在一个结构体里」
-    /// 的代价，R1.3 会把它拆掉。
+    /// 的代价，F1.3 会把它拆掉。
     async fn put_archive_settings(store: &Store, root: &std::path::Path, auto: bool) {
         store
             .set_setting(

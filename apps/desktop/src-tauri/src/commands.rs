@@ -239,7 +239,7 @@ pub async fn open_share(core: State<'_, Arc<Core>>, link: String) -> CmdResult<S
     Ok(core.open_share(&link, None).await?)
 }
 
-/// 把一次调用转给插件（R1，ARCHITECTURE.md 原则 3）。
+/// 把一次调用转给插件（F1，ARCHITECTURE.md 原则 3）。
 ///
 /// 此前这里是 27 个类型化 Command——下载 10、归档 7、AI 5、知识库 5——每个都要
 /// 在本文件写一遍、再在 `lib.rs` 的 `generate_handler!` 里登记一遍。它们占了

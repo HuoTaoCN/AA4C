@@ -260,7 +260,7 @@ async fn set_json<T: serde::Serialize>(store: &Store, key: &str, value: &T) -> R
 /// 把 `Settings` 里属于插件的那些字段切成「插件 id → 它自己的设置」。
 ///
 /// **这是一层过渡垫片。** `Settings` 现在仍是一个 28 字段的大结构体，其中 18 个
-/// （下载 12 + 归档/AI 6）本来就该跟着插件走。R1.3 会把它真正拆成
+/// （下载 12 + 归档/AI 6）本来就该跟着插件走。F1.3 会把它真正拆成
 /// `CoreSettings` + `plugin_settings: Map<String, Value>`，前端设置页也跟着改成
 /// 由插件的 `settings_schema()` 驱动的通用渲染器；在那之前，先用这里的映射让
 /// 插件拿到自己的那一份，用户的既有设置一个都不丢。

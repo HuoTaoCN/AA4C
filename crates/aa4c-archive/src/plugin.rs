@@ -1,4 +1,4 @@
-//! 归档 / AI / 知识库的插件外壳（R1，`aa4c_plugin::Plugin`）。
+//! 归档 / AI / 知识库的插件外壳（F1，`aa4c_plugin::Plugin`）。
 //!
 //! 与下载插件不同，这一层**确实搬了逻辑**：`Core` 里那 17 个方法不全是转发，
 //! `archive_files` 的三路分支、`list_local_models` 的两层目录扫描、`start_suggest`

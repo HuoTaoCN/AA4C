@@ -1,4 +1,4 @@
-//! 下载插件的端到端测试（R1 之前住在 `aa4c-core/tests/core.rs`）。
+//! 下载插件的端到端测试（F1 之前住在 `aa4c-core/tests/core.rs`）。
 //!
 //! **仍然驱动真实 `Core`**，只是能力从类型化方法换成了 `plugin_invoke`——验的就是
 //! 应用真正走的那条缝，而不是绕开它直接调 `DownloadService`。依赖方向不冲突：

@@ -1693,7 +1693,7 @@ async fn share_rejects_expired_revoked_and_forged_tokens() {
 /// 能力时，一律报 `Unavailable`，而不是 panic 或静默返回空。前端据此区分
 /// 「这个平台/构建没有这个能力」与「有能力但列表为空」。
 ///
-/// R1 之前这条测的是 `download_spawner` 为 `None` 时 `Core` 那些类型化方法的降级；
+/// F1 之前这条测的是 `download_spawner` 为 `None` 时 `Core` 那些类型化方法的降级；
 /// 现在那些方法住在插件里，剩下要守的是**注册表本身**的语义——而且它对任意插件
 /// 都成立，不再只是下载。
 #[tokio::test]

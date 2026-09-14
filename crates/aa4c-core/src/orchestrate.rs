@@ -639,7 +639,7 @@ impl Core {
         })
     }
 
-    // —— 插件（R1，ARCHITECTURE.md 原则 3）——
+    // —— 插件（F1，ARCHITECTURE.md 原则 3）——
 
     /// 把一次调用转给某个插件。
     ///
