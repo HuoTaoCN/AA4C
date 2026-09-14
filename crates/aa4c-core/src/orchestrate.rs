@@ -301,7 +301,13 @@ impl Core {
 
     /// 读取设置（缺省补齐）。
     pub async fn get_settings(&self) -> Result<Settings> {
-        settings::load(&self.store, &self.self_info.name, &self.save_dir_fallback).await
+        settings::load(
+            &self.store,
+            &self.self_info.name,
+            &self.save_dir_fallback,
+            &self.plugins.ids(),
+        )
+        .await
     }
 
     /// 保存设置；设备名变更时重新广播 mDNS。
@@ -334,9 +340,7 @@ impl Core {
         // 插件自己的设置项变了由插件处理（例如归档插件换模型文件要立刻生效）。
         // Core 不再知道「AI 有两个模型槽位」这种事——那段逻辑现在住在
         // `aa4c_archive::plugin` 的 `on_settings_changed` 里。
-        self.plugins
-            .notify_settings(&settings::plugin_settings(&new))
-            .await;
+        self.plugins.notify_settings(&new.plugins).await;
         Ok(())
     }
 
@@ -798,7 +802,7 @@ async fn remote_lookup(
     fallback_save_dir: &str,
     device_id: &DeviceId,
 ) -> Option<std::net::SocketAddr> {
-    let settings = settings::load(store, fallback_name, fallback_save_dir)
+    let settings = settings::load_core(store, fallback_name, fallback_save_dir)
         .await
         .ok()?;
     if !settings.enable_remote {

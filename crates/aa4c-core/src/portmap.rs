@@ -101,7 +101,7 @@ pub(crate) async fn transfer_target(
     fallback_save_dir: &str,
     transfer_port: u16,
 ) -> Option<u16> {
-    match crate::settings::load(store, fallback_name, fallback_save_dir).await {
+    match crate::settings::load_core(store, fallback_name, fallback_save_dir).await {
         Ok(s) if s.enable_remote && s.enable_port_mapping => Some(transfer_port),
         Ok(_) => None,
         Err(e) => {
@@ -122,7 +122,7 @@ pub(crate) async fn local_server_target(
     fallback_save_dir: &str,
     local: &crate::local_server::LocalServer,
 ) -> Option<u16> {
-    match crate::settings::load(store, fallback_name, fallback_save_dir).await {
+    match crate::settings::load_core(store, fallback_name, fallback_save_dir).await {
         Ok(s) if s.enable_local_server && s.enable_port_mapping => local.port().await,
         Ok(_) => None,
         Err(e) => {

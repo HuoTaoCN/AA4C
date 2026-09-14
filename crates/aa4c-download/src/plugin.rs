@@ -145,8 +145,14 @@ impl Plugin for DownloadPlugin {
         let bt_spawner = self.bt_spawner.clone();
         let cell = self.service.clone();
         Box::pin(async move {
-            let settings: DownloadSettings =
-                serde_json::from_value(ctx.settings.clone()).unwrap_or_default();
+            // `null` = 这个库还没写过 `plugin.download`——要么是全新安装，要么是从
+            // F1.3 之前升上来的。后者的设置还在老的扁平键里，捡回来（见
+            // `migrate_legacy_settings`）。
+            let settings: DownloadSettings = if ctx.settings.is_null() {
+                migrate_legacy_settings(&ctx.store).await
+            } else {
+                serde_json::from_value(ctx.settings.clone()).unwrap_or_default()
+            };
             let download_dir = settings
                 .download_dir
                 .clone()
@@ -266,6 +272,40 @@ impl Plugin for DownloadPlugin {
     }
 }
 
+/// 从 F1.3 之前的扁平设置键里把本插件的设置捡回来。
+///
+/// **为了不让已经在用的人丢设置。** F1.3 之前这 12 项散在 `aa4c_types::Settings` 的
+/// 28 个字段里，落库是 `download_speed_limit_kbps` 这样带前缀的独立键；现在改成一条
+/// `plugin.download` 的 JSON。升级上来的用户库里只有老键，新键是空的。
+///
+/// **迁移写在插件自己这儿，不写在核心里**——核心刚在 F1 把「认识下载有哪些设置」这件事
+/// 甩掉，不该为了迁移再捡回来。这段代码可以在若干个版本之后删掉。
+async fn migrate_legacy_settings(store: &aa4c_store::Store) -> DownloadSettings {
+    async fn get<T: serde::de::DeserializeOwned>(
+        store: &aa4c_store::Store,
+        key: &str,
+    ) -> Option<T> {
+        let raw = store.get_setting(key).await.ok().flatten()?;
+        serde_json::from_str(&raw).ok()
+    }
+    DownloadSettings {
+        download_dir: get(store, "download_dir").await,
+        speed_limit_kbps: get(store, "download_speed_limit_kbps").await,
+        upload_limit_kbps: get(store, "download_upload_limit_kbps").await,
+        concurrency: get(store, "download_concurrency").await,
+        max_connections_per_file: get(store, "download_max_connections_per_file").await,
+        user_agent: get(store, "download_user_agent").await,
+        proxy: get(store, "download_proxy").await,
+        proxy_bypass: get(store, "download_proxy_bypass").await,
+        bt_trackers: get(store, "bt_trackers").await,
+        bt_ratio_limit: get(store, "bt_ratio_limit").await,
+        bt_idle_seeding_limit_minutes: get(store, "bt_idle_seeding_limit_minutes").await,
+        resume_on_start: get(store, "download_resume_on_start")
+            .await
+            .unwrap_or(false),
+    }
+}
+
 /// 平台默认下载目录。与 `aa4c_core::settings::default_download_dir` 逐字一致。
 fn default_download_dir() -> PathBuf {
     dirs::download_dir().unwrap_or_else(std::env::temp_dir)
@@ -302,6 +342,47 @@ mod tests {
         assert!(msg.contains("download.pause"), "错误要指名方法：{msg}");
         assert!(!msg.contains("unknown method"), "不该说方法不存在：{msg}");
         drop(plugin);
+    }
+
+    /// 从 F1.3 之前升上来的库里，老的扁平设置键要被捡回来——**否则用户的下载目录、
+    /// 限速、代理会在升级后静默变回默认值**，而且没有任何提示。
+    #[tokio::test]
+    async fn legacy_flat_settings_survive_the_upgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = aa4c_store::Store::open(&dir.path().join("aa4c.db"))
+            .await
+            .unwrap();
+        // 模拟老版本写下的键（值是 JSON 编码的标量，同 `set_json` 的既有格式）
+        for (k, v) in [
+            ("download_dir", "\"/data/dl\""),
+            ("download_concurrency", "7"),
+            ("download_proxy", "\"http://127.0.0.1:8080\""),
+            ("bt_ratio_limit", "2.5"),
+            ("download_resume_on_start", "true"),
+        ] {
+            store.set_setting(k, v).await.unwrap();
+        }
+
+        let migrated = migrate_legacy_settings(&store).await;
+        assert_eq!(migrated.download_dir.as_deref(), Some("/data/dl"));
+        assert_eq!(migrated.concurrency, Some(7));
+        assert_eq!(migrated.proxy.as_deref(), Some("http://127.0.0.1:8080"));
+        assert_eq!(migrated.bt_ratio_limit, Some(2.5));
+        assert!(migrated.resume_on_start);
+        // 没写过的键回落默认值，不是报错
+        assert!(migrated.user_agent.is_none());
+    }
+
+    /// 全新安装：一个老键都没有，迁移给出一份干净的默认值而不是失败。
+    #[tokio::test]
+    async fn a_fresh_install_migrates_to_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = aa4c_store::Store::open(&dir.path().join("aa4c.db"))
+            .await
+            .unwrap();
+        let migrated = migrate_legacy_settings(&store).await;
+        assert!(migrated.download_dir.is_none());
+        assert!(!migrated.resume_on_start);
     }
 
     /// 12 个设置项当初散在 `aa4c_types::Settings` 里；这里确认插件能原样吃回去。

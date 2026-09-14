@@ -2,6 +2,9 @@
 //!
 //! 持久化为 settings 表的若干 KV（值 JSON 编码）；此处只定义前后端共享的
 //! 聚合视图，键名与默认值的解析归 aa4c-core 负责。
+//!
+//! **只装连接层与能力层自己的设置**（V0.8「Focus」F1.3）。插件的设置走 [`Settings::plugins`]
+//! 这个不透明口袋——核心不认识它们的字段名，那正是 F1 划出插件边界时要买的东西。
 
 use serde::{Deserialize, Serialize};
 
@@ -49,72 +52,17 @@ pub struct Settings {
     /// 服务器自己不知道对外可见的域名——这部分只能由用户提供。留空时界面会退而用探测到的
     /// 公网地址（UPnP 映射拿到的）或本机局域网地址，并**如实标明**那是什么。
     pub local_server_host: Option<String>,
-    /// 下载目录（默认系统下载目录，如 `~/Downloads`），必须在 `save_dir` 子树之外——
-    /// 落进 `save_dir` 会被 Inbox 自动索引、分享给全部完全信任设备（DOWNLOAD_DESIGN.md
-    /// §5/§7，里程碑 D1）。
-    pub download_dir: String,
-    /// 下载限速（KB/s），`None` 或 0 = 不限速。写进每次启动重新生成的引擎配置文件，
-    /// 下次启动生效，不做热更新（DOWNLOAD_DESIGN.md §9，里程碑 D3）。
-    pub download_speed_limit_kbps: Option<u32>,
-    /// 并发下载数，`None` = 用各引擎自己的默认值（aria2 默认 5）。同上，重启生效。
-    pub download_concurrency: Option<u32>,
-    /// 单文件最大连接数（HTTP/HTTPS/FTP 分段下载加速，对标 FDM/IDM 的"多线程下载"）。
-    /// `None` 时**不是**"用 aria2 自己的默认值"——aria2 的默认值是 1（单连接，效果等同
-    /// 不开加速），直接沿用会让"开箱即用"的下载速度明显落后于同类软件，所以 `None` 在
-    /// `conf.rs` 里会落到一个更合理的兜底值（5）而不是引擎默认，这一条与
-    /// `download_concurrency`/`download_speed_limit_kbps` 的"None=引擎默认"惯例故意不同。
-    /// 1..=16（aria2 `-x` 上限），重启生效。
-    pub download_max_connections_per_file: Option<u32>,
-    /// 上传限速（KB/s），`None` 或 0 = 不限。aria2 `max-overall-upload-limit` +
-    /// Transmission `speed-limit-up(-enabled)`——两个引擎都透传（BT 才是上传大户，
-    /// 但 aria2 做种/FTP 上行同样吃带宽，不区分对待）。重启生效。
-    pub download_upload_limit_kbps: Option<u32>,
-    /// HTTP 下载的 User-Agent。`None` **不是**"用 aria2 自己的默认值"——aria2 默认
-    /// UA（`aria2/1.37.0`）会被相当一部分站点直接拒（403/跳验证页），用户只会看到
-    /// 一条没头没脑的下载失败。所以 `None` 落到内置的常见浏览器 UA（同 Motrix 的
-    /// 取舍，它也把 Chrome UA 设成默认值），与 `download_max_connections_per_file`
-    /// 一样是刻意偏离"None=引擎默认"惯例的一条。
-    pub download_user_agent: Option<String>,
-    /// 下载用的代理服务器（`http://host:port`，支持 http/https），`None` = 不走代理。
-    /// aria2 `all-proxy`。BT（Transmission）不透传——它的 peer 流量走代理是另一套
-    /// 问题（且 4.x 的 `proxy_url` 只作用于 tracker 通信），不在这里混为一谈。
-    pub download_proxy: Option<String>,
-    /// 不走代理的地址列表（逗号分隔，如 `localhost,192.168.0.0/16`），`None` = 全走。
-    /// aria2 `no-proxy`；`download_proxy` 为空时这一项没有意义。
-    pub download_proxy_bypass: Option<String>,
-    /// BT 追加 tracker 列表（一行一个，`None` = 不追加）。对应 Transmission 4 的
-    /// `default-trackers`（真机核实过这个键在 4.1.3 生成的 settings.json 里存在）。
-    /// 公共 tracker 能显著改善磁力链接的连通性——Motrix 是从 GitHub 定时自动同步，
-    /// 我们**只做手动填**：自动同步等于应用自己定期往第三方地址发请求，与 AA4C
-    /// "不配置就完全不出网"的默认姿态冲突，留给用户自己贴（可从 ngosang/trackerslist
-    /// 这类公开列表复制）。
-    pub bt_trackers: Option<String>,
-    /// 启动时自动继续上次未完成的下载，默认 **false**。同 Motrix 的
-    /// `resume-all-when-app-launched` 取舍：用户可能是**故意**暂停某个任务的，
-    /// 重启就偷偷全部恢复会覆盖掉这个意图，宁可让用户自己点「全部继续」。
-    pub download_resume_on_start: bool,
-    /// BT 分享率上限，`None` = 不限。对应 Transmission `ratio-limit`（配置文件键名，
-    /// 与 RPC session-set 的 `seedRatioLimit` 不是同一个名字，见 DOWNLOAD_DESIGN.md §9）。
-    pub bt_ratio_limit: Option<f64>,
-    /// BT 空闲做种超时（分钟），`None` = 不限。Transmission 没有"总做种时长"概念，
-    /// 这是"多久没有上传活动就停止做种"（`idle-seeding-limit`，DOWNLOAD_DESIGN.md §9）。
-    pub bt_idle_seeding_limit_minutes: Option<u32>,
-    /// 归档根目录（默认系统文档目录下的 `AA4C归档`），必须与 `save_dir`/`download_dir`
-    /// 子树互不嵌套（同 `download_dir` 的既有隔离原则，ARCHIVE_DESIGN.md §2.5）。
-    pub archive_root: String,
-    /// 自动归档总闸（下载完成后是否跑规则引擎），默认开启——真正的保守闸门在每条
-    /// 规则各自的 `enabled`（默认停用），见 ARCHIVE_DESIGN.md §2.3。
-    pub archive_auto_enabled: bool,
-    /// 模型文件目录（默认 `<归档根>/模型`——与内置"模型"归档规则的目标目录故意
-    /// 同址：下载 GGUF → 自动归档进模型目录 → 模型库立即可见，ARCHIVE_DESIGN.md
-    /// §3.5）。
-    pub ai_models_dir: String,
-    /// 当前选定的对话模型文件路径，`None` = 未配置（AI 能力整体 `Unavailable`）。
-    pub ai_chat_model: Option<String>,
-    /// 当前选定的嵌入模型文件路径，`None` = 未配置。
-    pub ai_embedding_model: Option<String>,
-    /// AI 引擎空闲多久后自动退出释放内存（分钟），默认 10（ARCHIVE_DESIGN.md §3.3）。
-    pub ai_idle_timeout_minutes: u32,
+    /// 各插件自己的设置，按插件 id 索引（V0.8「Focus」F1.3）。
+    ///
+    /// **核心不解释里面的内容。** 此前这个结构体有 28 个字段，其中 18 个属于下载
+    /// （12 个）与归档/AI（6 个）——它们是设置页涨到 5 个标签页、903 行的直接原因，
+    /// 也让「AA4C 不是下载器」这句话在类型层面就不成立。
+    ///
+    /// 现在每个插件用 `Plugin::settings_schema()` 声明自己有哪些字段，前端用一个通用
+    /// 渲染器画表单；这里只是个不透明的 JSON 口袋。落库时一个插件一条记录，
+    /// 键名 `plugin.<id>`。
+    #[serde(default)]
+    pub plugins: serde_json::Map<String, serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -123,6 +71,12 @@ mod tests {
 
     #[test]
     fn settings_json_is_camel_case() {
+        let mut plugins = serde_json::Map::new();
+        plugins.insert(
+            "download".into(),
+            serde_json::json!({ "download_dir": "/Users/huo/Downloads", "concurrency": 3 }),
+        );
+
         let s = Settings {
             device_name: "Huo 的 MacBook".into(),
             save_dir: "/Users/huo/Downloads/AA4C".into(),
@@ -134,24 +88,7 @@ mod tests {
             enable_local_server: true,
             local_server_port: 42421,
             local_server_host: Some("home.example.com".into()),
-            download_dir: "/Users/huo/Downloads".into(),
-            download_speed_limit_kbps: Some(500),
-            download_concurrency: Some(3),
-            download_max_connections_per_file: Some(8),
-            download_upload_limit_kbps: Some(200),
-            download_user_agent: Some("Mozilla/5.0 (test)".into()),
-            download_proxy: Some("http://127.0.0.1:8080".into()),
-            download_proxy_bypass: Some("localhost,192.168.0.0/16".into()),
-            bt_trackers: Some("udp://tracker.example.com:6969/announce".into()),
-            download_resume_on_start: true,
-            bt_ratio_limit: Some(2.0),
-            bt_idle_seeding_limit_minutes: Some(30),
-            archive_root: "/Users/huo/Documents/AA4C归档".into(),
-            archive_auto_enabled: true,
-            ai_models_dir: "/Users/huo/Documents/AA4C归档/模型".into(),
-            ai_chat_model: Some("/Users/huo/Documents/AA4C归档/模型/qwen3-4b.gguf".into()),
-            ai_embedding_model: None,
-            ai_idle_timeout_minutes: 10,
+            plugins,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["deviceName"], "Huo 的 MacBook");
@@ -166,31 +103,36 @@ mod tests {
         assert_eq!(json["enableLocalServer"], true);
         assert_eq!(json["localServerPort"], 42421);
         assert_eq!(json["localServerHost"], "home.example.com");
-        assert_eq!(json["downloadDir"], "/Users/huo/Downloads");
-        assert_eq!(json["downloadSpeedLimitKbps"], 500);
-        assert_eq!(json["downloadConcurrency"], 3);
-        assert_eq!(json["downloadMaxConnectionsPerFile"], 8);
-        assert_eq!(json["downloadUploadLimitKbps"], 200);
-        assert_eq!(json["downloadUserAgent"], "Mozilla/5.0 (test)");
-        assert_eq!(json["downloadProxy"], "http://127.0.0.1:8080");
-        assert_eq!(json["downloadProxyBypass"], "localhost,192.168.0.0/16");
+
+        // 插件那一格**原样透传**，核心不碰里面的键名——所以里面是下划线风格，
+        // 与外层的 camelCase 不同。那是插件自己的约定，核心无权改写。
         assert_eq!(
-            json["btTrackers"],
-            "udp://tracker.example.com:6969/announce"
+            json["plugins"]["download"]["download_dir"],
+            "/Users/huo/Downloads"
         );
-        assert_eq!(json["downloadResumeOnStart"], true);
-        assert_eq!(json["btRatioLimit"], 2.0);
-        assert_eq!(json["btIdleSeedingLimitMinutes"], 30);
-        assert_eq!(json["archiveRoot"], "/Users/huo/Documents/AA4C归档");
-        assert_eq!(json["archiveAutoEnabled"], true);
-        assert_eq!(json["aiModelsDir"], "/Users/huo/Documents/AA4C归档/模型");
-        assert_eq!(
-            json["aiChatModel"],
-            "/Users/huo/Documents/AA4C归档/模型/qwen3-4b.gguf"
-        );
-        assert_eq!(json["aiEmbeddingModel"], serde_json::Value::Null);
-        assert_eq!(json["aiIdleTimeoutMinutes"], 10);
+        assert_eq!(json["plugins"]["download"]["concurrency"], 3);
+
         let back: Settings = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
+    }
+
+    /// 老版本存下来的 JSON 里没有 `plugins` 字段，反序列化不能炸——
+    /// `#[serde(default)]` 保证它回落成空表（升级路径，见 `Settings::plugins` 文档）。
+    #[test]
+    fn settings_without_a_plugins_field_still_deserialize() {
+        let json = serde_json::json!({
+            "deviceName": "旧版本",
+            "saveDir": "/tmp",
+            "autoAcceptFromTrusted": false,
+            "listenPort": 42420,
+            "serverUrl": null,
+            "enableRemote": false,
+            "enablePortMapping": true,
+            "enableLocalServer": false,
+            "localServerPort": 42421,
+            "localServerHost": null
+        });
+        let s: Settings = serde_json::from_value(json).unwrap();
+        assert!(s.plugins.is_empty());
     }
 }

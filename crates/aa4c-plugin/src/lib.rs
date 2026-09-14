@@ -156,6 +156,11 @@ impl PluginRegistry {
         self.plugins.is_empty()
     }
 
+    /// 本次构建装了哪些插件的 id。设置层据此只读真的装了的那几份。
+    pub fn ids(&self) -> Vec<&'static str> {
+        self.plugins.iter().map(|p| p.id()).collect()
+    }
+
     /// 路由一次调用。未知 id 报 `Unavailable` 而不是 `Protocol`——对前端来说
     /// 「这个构建没装这个插件」与「这个能力不可用」是同一件事，同 `Core` 对
     /// `download`/`ai` 为 `None` 时的既有语义。

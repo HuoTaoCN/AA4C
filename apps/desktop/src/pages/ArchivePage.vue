@@ -190,13 +190,23 @@ function modelSummary(model: LocalModel): string {
   return parts.length ? parts.join(" · ") : "未知格式";
 }
 
+/** 归档插件自己的设置（F1.3 起不再是 `Settings` 上的独立字段，而是
+ * `settings.plugins["archive"]` 这一格不透明 JSON——见 `PluginSettings`）。 */
+function archiveSettings(): Record<string, unknown> {
+  return (settings.settings?.plugins?.archive as Record<string, unknown>) ?? {};
+}
+
 async function selectModel(kind: "chat" | "embedding", path: string) {
   if (!settings.settings) return;
   try {
-    const next =
-      kind === "chat"
-        ? { ...settings.settings, aiChatModel: path }
-        : { ...settings.settings, aiEmbeddingModel: path };
+    const key = kind === "chat" ? "chat_model" : "embedding_model";
+    const next = {
+      ...settings.settings,
+      plugins: {
+        ...settings.settings.plugins,
+        archive: { ...archiveSettings(), [key]: path },
+      },
+    };
     await settings.save(next);
     await ai.loadStatus();
     toast.push("success", kind === "chat" ? "已设为对话模型" : "已设为知识库模型");
@@ -206,8 +216,8 @@ async function selectModel(kind: "chat" | "embedding", path: string) {
 }
 
 function isSelected(kind: "chat" | "embedding", path: string): boolean {
-  const cur = kind === "chat" ? settings.settings?.aiChatModel : settings.settings?.aiEmbeddingModel;
-  return cur === path;
+  const key = kind === "chat" ? "chat_model" : "embedding_model";
+  return archiveSettings()[key] === path;
 }
 
 /** 推荐模型直链（ARCHIVE_DESIGN.md §3.5）：URL 已实测核实可下载（HTTP 200/302 直连

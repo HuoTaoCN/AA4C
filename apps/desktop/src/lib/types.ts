@@ -96,46 +96,11 @@ export interface Settings {
   localServerPort: number;
   /** 别的设备该用哪个域名/地址找到这台内置服务器（DDNS 或固定 IP），null = 未填。 */
   localServerHost: string | null;
-  /** 下载目录（默认系统下载目录），必须在 saveDir 子树之外（里程碑 D1）。 */
-  downloadDir: string;
-  /** 下载限速（KB/s），null = 不限速。重启引擎生效（里程碑 D3）。 */
-  downloadSpeedLimitKbps: number | null;
-  /** 并发下载数，null = 引擎默认。重启引擎生效（里程碑 D3）。 */
-  downloadConcurrency: number | null;
-  /** 单文件最大连接数（分段下载加速，对标 FDM/IDM 的多线程下载），null = 用一个
-   * 比 aria2 默认值（1，等同不加速）更合理的兜底值（5）。1-16，重启引擎生效。 */
-  downloadMaxConnectionsPerFile: number | null;
-  /** 上传限速（KB/s），null = 不限。两个引擎都透传，重启生效。 */
-  downloadUploadLimitKbps: number | null;
-  /** HTTP 下载 User-Agent，null = 用内置浏览器 UA（不是引擎默认值——aria2 自己的
-   * 默认 UA 会被不少站点直接拒）。重启生效。 */
-  downloadUserAgent: string | null;
-  /** 下载代理（`http://host:port`），null = 不走代理。BT 不透传。重启生效。 */
-  downloadProxy: string | null;
-  /** 不走代理的地址列表（逗号分隔），null = 全走代理。重启生效。 */
-  downloadProxyBypass: string | null;
-  /** BT 追加 tracker 列表（一行一个），null = 不追加。重启生效。 */
-  btTrackers: string | null;
-  /** 启动时自动继续上次未完成的下载，默认 false。 */
-  downloadResumeOnStart: boolean;
-  /** BT 分享率上限，null = 不限（里程碑 D3）。 */
-  btRatioLimit: number | null;
-  /** BT 空闲做种超时（分钟），null = 不限——多久没有上传活动就停止做种，
-   * 不是"总做种时长"（里程碑 D3）。 */
-  btIdleSeedingLimitMinutes: number | null;
-  /** 归档根目录，必须在 saveDir/downloadDir 子树之外（里程碑 AI1）。 */
-  archiveRoot: string;
-  /** 自动归档总闸（下载完成后跑规则引擎），默认开启；真正的保守闸门在每条规则
-   * 各自的 enabled（默认停用），见 ARCHIVE_DESIGN.md §2.3（里程碑 AI1）。 */
-  archiveAutoEnabled: boolean;
-  /** 模型文件目录，默认 `<归档根>/模型`（里程碑 AI2，ARCHIVE_DESIGN.md §3.5）。 */
-  aiModelsDir: string;
-  /** 当前选定的对话模型文件路径，null = 未配置。 */
-  aiChatModel: string | null;
-  /** 当前选定的嵌入模型文件路径，null = 未配置。 */
-  aiEmbeddingModel: string | null;
-  /** AI 引擎空闲多久后自动退出释放内存（分钟），默认 10（ARCHIVE_DESIGN.md §3.3）。 */
-  aiIdleTimeoutMinutes: number;
+  /** 各插件自己的设置，按插件 id 索引（V0.8「Focus」F1.3）。
+   *
+   * **前端也不解释里面的内容**——由 `PluginSettings` 按插件的 `settingsSchema` 渲染。
+   * 此前这里是 18 个具体字段（下载 12 + 归档/AI 6），设置页为它们手写了三分之二的篇幅。 */
+  plugins: Record<string, unknown>;
 }
 
 /**
