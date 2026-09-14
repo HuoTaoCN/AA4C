@@ -10,7 +10,10 @@ mod dispatch;
 mod introduce;
 mod local_server;
 mod orchestrate;
-pub mod plugin;
+
+/// 插件边界（住在独立的 `aa4c-plugin` crate：插件要实现它，
+/// 而核心不能反过来依赖插件——trait 放核心里就成了循环）。
+pub use aa4c_plugin as plugin;
 mod portmap;
 mod server_link;
 mod settings;

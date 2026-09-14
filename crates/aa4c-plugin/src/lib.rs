@@ -19,6 +19,14 @@
 //! 不是 `dlopen`。现阶段一个编译期 trait + 一个通用调用入口就够，而且它立刻能把
 //! 核心与插件的依赖方向钉死——这才是本轮真正要买的东西。
 //!
+//! # 为什么是独立 crate
+//!
+//! 插件要 `impl Plugin`，就得依赖 trait 所在的 crate。而本轮的目标恰恰是让
+//! **核心不依赖任何插件**——trait 放在 `aa4c-core` 里，`aa4c-download` 为了实现它
+//! 反过来依赖 `aa4c-core`，就成了循环。抽成这个只有一个文件的 crate，
+//! 依赖方向变成 `core → plugin ← 各插件`，两边都干净。
+//! `aa4c_core::plugin` 是对它的 re-export，既有路径不变。
+//!
 //! # 异步写法
 //!
 //! trait 方法返回装箱 future（[`PluginFuture`]），沿用本仓库既有惯例

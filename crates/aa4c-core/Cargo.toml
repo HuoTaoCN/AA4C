@@ -20,6 +20,7 @@ aa4c-download = { workspace = true }
 aa4c-engine = { workspace = true }
 aa4c-ai = { workspace = true }
 aa4c-archive = { workspace = true }
+aa4c-plugin = { workspace = true }
 blake3 = { workspace = true }
 notify-debouncer-mini = { workspace = true }
 tokio = { workspace = true }

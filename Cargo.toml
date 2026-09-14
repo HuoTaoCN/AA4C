@@ -7,6 +7,7 @@ members = [
     "crates/aa4c-discovery",
     "crates/aa4c-transfer",
     "crates/aa4c-store",
+    "crates/aa4c-plugin",
     "crates/aa4c-core",
     "crates/aa4c-server",
     "crates/aa4c-download",
@@ -31,6 +32,7 @@ aa4c-identity = { path = "crates/aa4c-identity" }
 aa4c-discovery = { path = "crates/aa4c-discovery" }
 aa4c-transfer = { path = "crates/aa4c-transfer" }
 aa4c-store = { path = "crates/aa4c-store" }
+aa4c-plugin = { path = "crates/aa4c-plugin" }
 aa4c-core = { path = "crates/aa4c-core" }
 aa4c-server = { path = "crates/aa4c-server" }
 aa4c-download = { path = "crates/aa4c-download" }
