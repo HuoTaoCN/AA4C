@@ -16,6 +16,18 @@ use aa4c_types::CoreEvent;
 use serde_json::json;
 use tokio::time::timeout;
 
+/// 同一时刻只允许一个用例跑真实 `llama-server`。
+///
+/// **这是 F1 把这些用例搬进本 crate 之后才需要的。** 在 `aa4c-core/tests/core.rs` 里，
+/// 两个 AI 用例夹在近三十个轻量用例中间，被调度错开的概率很高；搬到这里之后整个二进制
+/// 只有三个用例，两个重型的几乎必然同时起来——各拉一个推理引擎，在 CI 的三核 macOS
+/// runner 上直接互相拖垮。2026-09-14 的 CI 就是这么挂的（`expected KbAnswerDone within
+/// the timeout`，只有 macOS 腿红）。
+///
+/// 串行化比继续加超时更对症：它消除的是争抢本身，两个用例各自都跑得更快。
+static LLAMA_SLOT: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 fn from_json<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> T {
     serde_json::from_value(v).expect("plugin returned an unexpected shape")
 }
@@ -58,6 +70,9 @@ fn require_tiny_gguf() -> PathBuf {
 /// HANDOFF.md 环境要求）——没设就显式 panic，不静默跳过。
 #[tokio::test]
 async fn ai_suggest_lifecycle_through_core_orchestration() {
+    // 见 `LLAMA_SLOT`：整个二进制同一时刻只跑一个推理引擎。
+    let _slot = LLAMA_SLOT.lock().await;
+
     let dir = tempfile::tempdir().unwrap();
     let mut config = CoreConfig::new(dir.path().to_path_buf());
     config.listen_port = 0;
@@ -95,10 +110,16 @@ async fn ai_suggest_lifecycle_through_core_orchestration() {
     .await
     .unwrap();
 
+    // 按墙钟预算等，不按固定循环次数——`for _ in 0..N` 的预算是「N 次事件或 N×超时」的
+    // **较小者**，任何一条不匹配的事件都白吃一次配额，实际能等多久取决于事件流的形状而
+    // 不是你写的那个时间。同一个反模式上一轮在 `aa4c_ai::suggest` 里修过一次
+    // （CHANGELOG `[Unreleased]`），这份副本当时漏了。
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     let mut saw_done = false;
-    for _ in 0..200 {
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if let Ok(Ok(CoreEvent::AiSuggestProgress { done, total })) =
-            timeout(Duration::from_millis(500), ev.recv()).await
+            timeout(remaining, ev.recv()).await
         {
             assert_eq!(total, 1);
             if done >= total {
@@ -180,6 +201,9 @@ async fn ai_suggest_lifecycle_through_core_orchestration() {
 /// 两个环境变量，同上一条 AI3 测试。
 #[tokio::test]
 async fn kb_lifecycle_through_core_orchestration() {
+    // 见 `LLAMA_SLOT`：整个二进制同一时刻只跑一个推理引擎。
+    let _slot = LLAMA_SLOT.lock().await;
+
     let dir = tempfile::tempdir().unwrap();
     let mut config = CoreConfig::new(dir.path().to_path_buf());
     config.listen_port = 0;
@@ -262,7 +286,9 @@ async fn kb_lifecycle_through_core_orchestration() {
         .unwrap(),
     );
 
-    let ask_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    // 180s 与 `aa4c_ai::kb` 里那条同源用例对齐——上一轮就是为了共享 runner 上的争抢
+    // 把它从 60s 放宽的（CHANGELOG 0.7.0-preview.1），这份副本当时漏了。
+    let ask_deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     let mut got_delta = false;
     let mut done_sources = Vec::new();
     let mut saw_done = false;
