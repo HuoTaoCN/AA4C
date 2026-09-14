@@ -1,5 +1,11 @@
-// 11 个 Tauri Command 的类型化封装（API_DESIGN.md §9.1）。
+// Tauri Command 的类型化封装（API_DESIGN.md §9.1）。
 // 失败时 invoke 会 reject 一个 CommandError（{ code, message }）。
+//
+// 连接核心（设备 / 配对 / 信任 / 传输 / 同步 / 分享 / 设置）走各自的类型化 Command；
+// 插件能力（下载 / 归档与 AI / 知识库）统一走 `plugin_invoke`——它们此前各占一个
+// Command，加起来 27 个，是 60 个里的将近一半（F1，ARCHITECTURE.md 原则 3）。
+//
+// 下面这些函数的**签名一个都没变**，换的只是底层通道，所以 stores 与页面不用动。
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -28,7 +34,26 @@ import type {
   UnifiedFile,
 } from "./types";
 
+/// 转给某个插件。`payload` 里的键是**下划线风格**——它整个作为不透明 JSON 传给
+/// 插件，由插件用 serde 反序列化，不经过 Tauri 的 camelCase→snake_case 转换。
+function plugin<T>(
+  id: string,
+  method: string,
+  payload: Record<string, unknown> = {},
+): Promise<T> {
+  return invoke<T>("plugin_invoke", { plugin: id, method, payload });
+}
+
+/// 本次构建装了哪些插件（id / 名字 / 设置项 schema）。
+export interface PluginInfo {
+  id: string;
+  displayName: string;
+  settingsSchema: unknown;
+}
+
 export const api = {
+  pluginManifest: () => invoke<PluginInfo[]>("plugin_manifest"),
+
   getSelfDevice: () => invoke<DeviceInfo>("get_self_device"),
   listDevices: () => invoke<DeviceInfo[]>("list_devices"),
 
@@ -90,55 +115,60 @@ export const api = {
   openShare: (link: string) => invoke<string>("open_share", { link }),
 
   addDownload: (url: string, options?: DownloadOptions) =>
-    invoke<string>("add_download", { url, options: options ?? null }),
+    plugin<string>("download", "add", { url, options: options ?? null }),
   addTorrentFile: (path: string, options?: DownloadOptions) =>
-    invoke<string>("add_torrent_file", { path, options: options ?? null }),
-  pauseDownload: (taskId: string) =>
-    invoke<void>("pause_download", { taskId }),
-  resumeDownload: (taskId: string) =>
-    invoke<void>("resume_download", { taskId }),
-  cancelDownload: (taskId: string, deleteLocal = false) =>
-    invoke<void>("cancel_download", { taskId, deleteLocal }),
-  retryDownload: (taskId: string) =>
-    invoke<string>("retry_download", { taskId }),
-  listDownloads: () => invoke<DownloadTask[]>("list_downloads"),
-  pauseAllDownloads: () => invoke<number>("pause_all_downloads"),
-  resumeAllDownloads: () => invoke<number>("resume_all_downloads"),
-  clearCompletedDownloads: () => invoke<number>("clear_completed_downloads"),
-
-  listArchiveRules: () => invoke<ArchiveRule[]>("list_archive_rules"),
-  saveArchiveRule: (rule: ArchiveRule) =>
-    invoke<ArchiveRule>("save_archive_rule", { rule }),
-  deleteArchiveRule: (id: string) =>
-    invoke<void>("delete_archive_rule", { id }),
-  listArchiveEntries: () => invoke<ArchiveEntry[]>("list_archive_entries"),
-  archiveFiles: (paths: string[], ruleId?: string, targetDir?: string) =>
-    invoke<string[]>("archive_files", {
-      paths,
-      ruleId: ruleId ?? null,
-      targetDir: targetDir ?? null,
+    plugin<string>("download", "add_torrent_file", {
+      path,
+      options: options ?? null,
     }),
-  undoArchive: (logId: number) => invoke<void>("undo_archive", { logId }),
-  listArchiveLog: () => invoke<ArchiveLogEntry[]>("list_archive_log"),
+  pauseDownload: (taskId: string) =>
+    plugin<void>("download", "pause", { id: taskId }),
+  resumeDownload: (taskId: string) =>
+    plugin<void>("download", "resume", { id: taskId }),
+  cancelDownload: (taskId: string, deleteLocal = false) =>
+    plugin<void>("download", "cancel", { id: taskId, delete_local: deleteLocal }),
+  retryDownload: (taskId: string) =>
+    plugin<string>("download", "retry", { id: taskId }),
+  listDownloads: () => plugin<DownloadTask[]>("download", "list"),
+  pauseAllDownloads: () => plugin<number>("download", "pause_all"),
+  resumeAllDownloads: () => plugin<number>("download", "resume_all"),
+  clearCompletedDownloads: () => plugin<number>("download", "clear_completed"),
 
-  listLocalModels: () => invoke<LocalModel[]>("list_local_models"),
-  getAiStatus: () => invoke<AiStatus>("get_ai_status"),
+  listArchiveRules: () => plugin<ArchiveRule[]>("archive", "list_rules"),
+  saveArchiveRule: (rule: ArchiveRule) =>
+    plugin<ArchiveRule>("archive", "save_rule", { rule }),
+  deleteArchiveRule: (id: string) =>
+    plugin<void>("archive", "delete_rule", { id }),
+  listArchiveEntries: () => plugin<ArchiveEntry[]>("archive", "list_entries"),
+  archiveFiles: (paths: string[], ruleId?: string, targetDir?: string) =>
+    plugin<string[]>("archive", "archive_files", {
+      paths,
+      rule_id: ruleId ?? null,
+      target_dir: targetDir ?? null,
+    }),
+  undoArchive: (logId: number) =>
+    plugin<void>("archive", "undo", { log_id: logId }),
+  listArchiveLog: () => plugin<ArchiveLogEntry[]>("archive", "list_log"),
+
+  listLocalModels: () => plugin<LocalModel[]>("archive", "list_local_models"),
+  getAiStatus: () => plugin<AiStatus>("archive", "ai_status"),
 
   startSuggest: (paths: string[]) =>
-    invoke<void>("start_suggest", { paths }),
-  listSuggestions: () => invoke<Suggestion[]>("list_suggestions"),
+    plugin<void>("archive", "start_suggest", { paths }),
+  listSuggestions: () => plugin<Suggestion[]>("archive", "list_suggestions"),
   resolveSuggestion: (id: string, adopt: boolean, targetDir?: string) =>
-    invoke<string | null>("resolve_suggestion", {
+    plugin<string | null>("archive", "resolve_suggestion", {
       id,
       adopt,
-      targetDir: targetDir ?? null,
+      target_dir: targetDir ?? null,
     }),
 
-  kbAddSource: (path: string) => invoke<KbSource>("kb_add_source", { path }),
-  kbRemoveSource: (id: string) => invoke<void>("kb_remove_source", { id }),
-  kbListSources: () => invoke<KbSourceSummary[]>("kb_list_sources"),
-  kbReindex: (sourceId: string) => invoke<void>("kb_reindex", { sourceId }),
-  kbAsk: (question: string) => invoke<string>("kb_ask", { question }),
+  kbAddSource: (path: string) => plugin<KbSource>("archive", "kb_add_source", { path }),
+  kbRemoveSource: (id: string) => plugin<void>("archive", "kb_remove_source", { id }),
+  kbListSources: () => plugin<KbSourceSummary[]>("archive", "kb_list_sources"),
+  kbReindex: (sourceId: string) =>
+    plugin<void>("archive", "kb_reindex", { id: sourceId }),
+  kbAsk: (question: string) => plugin<string>("archive", "kb_ask", { question }),
 };
 
 /** 把任意 reject 值收敛为 CommandError（兜底未知错误）。 */

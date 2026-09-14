@@ -4,6 +4,46 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **V0.8「Focus」F1：把下载中心与归档/AI 移到插件边界之外。** 起因是三处文档与代码的
+  正面矛盾：①PROJECT_VISION 与 AGENTS 都写着「不是下载器、BT 工具、云盘、同步工具」，
+  而这两块占了 **27/60 个 Tauri 命令、18/28 个设置项、一半前端代码、36% 的 store**；
+  ②ARCHITECTURE 原则 3 与 AGENTS「必须」清单都承诺「高级能力通过 Plugin trait 接入」，
+  全仓库 grep **`trait Plugin` 不存在**；③UI_DESIGN_SPEC 只规定了 6 个页面，而最大的两个
+  （归档 825 行 / 下载 552 行）**完全没有规格**。
+  - 新增 `aa4c-plugin`：`Plugin` / `PluginContext` / `PluginRegistry`。**单独成 crate**——
+    插件要实现 trait 就得依赖它，放 `aa4c-core` 里就是 `core → download → core` 的循环。
+  - 新增 `aa4c-archive`：`aa4c-core/src/archive/` 那 1700 行整体搬出。它的对等物
+    `aa4c-download` 一开始就是独立 crate，两者形态相同却归属不同，纯属历史原因。
+  - `aa4c-download` / `aa4c-archive` 各实现 `Plugin`；**`aa4c-core` 的依赖列表里不再有
+    `aa4c-download`/`aa4c-ai`/`aa4c-archive`/`aa4c-engine`**。
+  - `Core` 去掉 `download`/`ai`/`suggest`/`kb` 四个字段、27 个编排方法、`CoreConfig` 上
+    三个点名 aria2/Transmission/llama-server 的 spawner 字段，换成一个 `PluginRegistry`
+    加一个 `plugin_invoke`。**桌面壳层成了唯一知道有哪些插件的地方。**
+  - Tauri 命令 60 → 35；`aa4c-core` 6533 → 4419 行；`orchestrate.rs` 1165 → 812 行。
+  - 前端 `api.ts` 的函数签名**一个都没变**，只换了底层通道，所以 stores 与页面零改动。
+  - 五个端到端测试移到插件 crate，但**仍然驱动真实 `Core`**——值得测的是应用真正走的
+    那条缝，不是绕开它直接调服务。依赖方向不冲突（插件 crate 只在 dev-dependency 用 core）。
+  - **迁移 008–011 不搬家**：`user_version` 是线性计数，摘出去要重编号，重编号要重建表，
+    而重建表正是本项目栽过跟头的那类迁移（外键关着时 `DROP TABLE` 顺着级联删光子表）。
+    既有表原名保留，插件用新增的 `Store::with_conn` 操作自己的表。
+  - **尚未完成**：`Settings` 仍是 28 字段的大结构体，`settings::plugin_settings` 是一层
+    过渡垫片，负责把其中 18 个切给插件。真正拆成 `CoreSettings` + 插件设置、以及设置页
+    改成由 `settings_schema()` 驱动的通用渲染器，是 F3 的事。
+
+### Fixed
+
+- **插件的 `OnceCell` 必须包在 `Arc` 里**（新写的回归测试抓到的）。`start()` 拿到 `&self`
+  而要返回 `'static` future，只能把要写的东西 clone 进去——clone 一个裸 `OnceCell` 得到的是
+  **另一个独立的格子**，往它里面 `set` 对本体毫无影响。后果是插件永远停在「未启动」，
+  每次调用都报 `Unavailable`，看起来就像「这个构建没有这个功能」。两个插件都有这个问题。
+- **归档插件的设置不能是启动快照**。`Core` 那份实现每次 `archive_files` 都重读设置，
+  搬过来时第一版存的是启动快照——用户改了归档根目录，归档动作还往旧目录搬。改成
+  `Mutex` 持有、变更时替换。顺带修掉模型路径比较的一个洞：拿启动快照比会漏掉
+  「A→B 再 B→A」，第二次看着没变、可引擎里跑的还是 B。`set_model` 仍然只在真的换了模型
+  时才调——它会无条件杀掉正在跑的引擎，无差别调用等于用户每存一次设置就打掉一个热模型。
+
 > 本节的全部改动已在 `main` 上跑过完整 CI：`gh run view 34558094699` 七个 job 全绿（Windows / macOS / Linux 三平台测试 + lint + 依赖审计 + 前端 + Android 哨兵）——**自 2026-08-12 以来第一次**。
 
 ### Fixed

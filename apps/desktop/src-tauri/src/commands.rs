@@ -7,10 +7,8 @@ use std::sync::Arc;
 
 use aa4c_core::Core;
 use aa4c_types::{
-    Aa4cError, AiStatus, ArchiveEntry, ArchiveLogEntry, ArchiveRule, CoreEvent, DeviceInfo,
-    DownloadOptions, DownloadTask, KbSource, KbSourceSummary, LocalModel, LocalServerStatus,
-    PendingIntroduction, Settings, Share, ShareAccess, Suggestion, SyncConflict, SyncFileEntry,
-    SyncScope, TransferTask, TrustLevel, UnifiedFile,
+    Aa4cError, CoreEvent, DeviceInfo, LocalServerStatus, PendingIntroduction, Settings, Share,
+    ShareAccess, SyncConflict, SyncFileEntry, SyncScope, TransferTask, TrustLevel, UnifiedFile,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -241,168 +239,31 @@ pub async fn open_share(core: State<'_, Arc<Core>>, link: String) -> CmdResult<S
     Ok(core.open_share(&link, None).await?)
 }
 
+/// 把一次调用转给插件（F1，ARCHITECTURE.md 原则 3）。
+///
+/// 此前这里是 27 个类型化 Command——下载 10、归档 7、AI 5、知识库 5——每个都要
+/// 在本文件写一遍、再在 `lib.rs` 的 `generate_handler!` 里登记一遍。它们占了
+/// 60 个 Command 里的将近一半，而按 PROJECT_VISION 自己的定义，这些能力都不属于
+/// 「设备连成一片」。
+///
+/// **为什么是一个通用入口而不是按插件分组的类型化 Command**：`generate_handler!`
+/// 是编译期展开的，按 feature 分组会让 `lib.rs` 长出一堆 `#[cfg]`；一个入口一次
+/// 到位，也给 V1.0 的第三方插件留了真门。代价是参数校验从编译期挪到运行期——
+/// 由插件在自己的 `invoke` 里反序列化时负责，错误信息会指名是哪个方法缺哪个字段。
 #[tauri::command]
-pub async fn add_download(
+pub async fn plugin_invoke(
     core: State<'_, Arc<Core>>,
-    url: String,
-    options: Option<DownloadOptions>,
-) -> CmdResult<String> {
-    Ok(core.add_download(url, options).await?)
+    plugin: String,
+    method: String,
+    payload: Value,
+) -> CmdResult<Value> {
+    Ok(core.plugin_invoke(&plugin, method, payload).await?)
 }
 
-/// 从本地 `.torrent` 文件新建 BT 任务：前端用文件选择器拿到路径传过来，
-/// 读盘在 Rust 侧做（Tauri IPC 传大块二进制不划算）。
+/// 本次构建装了哪些插件。前端据此决定「更多」分区显示什么、设置页画哪些表单。
 #[tauri::command]
-pub async fn add_torrent_file(
-    core: State<'_, Arc<Core>>,
-    path: String,
-    options: Option<DownloadOptions>,
-) -> CmdResult<String> {
-    Ok(core.add_torrent_file(PathBuf::from(path), options).await?)
-}
-
-#[tauri::command]
-pub async fn pause_download(core: State<'_, Arc<Core>>, task_id: String) -> CmdResult<()> {
-    Ok(core.pause_download(task_id).await?)
-}
-
-#[tauri::command]
-pub async fn resume_download(core: State<'_, Arc<Core>>, task_id: String) -> CmdResult<()> {
-    Ok(core.resume_download(task_id).await?)
-}
-
-#[tauri::command]
-pub async fn cancel_download(
-    core: State<'_, Arc<Core>>,
-    task_id: String,
-    delete_local: bool,
-) -> CmdResult<()> {
-    Ok(core.cancel_download(task_id, delete_local).await?)
-}
-
-#[tauri::command]
-pub async fn retry_download(core: State<'_, Arc<Core>>, task_id: String) -> CmdResult<String> {
-    Ok(core.retry_download(task_id).await?)
-}
-
-#[tauri::command]
-pub async fn list_downloads(core: State<'_, Arc<Core>>) -> CmdResult<Vec<DownloadTask>> {
-    Ok(core.list_downloads().await?)
-}
-
-#[tauri::command]
-pub async fn pause_all_downloads(core: State<'_, Arc<Core>>) -> CmdResult<usize> {
-    Ok(core.pause_all_downloads().await?)
-}
-
-#[tauri::command]
-pub async fn resume_all_downloads(core: State<'_, Arc<Core>>) -> CmdResult<usize> {
-    Ok(core.resume_all_downloads().await?)
-}
-
-#[tauri::command]
-pub async fn clear_completed_downloads(core: State<'_, Arc<Core>>) -> CmdResult<usize> {
-    Ok(core.clear_completed_downloads().await?)
-}
-
-#[tauri::command]
-pub async fn list_archive_rules(core: State<'_, Arc<Core>>) -> CmdResult<Vec<ArchiveRule>> {
-    Ok(core.list_archive_rules().await?)
-}
-
-#[tauri::command]
-pub async fn save_archive_rule(
-    core: State<'_, Arc<Core>>,
-    rule: ArchiveRule,
-) -> CmdResult<ArchiveRule> {
-    Ok(core.save_archive_rule(rule).await?)
-}
-
-#[tauri::command]
-pub async fn delete_archive_rule(core: State<'_, Arc<Core>>, id: String) -> CmdResult<()> {
-    Ok(core.delete_archive_rule(id).await?)
-}
-
-#[tauri::command]
-pub async fn list_archive_entries(core: State<'_, Arc<Core>>) -> CmdResult<Vec<ArchiveEntry>> {
-    Ok(core.list_archive_entries().await?)
-}
-
-/// 手动归档（ARCHIVE_DESIGN §2.4）：`ruleId` 手选某条规则强制应用；`targetDir` 完全
-/// 自定义目标目录；两者都不给时退回自动匹配全部启用规则。返回实际归档成功的路径。
-#[tauri::command]
-pub async fn archive_files(
-    core: State<'_, Arc<Core>>,
-    paths: Vec<String>,
-    rule_id: Option<String>,
-    target_dir: Option<String>,
-) -> CmdResult<Vec<String>> {
-    Ok(core.archive_files(paths, rule_id, target_dir).await?)
-}
-
-#[tauri::command]
-pub async fn undo_archive(core: State<'_, Arc<Core>>, log_id: i64) -> CmdResult<()> {
-    Ok(core.undo_archive(log_id).await?)
-}
-
-#[tauri::command]
-pub async fn list_archive_log(core: State<'_, Arc<Core>>) -> CmdResult<Vec<ArchiveLogEntry>> {
-    Ok(core.list_archive_log().await?)
-}
-
-#[tauri::command]
-pub async fn list_local_models(core: State<'_, Arc<Core>>) -> CmdResult<Vec<LocalModel>> {
-    Ok(core.list_local_models().await?)
-}
-
-#[tauri::command]
-pub async fn get_ai_status(core: State<'_, Arc<Core>>) -> CmdResult<AiStatus> {
-    Ok(core.get_ai_status().await?)
-}
-
-#[tauri::command]
-pub async fn start_suggest(core: State<'_, Arc<Core>>, paths: Vec<String>) -> CmdResult<()> {
-    Ok(core.start_suggest(paths).await?)
-}
-
-#[tauri::command]
-pub async fn list_suggestions(core: State<'_, Arc<Core>>) -> CmdResult<Vec<Suggestion>> {
-    Ok(core.list_suggestions().await?)
-}
-
-#[tauri::command]
-pub async fn resolve_suggestion(
-    core: State<'_, Arc<Core>>,
-    id: String,
-    adopt: bool,
-    target_dir: Option<String>,
-) -> CmdResult<Option<String>> {
-    Ok(core.resolve_suggestion(id, adopt, target_dir).await?)
-}
-
-#[tauri::command]
-pub async fn kb_add_source(core: State<'_, Arc<Core>>, path: String) -> CmdResult<KbSource> {
-    Ok(core.kb_add_source(path).await?)
-}
-
-#[tauri::command]
-pub async fn kb_remove_source(core: State<'_, Arc<Core>>, id: String) -> CmdResult<()> {
-    Ok(core.kb_remove_source(id).await?)
-}
-
-#[tauri::command]
-pub async fn kb_list_sources(core: State<'_, Arc<Core>>) -> CmdResult<Vec<KbSourceSummary>> {
-    Ok(core.kb_list_sources().await?)
-}
-
-#[tauri::command]
-pub async fn kb_reindex(core: State<'_, Arc<Core>>, source_id: String) -> CmdResult<()> {
-    Ok(core.kb_reindex(source_id).await?)
-}
-
-#[tauri::command]
-pub async fn kb_ask(core: State<'_, Arc<Core>>, question: String) -> CmdResult<String> {
-    Ok(core.kb_ask(question).await?)
+pub async fn plugin_manifest(core: State<'_, Arc<Core>>) -> CmdResult<Vec<Value>> {
+    Ok(core.plugin_manifest())
 }
 
 /// 把 `CoreEvent` 映射为 §9.2 约定的扁平 payload（统一 camelCase）。

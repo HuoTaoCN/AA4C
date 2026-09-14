@@ -42,12 +42,17 @@ AA连接（AA4C）**是**：一个开源的跨平台**设备连接平台**。核
 **必须**：
 
 - 模块化：按 [ARCHITECTURE.md](ARCHITECTURE.md) 的 crate 划分写代码
-- 插件化：高级能力通过 Plugin trait 接入
+- 插件化：高级能力通过 [`aa4c_plugin::Plugin`](crates/aa4c-plugin/src/lib.rs) 接入。
+  判据是「**拿掉它之后 AA4C 还是不是 AA4C**」——连接 / 传输 / 同步 / 分享留在核心，
+  下载、归档与 AI 这类是插件。`aa4c-core` 的 Cargo.toml 里**不许**出现任何插件 crate
+  （这条 grep 一下就能验）
 - 低耦合：服务之间只通过事件总线和公共类型通信
 
 **禁止**：
 
-- 巨型文件（单文件超过 ~500 行应考虑拆分）
+- 巨型文件（单文件超过 ~500 行应考虑拆分）。**当前已知超标**：`aa4c-store/src/lib.rs`
+  2200+ 行、`aa4c-core/src/orchestrate.rs` 800+ 行、`apps/desktop/src/pages/SettingsPage.vue`
+  900 行——都在重构计划里，别再往上加
 - 循环依赖（crate 依赖必须是单向的：types ← 各服务 ← core）
 - 业务混杂（一个 Service 只做一件事）
 

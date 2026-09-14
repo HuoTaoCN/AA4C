@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 
 mod conf;
+pub mod plugin;
 mod rpc;
 mod transmission_conf;
 mod transmission_process;
@@ -26,6 +27,7 @@ mod transmission_rpc;
 mod util;
 
 pub use aa4c_engine::{EngineChild, KillFuture, ProcessSpawner, SidecarSpawner, SpawnFuture};
+pub use plugin::{DownloadPlugin, DownloadSettings};
 pub use rpc::{Aria2Client, Aria2Notification};
 pub use transmission_conf::BtOptions;
 pub use transmission_process::TransmissionProcess;

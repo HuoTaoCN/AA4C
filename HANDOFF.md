@@ -78,6 +78,7 @@
 | **文档对齐（第二轮）+ V0.7 用户文档** | ✅ | 见本次提交 | 上一轮漏掉的：四份设计文档的状态行仍写着「设计稿/草案」（TRUST_DESIGN 甚至写「未实现」，而 R1–R4 早已发布）、PROTOCOL 头部写 `PROTO_VERSION=4`（实际 6）、本文档自己停在 08-07 且 §四标题指向 V0.6、AGENTS 必读清单把 V0.1 计划当「当前阶段」。**更大的缺口是用户文档**：USER_GUIDE / FAQ / OPEN_AND_SECURE 中英六份里 `引荐`/`中转站`/`IPv6` 命中 **0** 次——用户装上 `v0.7.0-preview.1` 会看到两个新开关和「待确认的设备」，文档里一个字都没有。本轮中英各补一套 |
 | **发送会话最后一条 `TaskDone` 会丢；CI 红了 29 天（已修）** | ✅ | 见本次提交 | Windows CI 上 `quic_roundtrip_transfer` 报 `connection lost` 查出来的**真 bug**。`write_message` 返回只代表数据进了本地发送缓冲区；而 `TaskDone` 是会话最后一条消息、后面没有任何应答，写完就返回 → `stream` 被丢弃 → QUIC 上连带丢掉 `QuicDuplex` 持有的 `quinn::Connection` → quinn 立即关连接，把还排在队里的 `TaskDone` 一起冲掉。**生产影响比测试失败严重**：文件那时已经完整落盘、哈希也过了，接收方却把这次传输记成失败。**同一个坑此前踩过一次**（C5 的索引交换路径，`dispatch.rs::finish_write_side`），当时的注释断言「发送会话天然靠 `TaskDone`/`FileAck` 的最后一轮往返把连接拖住」——**那句是错的**，`FileAck` 在 `TaskDone` 之前。修法：`finish_write_side` 提升为 `aa4c-transfer` 公共函数（加了排空上限），`drive`/`serve_fetch` 两条发送路径在 `TaskDone` 之后都调用，`aa4c-core` 改用同一份。回归测试走真实 quinn 端点，**验证过它抓得住**（掏空函数体连跑 10 次全红），抓不住的边界也写进了测试注释。另一半原因是 `ci.yml` 四条 `curl -fsSL` 一次失败就挂（macOS 死在 `curl: (60)` 证书错误），统一加 `--retry 5 --retry-all-errors --retry-delay 3`——**`--retry` 单独用不够**，退出码 60 要 `--retry-all-errors` 才重试。**排查教训**：quinn 的 `ConnectionLost` Display 就一句 `connection lost`，**把底层 `ConnectionError` 吞了**，CI 日志看不出是超时/重置/主动关；第一版假设（keep-alive 2s vs 空闲超时 8s 太紧）就是这么被带偏的，对时间戳才排除——整个用例从 core 启动到失败只有 ~100ms，8s 超时根本没机会触发，超时值最终一个字没改 |
 | **CI 修绿过程中露出的另外三层（含又一个真 bug）** | ✅ | 见本次提交 | ①`h2` 0.4.15 命中 RUSTSEC-2026-0258（2026-08-17 公布）→ 升 0.4.19。②`real_tiny_model_produces_schema_valid_suggestion` 用 `for _ in 0..100` 固定循环次数等事件——**固定次数的预算是「N 次事件或 N×超时」的较小者**，不匹配的事件白吃配额，实际能等多久取决于事件流形状 → 改成墙钟预算（180s，同 `kb::tests` 的先例），同文件另一条 `for _ in 0..50` 一并换掉。③**非流式 AI 请求会被空闲巡查任务半路杀掉**（真 bug）：`ensure_running` 拿到 client 就放开槽位大锁（长请求不能全程持锁），巡查任务因此能在请求进行中检查 `last_used`，而它还停在**请求开始之前** → 单次超过 `idle_timeout` 的请求必被当成空闲杀掉，调用方收到 `connection closed before http headers completed`。流式路径（每 token 续命）一开始就防了，非流式的 `chat_completion`/`embeddings` 漏了。**此前已被记录、只是一直靠把 `idle_timeout` 从 500ms 加到 10s 绕过去**；这次修根因（`keep_alive_while`，请求在飞期间每 500ms 续一次），注释改成「别再靠加数字解决」。回归测试用慢 future 量「请求进行中 `last_used` 最久落后多少」，**验证过抓得住**（删掉续命分支 → 从 <1s 涨到 ≈1.82s，3/3 红）。**结果：`gh run view 34558094699` 七个 job 全绿，自 2026-08-12 以来第一次** |
+| **V0.8「Focus」F1：下载 / 归档与 AI 插件化** | ✅ | 见本次提交 | 起因是三处文档与代码的正面矛盾：PROJECT_VISION 与 AGENTS 都写着「不是下载器」，而这两块占 **27/60 个命令、18/28 个设置项、一半前端代码**；ARCHITECTURE 承诺了三个版本的 `Plugin` trait **全仓库 grep 不存在**；UI_DESIGN_SPEC 只规定 6 个页面，最大的两个（归档 825 行 / 下载 552 行）**完全没有规格**。新增 `aa4c-plugin`（trait 单独成 crate，否则 `core → download → core` 循环）与 `aa4c-archive`（`aa4c-core/src/archive/` 那 1700 行整体搬出）；`Core` 去掉 4 个字段、27 个方法、3 个点名具体引擎的 spawner 配置，换成 `PluginRegistry` + `plugin_invoke`；**`aa4c-core` 依赖列表里不再有 download/ai/archive/engine**。命令 60→35，core 6533→4419 行。前端 `api.ts` 签名零改动。5 个 e2e 测试搬进插件 crate 但仍驱动真实 `Core`。**迁移 008–011 不搬**（`user_version` 线性计数，重编号要重建表，那正是栽过跟头的那类迁移）。新写的测试抓到两个真 bug：裸 `OnceCell` 的 clone 是独立格子导致插件永远「未启动」；归档设置存成启动快照导致改了归档根不生效。**未完成**：`Settings` 仍是 28 字段大结构体，`settings::plugin_settings` 是过渡垫片，真正拆分与设置页重做在 F3 |
 
 整个 V0.1 桌面端链路 **发现 → 配对 → 传输 → UI** 已全部打通。**V0.3「AA Connect」六个里程碑（C1–C6）全部完成**：广域网 QUIC 会话层、自建信令+中继服务器、远程同步/发送接入完整连接阶梯、NAT 打洞、分享链接，一整条「局域网直连 → 公网直连 → 打洞 → 中继」的连接阶梯贯通，外加脱离设备配对关系的能力型分享。**V0.3 遗留的跨服务器好友寻址 gap 已补完**：配对时交换 `server_hint`，两个用户各自搭独立服务器也能互相找到对方地址（跨服务器中继/打洞信令联邦仍是独立后置项目，未做）。**V0.4「Download」四个里程碑（D1 Aria2/HTTP-FTP、D2 Transmission/BT-Magnet + 引擎二进制正式打包分发管线、D3 统一任务中心打磨）全部实现并已随 `v0.4.0` 正式版打包发布**：新 crate `aa4c-download` 同时管两个引擎、下载页支持直链+magnet、真实 `tauri dev` 走查跑通（sidecar 拉起、Tauri capability 权限、孤儿进程防护三平台均实测有效），BT/Magnet 下载与 D3 的批量操作/限速/错误人话转译在正式安装包里都真正可用。**V0.5「AI」五个里程碑（AI1 规则式归档 + AI2 llama-server 引擎接入 + AI3 AI 标签/分类建议 + AI4 本地知识库 + AI5 收尾）全部已实现，并已随 `v0.5.0-preview` 打包发布**（三平台安装包 + Android arm64 APK + `aa4c-server` Linux 二进制，含首次真实验证通过的 Linux AppImage，GitHub Release，prerelease）。**V0.2 同步五个里程碑（信任分级 / 本地索引 + Inbox / 跨设备索引交换 + 统一视图 / 按需拉取 / 冲突标记）全部落地**（SYNC_DESIGN.md §10）；线路协议已升到 `proto=5`（V0.4 起，`PairServerHint`）并对各阶段新增消息按版本 gate（与更旧对端握手自动协商降级）。**真机 GUI 走查已人工跑通**（`scripts/dev-two-nodes.sh` 起两实例：配对 → 互标我的设备 → 黄「可下载」→ 点黄拉取转绿 → 同名不同内容「多版本」并列，均正常）。
 
@@ -185,7 +186,7 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：先把 CI 修绿，再谈 V0.7 真机验证
+## 四、下一步：V0.8「Focus」收缩到「连接」（F1 已完成，进行 F2）
 
 **V0.3「AA Connect」六个里程碑（C1–C6）全部实现完毕并测试通过，且已打包发布 `v0.3.0-preview`**：连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档贯通，外加脱离配对关系的能力型分享，随三平台安装包 + Android arm64 APK + `aa4c-server` Linux 二进制一起发出（GitHub Release，prerelease）。设计见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（§12 已确认决策清单）、实现拆解见 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)。
 
@@ -257,7 +258,31 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 **这三层的共同教训**：一条红 CI 只会告诉你最先撞上的那个错误。红了 29 天意味着期间累积的问题
 是**叠着**的，修完第一个要接着推、接着看，不能修完一个就当收工。
 
-**其余候选方向**（由用户指定）——
+**当前进行中：V0.8「Focus」——收缩到「连接」。**
+
+量过之后，「乱」是可测量的：下载中心与归档/AI 占了 **27/60 个 Tauri 命令、18/28 个设置项、
+一半前端代码、36% 的 store**，而 PROJECT_VISION 与 AGENTS 都写着 AA4C **不是**下载器。
+核心竞争力只有一条、且没有对手正面解决：**不注册账号、不依赖第三方服务商，让「我的几台
+设备」在任何网络下自己连成一片**——而它**在界面上完全看不见**（设备卡片只显示在线/离线，
+不显示走的哪一档；`ConnectionVia` 只有三个值、`resolve_addr` 算完来源就丢）。
+
+五个阶段（编号用 F，不用 R——R1–R4 已经是 V0.7 的里程碑编号）：
+
+- **F1 插件化**：✅ 已完成，见第一节表格最后一行。
+- **F2 连接可见化**：把连接阶梯从内部实现细节变成一等数据（`ConnectionVia` 细化成
+  局域网直连 / 公网直连(v4|v6) / 打洞 / 中继，`resolve_addr` 返回地址来源，新增
+  `DeviceReachability` 与 `ReachabilityUpdated` 事件，失败原因人话化）。
+- **F3 重建 UI**：设计系统（21 个组件里 ~2100 行私有 CSS → 共享组件 + 完整 token 集）、
+  换掉 9 个 emoji 上 lucide（设计规范 V0.2 就承诺了，欠了五个版本）、主导航 8→4、
+  首页从功能宫格改成**设备网络状态图**、设置页 903→300 行（插件设置由 `settings_schema()`
+  驱动的通用渲染器画）。**纪律：先写 UI_DESIGN_SPEC 的页面规格再改代码**——归档页与下载页
+  当初就是没规格徒手画出来的，那是「杂乱」的直接成因。
+- **F4 真机验证**：照 [docs/V0.7_VERIFICATION.md](docs/V0.7_VERIFICATION.md) 走 A/B/C 三组。
+  **只能用户本人做**，Agent 代劳不了。
+- **F5 补深度**：分享链接 deep-link + 二维码（「把文件 AA 给我」这句传播语现在落不了地，
+  只能粘贴一串 base58）、按需拉取续传、打洞真实成功率。
+
+**其余候选方向**（V0.8 之后）——
 1. **V0.7 真机验证**：R1 的公网 IPv6 跨网直连、R3 的 UPnP、R4 的内置服务器跨网可达，本机都验不了（见下方说明）。这是目前最有价值的一步——代码写完了，但「在你自己的网络里真的连通」还没被证实过。**照着 [docs/V0.7_VERIFICATION.md](docs/V0.7_VERIFICATION.md) 做**：A 组单机、B 组同局域网两台、C 组两个不同网络，按序推进，前面过不了后面必然过不了。
 2. **V0.6 T1.0（AA Touch 前置实证）**：需要用户配合真实 Android 设备跑通 HCE 广播 + 官方 NFC 插件读取的最小闭环（TOUCH_DESIGN.md §10 第 1-2 条）。
 3. **NAT-PMP / PCP**（R3 的补充）：只做了 UPnP IGD（理由见 TRUST_DESIGN.md §7.3）。要补的话需要先引一个读系统路由表的依赖来发现网关。

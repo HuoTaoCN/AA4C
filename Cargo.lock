@@ -19,14 +19,32 @@ dependencies = [
 ]
 
 [[package]]
-name = "aa4c-core"
+name = "aa4c-archive"
 version = "0.7.0"
 dependencies = [
  "aa4c-ai",
- "aa4c-discovery",
- "aa4c-download",
+ "aa4c-core",
  "aa4c-engine",
+ "aa4c-plugin",
+ "aa4c-store",
+ "aa4c-types",
+ "dirs 5.0.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "aa4c-core"
+version = "0.7.0"
+dependencies = [
+ "aa4c-discovery",
  "aa4c-identity",
+ "aa4c-plugin",
  "aa4c-proto",
  "aa4c-server",
  "aa4c-store",
@@ -54,6 +72,7 @@ dependencies = [
 name = "aa4c-desktop"
 version = "0.7.0"
 dependencies = [
+ "aa4c-archive",
  "aa4c-core",
  "aa4c-download",
  "aa4c-types",
@@ -86,18 +105,23 @@ dependencies = [
 name = "aa4c-download"
 version = "0.7.0"
 dependencies = [
+ "aa4c-core",
  "aa4c-engine",
+ "aa4c-plugin",
  "aa4c-store",
  "aa4c-types",
  "base64 0.22.1",
  "bs58",
+ "dirs 5.0.1",
  "futures-util",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -129,6 +153,18 @@ dependencies = [
  "tracing",
  "uuid",
  "x509-parser",
+]
+
+[[package]]
+name = "aa4c-plugin"
+version = "0.7.0"
+dependencies = [
+ "aa4c-store",
+ "aa4c-types",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

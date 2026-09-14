@@ -6,11 +6,14 @@
 
 #![forbid(unsafe_code)]
 
-mod archive;
 mod dispatch;
 mod introduce;
 mod local_server;
 mod orchestrate;
+
+/// 插件边界（住在独立的 `aa4c-plugin` crate：插件要实现它，
+/// 而核心不能反过来依赖插件——trait 放核心里就成了循环）。
+pub use aa4c_plugin as plugin;
 mod portmap;
 mod server_link;
 mod settings;
@@ -21,10 +24,9 @@ mod unified;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aa4c_ai::{AiService, KbService, SuggestEngine};
 use aa4c_discovery::DiscoveryService;
-use aa4c_download::{DownloadService, SidecarSpawner};
 use aa4c_identity::{Identity, PairingManager};
+use aa4c_plugin::{PluginContextBuilder, PluginRegistry};
 use aa4c_store::Store;
 use aa4c_transfer::{TransferConfig, TransferService};
 use aa4c_types::{CoreEvent, DeviceInfo, Platform, Result, DEFAULT_PORT};
@@ -50,25 +52,15 @@ pub struct CoreConfig {
     pub listen_port: u16,
     /// 传输引擎配置（接收目录会被设置项覆盖）。
     pub transfer: TransferConfig,
-    /// 下载引擎（aria2，HTTP/HTTPS/FTP，里程碑 D1）子进程拉起器
-    /// （DOWNLOAD_DESIGN.md §2）：桌面壳层注入基于 `tauri-plugin-shell` 的实现，
-    /// `None` 时下载能力整体不存在（Android 等未接入的平台/构建，V0.4 范围）——
-    /// 与"注入了但 aria2c 启动失败"的降级（仍是 `Some`，只是内部 `cmd_tx` 为空）
-    /// 是两种不同的不可用，后者由 `DownloadService::start` 自己处理。这个字段
-    /// 是"本平台是否支持下载能力"的总闸——`bt_spawner` 只决定 BT 这一个引擎
-    /// 自己的可用性，不单独决定整个下载中心存不存在。
-    pub download_spawner: Option<Arc<dyn SidecarSpawner>>,
-    /// BT 引擎（Transmission，Magnet，里程碑 D2）子进程拉起器
-    /// （DOWNLOAD_DESIGN.md §3.6）：与 `download_spawner` 是两个独立的可选注入，
-    /// 各自的启动/健康检查失败互不影响对方——`None` 时只是 BT 能力不可用，
-    /// HTTP/HTTPS/FTP 直链正常工作。
-    pub bt_spawner: Option<Arc<dyn SidecarSpawner>>,
-    /// AI 引擎（llama-server，里程碑 AI2）子进程拉起器（ARCHIVE_DESIGN.md §3.2）：
-    /// 与下载引擎完全独立的另一个可选注入——`None` 时 AI 能力整体不存在（同
-    /// `download_spawner` 的总闸语义）；`Some` 之后具体槽位是否真的可用还要看
-    /// `ai_chat_model`/`ai_embedding_model` 有没有配置模型文件（`AiService`
-    /// 内部处理，同下载能力"注入了但没配置/起不来"的既有降级设计）。
-    pub ai_spawner: Option<Arc<dyn SidecarSpawner>>,
+    /// 本次构建装配了哪些插件（ARCHITECTURE.md 原则 3）。
+    ///
+    /// 此前这里是三个具体的 `SidecarSpawner`（aria2 / Transmission / llama-server）——
+    /// 核心的配置结构体直接点名了两个下载引擎和一个推理引擎。现在壳层自己构造
+    /// `DownloadPlugin` / `ArchivePlugin`（只有它拿得到基于 Tauri 的 spawner），
+    /// 注册进来即可；核心不认识其中任何一个。
+    ///
+    /// 空注册表 = 一个只有连接能力的构建，完全合法。
+    pub plugins: PluginRegistry,
     /// 不启动 mDNS 广播 / 浏览（**测试专用开关**，同 `TransferConfig::disable_punch`
     /// 的既有惯例）。
     ///
@@ -100,9 +92,7 @@ impl CoreConfig {
                 default_save_dir: settings::default_save_dir(),
                 ..TransferConfig::default()
             },
-            download_spawner: None,
-            bt_spawner: None,
-            ai_spawner: None,
+            plugins: PluginRegistry::default(),
             disable_discovery: false,
             disable_port_mapping: false,
         }
@@ -116,18 +106,10 @@ pub struct Core {
     pub discovery: Arc<DiscoveryService>,
     pub transfer: Arc<TransferService>,
     pub pairing: Arc<PairingManager>,
-    /// 下载中心服务（里程碑 D1）；`None` = 本平台/构建未接入下载能力
-    /// （与"接入了但 aria2c 起不来"的降级是两种不同的不可用，见 `CoreConfig` 文档）。
-    pub download: Option<Arc<DownloadService>>,
-    /// AI 引擎服务（里程碑 AI2）；`None` = 本平台/构建未接入 AI 能力（与
-    /// `download` 的既有语义一致，见 `CoreConfig::ai_spawner` 文档）。
-    pub ai: Option<Arc<AiService>>,
-    /// AI 标签/分类建议批量队列（里程碑 AI3，ARCHIVE_DESIGN.md §5）；`None` 同
-    /// `ai` 的既有语义——没有 AI 引擎就没有建议能力。
-    pub suggest: Option<Arc<SuggestEngine>>,
-    /// 本地知识库（里程碑 AI4，ARCHIVE_DESIGN.md §6）；`None` 同 `ai` 的既有语义
-    /// ——没有 AI 引擎就没有嵌入能力，知识库也就无从谈起。
-    pub kb: Option<Arc<KbService>>,
+    /// 本次构建装配的插件（下载 / 归档与 AI / …）。
+    ///
+    /// 此前是 `download` / `ai` / `suggest` / `kb` 四个具体字段。
+    pub plugins: PluginRegistry,
     events: EventSender,
     self_info: DeviceInfo,
     listen_port: u16,
@@ -371,100 +353,22 @@ impl Core {
             portmap_state,
         )));
 
-        // 11. 下载中心（DOWNLOAD_DESIGN.md，里程碑 D1 aria2 + D2 Transmission）：只在
-        //     壳层注入了 aria2 spawner 时才尝试拉起下载中心（这是"本平台支不支持
-        //     下载能力"的总闸，Android 等未接入的平台/构建保持 `None`）；
-        //     `bt_spawner` 独立传入，两个引擎各自的启动/健康检查失败互不影响
-        //     对方，也都不返回 Err——下载能力（或其中一个引擎）整体降级不可用，
-        //     不阻塞 Core 启动（`DownloadService::start` 内部处理，同其余可选
-        //     能力的一贯降级设计）。
-        let download = match config.download_spawner {
-            Some(spawner) => Some(
-                DownloadService::start(
-                    spawner,
-                    config.bt_spawner,
-                    store.clone(),
-                    events.clone(),
-                    config.data_dir.clone(),
-                    PathBuf::from(&current.download_dir),
-                    aa4c_download::DownloadLimits {
-                        speed_limit_kbps: current.download_speed_limit_kbps,
-                        upload_limit_kbps: current.download_upload_limit_kbps,
-                        concurrency: current.download_concurrency,
-                        max_connections_per_file: current.download_max_connections_per_file,
-                        user_agent: current.download_user_agent.clone(),
-                        proxy: current.download_proxy.clone(),
-                        proxy_bypass: current.download_proxy_bypass.clone(),
-                        bt_ratio_limit: current.bt_ratio_limit,
-                        bt_idle_seeding_limit_minutes: current.bt_idle_seeding_limit_minutes,
-                        bt_trackers: current.bt_trackers.clone(),
-                    },
-                )
-                .await,
-            ),
-            None => None,
+        // 11. 插件（ARCHITECTURE.md 原则 3）：下载中心、归档与 AI 都在这一步拉起。
+        //     此前这里是三段并排的具体装配——aria2/Transmission 的 `DownloadService`、
+        //     llama-server 的 `AiService`，外加借用它的 `SuggestEngine`/`KbService`——
+        //     加起来近 90 行，`Core` 因此认识两个下载引擎和一个推理引擎。现在壳层
+        //     自己构造插件，核心只负责按顺序拉起。
+        //
+        //     单个插件起不来只记 warn、不返回 Err：一个下载引擎连不上不该让设备连不上
+        //     （沿用此前「可选能力整体降级不阻塞 Core 启动」的一贯设计）。
+        let plugin_ctx = PluginContextBuilder {
+            store: store.clone(),
+            events: events.clone(),
+            data_dir: config.data_dir.clone(),
+            settings: settings::plugin_settings(&current),
         };
-
-        // 11b. 启动时自动继续未完成的下载（对标 Motrix 的 `resume-all-when-app-launched`，
-        //      默认关闭）。放在 `DownloadService::start` 之后——那里面已经跑完了首轮
-        //      对账（`reconcile`），此刻库里的状态才是引擎的真实状态，直接 `resume_all`
-        //      不会去恢复一个引擎根本不认识的任务。后台 spawn 而不是 `.await`：逐个
-        //      任务发 RPC 在任务多时不该拖慢 Core 启动（同其余可选能力"不阻塞启动"
-        //      的一贯设计）。
-        if current.download_resume_on_start {
-            if let Some(svc) = download.clone() {
-                tokio::spawn(async move {
-                    let n = svc.resume_all().await;
-                    if n > 0 {
-                        tracing::info!(count = n, "resumed unfinished downloads on startup");
-                    }
-                });
-            }
-        }
-
-        // 12. 归档（ARCHIVE_DESIGN.md，里程碑 AI1）：首次启动写入五条停用的预设规则，
-        //     再起下载完成钩子（DownloadDone → 跑规则引擎，见 archive 模块文档）。
-        if let Err(e) = archive::engine::ensure_default_rules(&store).await {
-            tracing::warn!(error = %e, "ensure default archive rules failed");
-        }
-        archive::spawn_download_hook(
-            store.clone(),
-            events.clone(),
-            fallback_name.clone(),
-            save_dir_fallback.clone(),
-        );
-
-        // 13. AI 引擎（ARCHIVE_DESIGN.md §3，里程碑 AI2）：懒启动，`AiService::start`
-        //     本身不拉起任何进程，只登记配置——同下载中心一样，注入了 spawner 但没
-        //     配置模型/进程起不来都不阻塞 Core 启动（`AiService` 内部按需处理，见
-        //     `ensure_running` 的 `Unavailable` 语义）。PID 文件放数据目录下的
-        //     `ai-state/`（不与归档/同步等其他子目录混放）。
-        let ai = config.ai_spawner.map(|spawner| {
-            aa4c_ai::AiService::start(
-                spawner,
-                aa4c_ai::AiConfig {
-                    chat_model: current.ai_chat_model.clone().map(PathBuf::from),
-                    embedding_model: current.ai_embedding_model.clone().map(PathBuf::from),
-                    idle_timeout: std::time::Duration::from_secs(
-                        u64::from(current.ai_idle_timeout_minutes) * 60,
-                    ),
-                    state_dir: config.data_dir.join("ai-state"),
-                },
-                events.clone(),
-            )
-        });
-        // AI 标签/分类建议（里程碑 AI3，ARCHIVE_DESIGN.md §5）：门闩条件跟 `ai` 一致
-        // （没有 AI 引擎就不可能出建议），`SuggestEngine::new` 借用 `ai` 的对话槽位，
-        // 不单独起进程/占资源。
-        let suggest = ai
-            .clone()
-            .map(|ai| aa4c_ai::SuggestEngine::new(ai, events.clone()));
-        // 本地知识库（里程碑 AI4，ARCHIVE_DESIGN.md §6）：同 `suggest` 一样门闩
-        // 条件跟 `ai` 一致，借用同一个 `AiService`（对话槽位问答、嵌入槽位摄入/
-        // 检索），不单独起进程。`store.clone()` 廉价（内部只是一个 mpsc Sender）。
-        let kb = ai
-            .clone()
-            .map(|ai| aa4c_ai::KbService::new(ai, store.clone(), events.clone()));
+        config.plugins.start_all(&plugin_ctx).await;
+        let plugins = config.plugins;
 
         tracing::info!(
             device = %self_info.name,
@@ -478,10 +382,7 @@ impl Core {
             discovery,
             transfer,
             pairing,
-            download,
-            ai,
-            suggest,
-            kb,
+            plugins,
             events,
             self_info,
             listen_port: actual_port,
@@ -499,12 +400,7 @@ impl Core {
         self.shutdown.cancel();
         self.transfer.shutdown();
         self.discovery.stop().await?;
-        if let Some(download) = &self.download {
-            download.shutdown().await;
-        }
-        if let Some(ai) = &self.ai {
-            ai.shutdown().await;
-        }
+        self.plugins.shutdown_all().await;
         tracing::info!("AA4C core shut down");
         Ok(())
     }

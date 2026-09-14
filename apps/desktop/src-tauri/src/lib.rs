@@ -102,14 +102,26 @@ pub fn run() {
             if let Ok(name) = std::env::var("AA4C_DEVICE_NAME") {
                 config.device_name = Some(name);
             }
-            // 下载中心（DOWNLOAD_DESIGN.md，里程碑 D1 aria2 + D2 Transmission）：只在
-            // 桌面三平台注入 sidecar 拉起器——V0.4 明确不含 Android，`cfg(desktop)`
-            // 由 Tauri 自动区分。两个引擎各自独立注入，互不影响对方的可用性。
-            config.download_spawner = desktop_sidecar_spawner(app.handle(), "aria2c");
-            config.bt_spawner = desktop_sidecar_spawner(app.handle(), "transmission-daemon");
-            // AI 引擎（ARCHIVE_DESIGN.md，里程碑 AI2）：同下载中心一样只在桌面三平台
-            // 注入，复用同一个通用 sidecar 拉起器。
-            config.ai_spawner = desktop_sidecar_spawner(app.handle(), "llama-server");
+            // 插件装配（ARCHITECTURE.md 原则 3）。**这是唯一知道有哪些插件的地方**——
+            // 核心不认识它们中的任何一个，`aa4c-core` 的 Cargo.toml 里也没有它们。
+            //
+            // 只在桌面三平台注入 sidecar 拉起器：V0.4/V0.5 都明确不含 Android，
+            // `cfg(desktop)` 由 Tauri 自动区分。拉起器为 `None` 时插件仍然注册，
+            // 由它自己决定降级到什么程度（下载整体不可用；归档的规则引擎照常工作，
+            // 只是没有 AI 建议与知识库——ARCHIVE_DESIGN.md §2 的核心原则）。
+            if let Some(aria2) = desktop_sidecar_spawner(app.handle(), "aria2c") {
+                config
+                    .plugins
+                    .register(std::sync::Arc::new(aa4c_download::DownloadPlugin::new(
+                        aria2,
+                        desktop_sidecar_spawner(app.handle(), "transmission-daemon"),
+                    )));
+            }
+            config
+                .plugins
+                .register(std::sync::Arc::new(aa4c_archive::ArchivePlugin::new(
+                    desktop_sidecar_spawner(app.handle(), "llama-server"),
+                )));
 
             // 启动序列是异步的；setup 在事件循环前运行，可阻塞等待
             let core = tauri::async_runtime::block_on(Core::start(config))?;
@@ -152,33 +164,8 @@ pub fn run() {
             commands::revoke_share,
             commands::list_share_access,
             commands::open_share,
-            commands::add_download,
-            commands::add_torrent_file,
-            commands::pause_download,
-            commands::resume_download,
-            commands::cancel_download,
-            commands::retry_download,
-            commands::list_downloads,
-            commands::pause_all_downloads,
-            commands::resume_all_downloads,
-            commands::clear_completed_downloads,
-            commands::list_archive_rules,
-            commands::save_archive_rule,
-            commands::delete_archive_rule,
-            commands::list_archive_entries,
-            commands::archive_files,
-            commands::undo_archive,
-            commands::list_archive_log,
-            commands::list_local_models,
-            commands::get_ai_status,
-            commands::start_suggest,
-            commands::list_suggestions,
-            commands::resolve_suggestion,
-            commands::kb_add_source,
-            commands::kb_remove_source,
-            commands::kb_list_sources,
-            commands::kb_reindex,
-            commands::kb_ask,
+            commands::plugin_invoke,
+            commands::plugin_manifest,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
