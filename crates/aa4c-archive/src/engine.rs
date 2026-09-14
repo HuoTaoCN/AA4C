@@ -10,8 +10,8 @@ use aa4c_types::{
     TagSource,
 };
 
-use super::detect::detect_category;
-use super::gguf::parse_model_meta;
+use crate::detect::detect_category;
+use crate::gguf::parse_model_meta;
 
 /// 五条内置预设规则，全部**默认停用**（ARCHIVE_DESIGN.md §2.3：装完就悄悄移动用户
 /// 文件是意外行为）。首次启动时（`archive_rules` 表为空）一次性写入，之后不会重复

@@ -19,10 +19,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa4c-archive"
+version = "0.7.0"
+dependencies = [
+ "aa4c-store",
+ "aa4c-types",
+ "dirs 5.0.1",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "aa4c-core"
 version = "0.7.0"
 dependencies = [
  "aa4c-ai",
+ "aa4c-archive",
  "aa4c-discovery",
  "aa4c-download",
  "aa4c-engine",

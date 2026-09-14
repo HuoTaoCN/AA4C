@@ -785,7 +785,7 @@ impl Core {
         for path in paths {
             let source = PathBuf::from(&path);
             let result: Result<Option<PathBuf>> = if let Some(rule_id) = &rule_id {
-                crate::archive::engine::apply_selected_rule(
+                aa4c_archive::engine::apply_selected_rule(
                     &self.store,
                     &self.events,
                     &archive_root,
@@ -795,7 +795,7 @@ impl Core {
                 .await
                 .map(|(_, to)| Some(to))
             } else if let Some(target_dir) = &target_dir {
-                crate::archive::engine::apply_manual(
+                aa4c_archive::engine::apply_manual(
                     &self.store,
                     &self.events,
                     &source,
@@ -804,17 +804,14 @@ impl Core {
                 .await
                 .map(|(_, to)| Some(to))
             } else {
-                crate::archive::engine::apply_rules(
-                    &self.store,
-                    &self.events,
-                    &archive_root,
-                    &source,
-                )
-                .await
-                .map(|outcome| match outcome {
-                    crate::archive::engine::ApplyOutcome::Applied { to_path, .. } => Some(to_path),
-                    crate::archive::engine::ApplyOutcome::NoRuleMatched => None,
-                })
+                aa4c_archive::engine::apply_rules(&self.store, &self.events, &archive_root, &source)
+                    .await
+                    .map(|outcome| match outcome {
+                        aa4c_archive::engine::ApplyOutcome::Applied { to_path, .. } => {
+                            Some(to_path)
+                        }
+                        aa4c_archive::engine::ApplyOutcome::NoRuleMatched => None,
+                    })
             };
             match result {
                 Ok(Some(to_path)) => succeeded.push(to_path.to_string_lossy().into_owned()),
@@ -830,7 +827,7 @@ impl Core {
     }
 
     pub async fn undo_archive(&self, log_id: i64) -> Result<()> {
-        crate::archive::engine::undo(&self.store, log_id).await
+        aa4c_archive::engine::undo(&self.store, log_id).await
     }
 
     /// 按时间倒序列出全部移动历史（归档页「最近归档动作」分区用，每条配一个撤销按钮，
@@ -870,7 +867,7 @@ impl Core {
                 if path.extension().and_then(|e| e.to_str()) != Some("gguf") {
                     continue;
                 }
-                if let Ok(meta) = crate::archive::gguf::parse_model_meta(&path) {
+                if let Ok(meta) = aa4c_archive::gguf::parse_model_meta(&path) {
                     models.push(aa4c_types::LocalModel {
                         path: path.to_string_lossy().into_owned(),
                         meta,
@@ -909,7 +906,7 @@ impl Core {
             .into_iter()
             .map(|p| {
                 let path = PathBuf::from(p);
-                let category = crate::archive::detect::detect_category(&path);
+                let category = aa4c_archive::detect::detect_category(&path);
                 let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                 let text_head = if is_text_like_category(category) {
                     read_text_head(&path)
@@ -952,7 +949,7 @@ impl Core {
         }
         let source = PathBuf::from(&suggestion.path);
         let target_dir = target_dir.map(PathBuf::from);
-        let (_, to_path) = crate::archive::engine::apply_suggestion(
+        let (_, to_path) = aa4c_archive::engine::apply_suggestion(
             &self.store,
             &self.events,
             &source,

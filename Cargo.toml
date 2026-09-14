@@ -12,6 +12,7 @@ members = [
     "crates/aa4c-download",
     "crates/aa4c-engine",
     "crates/aa4c-ai",
+    "crates/aa4c-archive",
     "apps/desktop/src-tauri",
 ]
 
@@ -35,6 +36,7 @@ aa4c-server = { path = "crates/aa4c-server" }
 aa4c-download = { path = "crates/aa4c-download" }
 aa4c-engine = { path = "crates/aa4c-engine" }
 aa4c-ai = { path = "crates/aa4c-ai" }
+aa4c-archive = { path = "crates/aa4c-archive" }
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
