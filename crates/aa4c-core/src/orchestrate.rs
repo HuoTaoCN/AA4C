@@ -3,7 +3,6 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use aa4c_discovery::DiscoveryService;
 use aa4c_identity::Identity;
@@ -261,6 +260,17 @@ impl Core {
     }
 
     /// 取消任务（双方均可）。
+    /// 暂停一条发送中的传输（打磨计划第二步）。只对本机发起的发送任务有效——
+    /// 接收方向没有"我这边继续"的说法，得由发送方重新发起。
+    pub async fn pause_transfer(&self, task_id: &TaskId) -> Result<()> {
+        self.transfer.pause(task_id).await
+    }
+
+    /// 继续一条已暂停的传输，沿用同一个 `task_id` 走断点续传接上。
+    pub async fn resume_transfer(&self, task_id: &TaskId) -> Result<()> {
+        self.transfer.resume(task_id).await
+    }
+
     pub async fn cancel_transfer(&self, task_id: &TaskId) -> Result<()> {
         self.transfer.cancel(task_id).await
     }
@@ -302,25 +312,12 @@ impl Core {
         {
             self.nudge_register();
         }
-        // 换了模型文件：让 AiService 知道新路径，正在跑的旧进程顺手停掉
-        // （ARCHIVE_DESIGN.md §3.3，见 AiService::set_model 文档）——不需要
-        // 重启应用，下一次 AI 请求就会用新模型懒启动。
-        if let Some(ai) = &self.ai {
-            if new.ai_chat_model != old.ai_chat_model {
-                ai.set_model(
-                    aa4c_ai::SlotKind::Chat,
-                    new.ai_chat_model.map(PathBuf::from),
-                )
-                .await;
-            }
-            if new.ai_embedding_model != old.ai_embedding_model {
-                ai.set_model(
-                    aa4c_ai::SlotKind::Embedding,
-                    new.ai_embedding_model.map(PathBuf::from),
-                )
-                .await;
-            }
-        }
+        // 插件自己的设置项变了由插件处理（例如归档插件换模型文件要立刻生效）。
+        // Core 不再知道「AI 有两个模型槽位」这种事——那段逻辑现在住在
+        // `aa4c_archive::plugin` 的 `on_settings_changed` 里。
+        self.plugins
+            .notify_settings(&settings::plugin_settings(&new))
+            .await;
         Ok(())
     }
 
@@ -642,388 +639,41 @@ impl Core {
         })
     }
 
-    // —— 下载中心（DOWNLOAD_DESIGN.md，里程碑 D1）——
+    // —— 插件（R1，ARCHITECTURE.md 原则 3）——
 
-    /// `self.download` 为 `None` 时统一报 `Unavailable`——本平台/构建未接入下载能力
-    /// （与"接入了但 aria2c 起不来"是两种不同的不可用，后者由 `DownloadService`
-    /// 内部处理，同样会以 `Unavailable` 报出，前端不需要区分这两种情况）。
-    fn download_service(&self) -> Result<&Arc<aa4c_download::DownloadService>> {
-        self.download.as_ref().ok_or_else(|| {
-            Aa4cError::Unavailable("download capability not available on this build".into())
-        })
-    }
-
-    /// 新建一条下载任务：HTTP/HTTPS/FTP 直链、`magnet:` 磁力链接都走这里，
-    /// `options` 是每任务的自定义选项（保存位置/文件名/Referer/Cookie），
-    /// 不需要时传 `None`。
-    pub async fn add_download(
+    /// 把一次调用转给某个插件。
+    ///
+    /// 此前这里是 27 个类型化方法——下载 10 个、归档 7 个、AI 5 个、知识库 5 个——
+    /// 每个都在 `Core` 上挂一份，再在 Tauri 层挂一份同名 Command。它们占了本文件
+    /// 三分之一，而按 PROJECT_VISION 自己的定义，这些能力都不是「设备连成一片」
+    /// 的一部分。现在它们住在自己的 crate 里，这里只剩一个转发口。
+    ///
+    /// 没装这个插件时报 `Unavailable`，与此前 `download`/`ai` 为 `None` 时的语义一致。
+    pub async fn plugin_invoke(
         &self,
-        url: String,
-        options: Option<aa4c_types::DownloadOptions>,
-    ) -> Result<TaskId> {
-        self.download_service()?
-            .add(aa4c_download::DownloadRequest {
-                source: aa4c_download::DownloadSource::Uri(url),
-                options: options.unwrap_or_default(),
-            })
-            .await
+        plugin: &str,
+        method: String,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.plugins.invoke(plugin, method, payload).await
     }
 
-    /// 从本地 `.torrent` 文件新建一条 BT 任务（DOWNLOAD_DESIGN.md「仍待实现」
-    /// 里列的那一项，这次补上）。传路径而不是文件内容，读盘在下载层做。
-    pub async fn add_torrent_file(
-        &self,
-        path: PathBuf,
-        options: Option<aa4c_types::DownloadOptions>,
-    ) -> Result<TaskId> {
-        self.download_service()?
-            .add(aa4c_download::DownloadRequest {
-                source: aa4c_download::DownloadSource::TorrentFile(path),
-                options: options.unwrap_or_default(),
-            })
-            .await
-    }
-
-    pub async fn pause_download(&self, id: TaskId) -> Result<()> {
-        self.download_service()?.pause(id).await
-    }
-
-    pub async fn resume_download(&self, id: TaskId) -> Result<()> {
-        self.download_service()?.resume(id).await
-    }
-
-    /// 暂停一条发送中的传输（打磨计划第二步）。只对本机发起的发送任务有效——
-    /// 接收方向没有"我这边继续"的说法，得由发送方重新发起。
-    pub async fn pause_transfer(&self, task_id: &TaskId) -> Result<()> {
-        self.transfer.pause(task_id).await
-    }
-
-    /// 继续一条已暂停的传输，沿用同一个 `task_id` 走断点续传接上。
-    pub async fn resume_transfer(&self, task_id: &TaskId) -> Result<()> {
-        self.transfer.resume(task_id).await
-    }
-
-    /// `delete_local`——同时删除已下载的本地文件（对标 FDM/Motrix 的"取消并删除
-    /// 文件"），见 `DownloadService::cancel` 文档。
-    pub async fn cancel_download(&self, id: TaskId, delete_local: bool) -> Result<()> {
-        self.download_service()?.cancel(id, delete_local).await
-    }
-
-    /// 重试一个失败的任务，返回值是最终生效的 task id（HTTP 任务重试会产生一个
-    /// 新 id，BT 任务保持原 id——见 `DownloadService::retry` 文档）。
-    pub async fn retry_download(&self, id: TaskId) -> Result<TaskId> {
-        self.download_service()?.retry(id).await
-    }
-
-    /// 按创建时间倒序列出全部下载任务。
-    pub async fn list_downloads(&self) -> Result<Vec<aa4c_types::DownloadTask>> {
-        self.download_service()?.list().await
-    }
-
-    /// 批量操作（D3，DOWNLOAD_DESIGN.md §6/§9）：全部暂停/全部继续/清除已完成
-    /// 记录。返回值是"实际生效的数量"，薄薄一层转发到 `DownloadService`，具体
-    /// 的"单个任务失败只跳过、不中断整体"取舍在那边实现。
-    pub async fn pause_all_downloads(&self) -> Result<usize> {
-        Ok(self.download_service()?.pause_all().await)
-    }
-
-    pub async fn resume_all_downloads(&self) -> Result<usize> {
-        Ok(self.download_service()?.resume_all().await)
-    }
-
-    pub async fn clear_completed_downloads(&self) -> Result<usize> {
-        self.download_service()?.clear_completed().await
-    }
-
-    // —— 归档（ARCHIVE_DESIGN.md，里程碑 AI1）——
-
-    pub async fn list_archive_rules(&self) -> Result<Vec<aa4c_types::ArchiveRule>> {
-        self.store.list_archive_rules().await
-    }
-
-    /// 新建或更新一条规则：`rule.id` 为空串代表新建（core 侧生成 uuid），非空则更新
-    /// 同 id 的既有规则（`upsert_archive_rule` 本身就是 upsert 语义）。返回写库后的
-    /// 完整规则（含服务器生成的 `created_at`/`updated_at`）。
-    pub async fn save_archive_rule(
-        &self,
-        mut rule: aa4c_types::ArchiveRule,
-    ) -> Result<aa4c_types::ArchiveRule> {
-        if rule.id.is_empty() {
-            rule.id = uuid::Uuid::new_v4().to_string();
-        }
-        self.store.upsert_archive_rule(&rule).await?;
-        self.store
-            .list_archive_rules()
-            .await?
-            .into_iter()
-            .find(|r| r.id == rule.id)
-            .ok_or_else(|| Aa4cError::Protocol("rule not found immediately after upsert".into()))
-    }
-
-    pub async fn delete_archive_rule(&self, id: String) -> Result<()> {
-        self.store.delete_archive_rule(&id).await
-    }
-
-    pub async fn list_archive_entries(&self) -> Result<Vec<aa4c_types::ArchiveEntry>> {
-        self.store.list_archive_entries().await
-    }
-
-    /// 批量归档指定路径（归档页/统一文件视图的手动路径，ARCHIVE_DESIGN §2.4）。
-    /// `rule_id`：手选某条规则强制应用（不检查该规则的匹配条件）；`target_dir`：
-    /// 完全自定义目标目录（不经任何规则，不追加标签）；两者都不给时退回自动匹配
-    /// （同下载完成钩子一样的 `apply_rules`，允许对任意文件"现在就跑一遍规则"）。
-    /// 单个文件失败只跳过、记录原因，不中断整批（同 D3 批量操作的既有取舍）；
-    /// 返回值是"实际归档成功的路径列表"。
-    pub async fn archive_files(
-        &self,
-        paths: Vec<String>,
-        rule_id: Option<String>,
-        target_dir: Option<String>,
-    ) -> Result<Vec<String>> {
-        let archive_root = PathBuf::from(self.get_settings().await?.archive_root);
-        let mut succeeded = Vec::new();
-        for path in paths {
-            let source = PathBuf::from(&path);
-            let result: Result<Option<PathBuf>> = if let Some(rule_id) = &rule_id {
-                aa4c_archive::engine::apply_selected_rule(
-                    &self.store,
-                    &self.events,
-                    &archive_root,
-                    &source,
-                    rule_id,
-                )
-                .await
-                .map(|(_, to)| Some(to))
-            } else if let Some(target_dir) = &target_dir {
-                aa4c_archive::engine::apply_manual(
-                    &self.store,
-                    &self.events,
-                    &source,
-                    &PathBuf::from(target_dir),
-                )
-                .await
-                .map(|(_, to)| Some(to))
-            } else {
-                aa4c_archive::engine::apply_rules(&self.store, &self.events, &archive_root, &source)
-                    .await
-                    .map(|outcome| match outcome {
-                        aa4c_archive::engine::ApplyOutcome::Applied { to_path, .. } => {
-                            Some(to_path)
-                        }
-                        aa4c_archive::engine::ApplyOutcome::NoRuleMatched => None,
-                    })
-            };
-            match result {
-                Ok(Some(to_path)) => succeeded.push(to_path.to_string_lossy().into_owned()),
-                Ok(None) => {
-                    tracing::debug!(path = %path, "archive_files: no rule matched, skipped")
-                }
-                Err(e) => {
-                    tracing::warn!(path = %path, error = %e, "archive_files: failed, skipped")
-                }
-            }
-        }
-        Ok(succeeded)
-    }
-
-    pub async fn undo_archive(&self, log_id: i64) -> Result<()> {
-        aa4c_archive::engine::undo(&self.store, log_id).await
-    }
-
-    /// 按时间倒序列出全部移动历史（归档页「最近归档动作」分区用，每条配一个撤销按钮，
-    /// 需要 `log_id` 才能调用 `undo_archive`）。
-    pub async fn list_archive_log(&self) -> Result<Vec<aa4c_types::ArchiveLogEntry>> {
-        self.store.list_archive_log().await
-    }
-
-    // —— AI 模型库（ARCHIVE_DESIGN.md §3.5，里程碑 AI2.4）——
-
-    /// `self.ai` 为 `None` 时统一报 `Unavailable`——同 `download_service` 的既有先例。
-    fn ai_service(&self) -> Result<&Arc<aa4c_ai::AiService>> {
-        self.ai.as_ref().ok_or_else(|| {
-            Aa4cError::Unavailable("AI capability not available on this build".into())
-        })
-    }
-
-    /// 扫描 `ai_models_dir` 下的 `.gguf` 文件（递归一层：目录本身 + 各直接子目录，
-    /// 不深入更深层——ARCHIVE_DESIGN.md §3.5），逐个读头。单个文件解析失败（损坏/
-    /// 非 GGUF）直接跳过，不中断整批扫描（同批量操作"单个失败只跳过"的既有取舍）；
-    /// 目录本身不存在时返回空列表，不是错误（首次使用、还没下载任何模型时的
-    /// 正常状态）。
-    pub async fn list_local_models(&self) -> Result<Vec<aa4c_types::LocalModel>> {
-        let root = PathBuf::from(self.get_settings().await?.ai_models_dir);
-        let mut dirs_to_scan = vec![root.clone()];
-        if let Ok(entries) = std::fs::read_dir(&root) {
-            dirs_to_scan.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
-        }
-
-        let mut models = Vec::new();
-        for dir in dirs_to_scan {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("gguf") {
-                    continue;
-                }
-                if let Ok(meta) = aa4c_archive::gguf::parse_model_meta(&path) {
-                    models.push(aa4c_types::LocalModel {
-                        path: path.to_string_lossy().into_owned(),
-                        meta,
-                    });
-                }
-            }
-        }
-        Ok(models)
-    }
-
-    /// 两个槽位（对话/嵌入）各自的当前状态快照。
-    pub async fn get_ai_status(&self) -> Result<aa4c_types::AiStatus> {
-        let ai = self.ai_service()?;
-        Ok(aa4c_types::AiStatus {
-            chat: ai.status(aa4c_ai::SlotKind::Chat).await,
-            embedding: ai.status(aa4c_ai::SlotKind::Embedding).await,
-        })
-    }
-
-    // —— AI 标签/分类建议（ARCHIVE_DESIGN.md §5，里程碑 AI3）——
-
-    /// `self.suggest` 为 `None` 时统一报 `Unavailable`——同 `ai_service` 的既有先例。
-    fn suggest_engine(&self) -> Result<&Arc<aa4c_ai::SuggestEngine>> {
-        self.suggest.as_ref().ok_or_else(|| {
-            Aa4cError::Unavailable("AI capability not available on this build".into())
-        })
-    }
-
-    /// 对一批文件起一次建议批量队列（单并发，逐个调用，`CoreEvent::AiSuggestProgress`
-    /// 通知进度）。这里负责把 `aa4c-ai::suggest` 需要的输入组好——文件识别/读文本头是
-    /// `aa4c-core` 的活，`aa4c-ai` 不依赖 `aa4c-store`（见 crate 分层）。已有批量在跑时
-    /// 直接透传 `SuggestEngine::start_batch` 的 `Unavailable` 错误，不静默排队。
-    pub async fn start_suggest(&self, paths: Vec<String>) -> Result<()> {
-        let suggest = self.suggest_engine()?;
-        let inputs = paths
-            .into_iter()
+    /// 本次构建装了哪些插件，各自的 id / 名字 / 设置项 schema。
+    ///
+    /// 前端据此决定「更多」分区显示什么、设置页画哪些表单——而不是像以前那样
+    /// 把五个能力硬编码进导航（`nav.ts` 的 `CAPABILITIES`）。
+    pub fn plugin_manifest(&self) -> Vec<serde_json::Value> {
+        self.plugins
+            .iter()
             .map(|p| {
-                let path = PathBuf::from(p);
-                let category = aa4c_archive::detect::detect_category(&path);
-                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                let text_head = if is_text_like_category(category) {
-                    read_text_head(&path)
-                } else {
-                    None
-                };
-                aa4c_ai::SuggestInput {
-                    path,
-                    category,
-                    size,
-                    text_head,
-                }
+                serde_json::json!({
+                    "id": p.id(),
+                    "displayName": p.display_name(),
+                    "settingsSchema": p.settings_schema(),
+                })
             })
-            .collect();
-        suggest.start_batch(inputs)
+            .collect()
     }
-
-    /// 当前全部待确认建议（含失败项）快照。
-    pub async fn list_suggestions(&self) -> Result<Vec<aa4c_types::Suggestion>> {
-        Ok(self.suggest_engine()?.list())
-    }
-
-    /// 采纳或忽略一条建议：`id` 已不在待确认列表（比如已经处理过）时返回 `Ok(None)`，
-    /// 不报错——UI 侧重复点击/两个窗口都打开归档页这类竞态不应该弹错误。`adopt=false`
-    /// 只是把它从队列摘掉（忽略语义，ARCHIVE_DESIGN.md §5"忽略=丢弃"）；`adopt=true`
-    /// 走 AI1 的既有归档动作写标签，`target_dir` 给了才顺带移动，返回值是文件的
-    /// 最终路径（未移动时等于原路径）。
-    pub async fn resolve_suggestion(
-        &self,
-        id: String,
-        adopt: bool,
-        target_dir: Option<String>,
-    ) -> Result<Option<String>> {
-        let suggest = self.suggest_engine()?;
-        let Some(suggestion) = suggest.take(&id) else {
-            return Ok(None);
-        };
-        if !adopt {
-            return Ok(None);
-        }
-        let source = PathBuf::from(&suggestion.path);
-        let target_dir = target_dir.map(PathBuf::from);
-        let (_, to_path) = aa4c_archive::engine::apply_suggestion(
-            &self.store,
-            &self.events,
-            &source,
-            target_dir.as_deref(),
-            suggestion.category,
-            &suggestion.tags,
-        )
-        .await?;
-        Ok(Some(to_path.to_string_lossy().into_owned()))
-    }
-
-    // —— 本地知识库（ARCHIVE_DESIGN.md §6，里程碑 AI4）——
-
-    /// `self.kb` 为 `None` 时统一报 `Unavailable`——同 `suggest_engine` 的既有先例。
-    fn kb_service(&self) -> Result<&Arc<aa4c_ai::KbService>> {
-        self.kb.as_ref().ok_or_else(|| {
-            Aa4cError::Unavailable("AI capability not available on this build".into())
-        })
-    }
-
-    pub async fn kb_add_source(&self, path: String) -> Result<aa4c_types::KbSource> {
-        self.kb_service()?.add_source(PathBuf::from(path)).await
-    }
-
-    /// 删除来源（级联清空其文档与 chunk）。
-    pub async fn kb_remove_source(&self, id: String) -> Result<()> {
-        self.kb_service()?.remove_source(&id).await
-    }
-
-    pub async fn kb_list_sources(&self) -> Result<Vec<aa4c_types::KbSourceSummary>> {
-        self.kb_service()?.list_sources().await
-    }
-
-    /// 起一次增量摄入（后台任务，立即返回，进度经 `CoreEvent::KbIngestProgress`）。
-    /// 已有摄入在跑时透传 `KbService::reindex` 的 `Unavailable`，不排队。
-    pub async fn kb_reindex(&self, source_id: String) -> Result<()> {
-        self.kb_service()?.reindex(source_id)
-    }
-
-    /// 起一次流式问答（后台任务，立即返回一个 `request_id` 供前端关联后续的
-    /// `KbAnswerDelta`/`KbAnswerDone` 事件——同 `start_pairing` 返回 `sessionId`
-    /// 的既有先例，调用方不用自己造 id）。
-    pub async fn kb_ask(&self, question: String) -> Result<String> {
-        let kb = self.kb_service()?;
-        let request_id = uuid::Uuid::new_v4().to_string();
-        kb.ask(request_id.clone(), question);
-        Ok(request_id)
-    }
-}
-
-/// 只有这几个类别的文件才值得读内容喂给模型——图片/视频/音频/模型/压缩包/安装包
-/// 都是二进制格式，读了也是乱码，白白占上下文（ARCHIVE_DESIGN.md §5"V0.5 无视觉"）。
-fn is_text_like_category(category: aa4c_types::ArchiveCategory) -> bool {
-    use aa4c_types::ArchiveCategory;
-    matches!(
-        category,
-        ArchiveCategory::Document | ArchiveCategory::Code | ArchiveCategory::Subtitle
-    )
-}
-
-/// 读文件开头 ≤8KB（ARCHIVE_DESIGN.md §5）。用 `Read::take` 限流而不是先整个读进来再
-/// 截断——避免"类别判断偶尔判错、其实是个几 GB 大文件"这种情况下的无谓大量 I/O。
-/// 截断可能落在多字节字符中间，`from_utf8_lossy` 把尾部的半个字符替换成 U+FFFD，
-/// 不影响这段文字喂给模型做参考。
-fn read_text_head(path: &std::path::Path) -> Option<String> {
-    use std::io::Read;
-    const LIMIT: u64 = 8 * 1024;
-    let file = std::fs::File::open(path).ok()?;
-    let mut buf = Vec::new();
-    file.take(LIMIT).read_to_end(&mut buf).ok()?;
-    if buf.is_empty() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// 综合 mDNS 在线快照 → 落库最后地址 → 查对端自己的服务器（`server_hint`，配对时交换，

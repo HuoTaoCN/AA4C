@@ -23,6 +23,7 @@ name = "aa4c-archive"
 version = "0.7.0"
 dependencies = [
  "aa4c-ai",
+ "aa4c-core",
  "aa4c-engine",
  "aa4c-plugin",
  "aa4c-store",
@@ -33,6 +34,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -40,11 +42,7 @@ dependencies = [
 name = "aa4c-core"
 version = "0.7.0"
 dependencies = [
- "aa4c-ai",
- "aa4c-archive",
  "aa4c-discovery",
- "aa4c-download",
- "aa4c-engine",
  "aa4c-identity",
  "aa4c-plugin",
  "aa4c-proto",
@@ -74,6 +72,7 @@ dependencies = [
 name = "aa4c-desktop"
 version = "0.7.0"
 dependencies = [
+ "aa4c-archive",
  "aa4c-core",
  "aa4c-download",
  "aa4c-types",
@@ -106,6 +105,7 @@ dependencies = [
 name = "aa4c-download"
 version = "0.7.0"
 dependencies = [
+ "aa4c-core",
  "aa4c-engine",
  "aa4c-plugin",
  "aa4c-store",
@@ -121,6 +121,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

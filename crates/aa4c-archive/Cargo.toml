@@ -21,4 +21,8 @@ uuid = { workspace = true }
 dirs = { workspace = true }
 
 [dev-dependencies]
+tracing-subscriber = { workspace = true }
+aa4c-core = { workspace = true }
+serde = { workspace = true }
+aa4c-engine = { workspace = true }
 tempfile = { workspace = true }
