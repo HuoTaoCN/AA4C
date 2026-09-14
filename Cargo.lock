@@ -22,9 +22,13 @@ dependencies = [
 name = "aa4c-archive"
 version = "0.7.0"
 dependencies = [
+ "aa4c-ai",
+ "aa4c-engine",
+ "aa4c-plugin",
  "aa4c-store",
  "aa4c-types",
  "dirs 5.0.1",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

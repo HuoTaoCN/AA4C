@@ -18,6 +18,9 @@
 pub mod detect;
 pub mod engine;
 pub mod gguf;
+pub mod plugin;
+
+pub use plugin::{ArchivePlugin, ArchiveSettings};
 
 use std::path::PathBuf;
 
@@ -39,13 +42,16 @@ pub fn default_archive_root() -> PathBuf {
 }
 
 /// 归档钩子需要的两项设置。每次事件重新读，运行期改了立即生效。
-struct ArchiveSettings {
+///
+/// 与插件面向用户的 [`plugin::ArchiveSettings`] 不是一回事：那个是完整的设置项，
+/// 这个只是钩子在事件回调里要用的两项，刻意保持极小。
+struct HookSettings {
     auto_enabled: bool,
     root: PathBuf,
 }
 
 /// 读那两个键。`settings` 表里存的是 JSON 标量（同 `aa4c_core::settings::get_json`）。
-async fn load_archive_settings(store: &Store) -> aa4c_types::Result<ArchiveSettings> {
+async fn load_archive_settings(store: &Store) -> aa4c_types::Result<HookSettings> {
     let root = store
         .get_setting(KEY_ARCHIVE_ROOT)
         .await?
@@ -57,7 +63,7 @@ async fn load_archive_settings(store: &Store) -> aa4c_types::Result<ArchiveSetti
         .await?
         .and_then(|raw| serde_json::from_str::<bool>(&raw).ok())
         .unwrap_or(true);
-    Ok(ArchiveSettings { auto_enabled, root })
+    Ok(HookSettings { auto_enabled, root })
 }
 
 /// 下载完成钩子（ARCHIVE_DESIGN.md §2.4）：订阅事件总线，`DownloadDone` 且
