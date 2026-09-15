@@ -9,6 +9,11 @@
 - **`rustls` 0.23.40 命中 RUSTSEC-2026-0285**（2026-09-14 公布，中危 5.3：TLS 1.3 握手消息
   跨加密层级被错误接受）→ 升到 0.23.45。**这条对 AA4C 不是无关紧要的依赖**——rustls 就是
   所有设备连接的 TLS 实现（证书固定的 mTLS 全走它）。
+- **Tauri 的 npm 包与 Rust crate 版本对不上**（`tauri-plugin-notification` npm 2.4.0 /
+  Rust 2.3.3，Tauri 会按 major/minor 校验并直接拒绝构建）。起因是 F3 装 lucide 时
+  `pnpm add` 顺手把两个 Tauri 插件的 npm 包升了版，Rust 侧没跟。Rust crate 升到 2.4.0 对齐。
+  **这个问题是刚修好的 Android 哨兵抓到的**——其余六个 job 全绿，因为它们根本不构建 Android。
+  修一路信号，它立刻就还了一个。
 - **Android 编译哨兵从 2026-09 起一直是红的，而且没人注意到**。
   `android-actions/setup-android@v3` 的 `packages` 输入默认值是 `tools platform-tools`，
   而 `tools` 这个包**早已从 Android SDK 里移除**，sdkmanager 报
