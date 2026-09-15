@@ -115,38 +115,38 @@ async function confirm(sessionId: string, accept: boolean) {
 }
 .dialog {
   width: 340px;
-  padding: 24px;
+  padding: var(--sp-5);
   text-align: center;
 }
 h3 {
-  margin: 0 0 6px;
+  margin: 0 0 var(--sp-1);
 }
 .sub {
-  margin: 0 0 18px;
+  margin: 0 0 var(--sp-4);
   color: var(--aa-text-dim);
-  font-size: 0.9rem;
+  font-size: var(--fs-base);
 }
 .note {
-  margin: -8px 0 18px;
-  font-size: 0.78rem;
+  margin: -8px 0 var(--sp-4);
+  font-size: var(--fs-sm);
   line-height: 1.5;
 }
 .pin {
   display: flex;
   justify-content: center;
-  gap: 18px;
-  margin-bottom: 22px;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-5);
 }
 .group {
   font-size: 2.6rem;
-  font-weight: 800;
+  font-weight: var(--fw-bold);
   letter-spacing: 0.18em;
   font-variant-numeric: tabular-nums;
   color: var(--aa-primary);
 }
 .actions {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-2);
 }
 .actions .btn {
   flex: 1;

@@ -26,19 +26,19 @@ defineEmits<{ "update:modelValue": [value: string] }>();
 <style scoped>
 .tab-bar {
   display: inline-flex;
-  gap: 2px;
-  padding: 3px;
+  gap: var(--sp-1);
+  padding: var(--sp-1);
   background: var(--aa-surface-2);
   border-radius: var(--aa-radius-sm);
-  margin-bottom: 18px;
+  margin-bottom: var(--sp-4);
 }
 .tab-btn {
-  padding: 6px 14px;
+  padding: var(--sp-1) var(--sp-3);
   border: none;
   background: transparent;
   color: var(--aa-text-dim);
-  font-size: 0.82rem;
-  font-weight: 500;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
   border-radius: calc(var(--aa-radius-sm) - 3px);
   cursor: pointer;
   transition:
@@ -52,7 +52,7 @@ defineEmits<{ "update:modelValue": [value: string] }>();
 .tab-btn.active {
   background: var(--aa-surface);
   color: var(--aa-text);
-  font-weight: 600;
+  font-weight: var(--fw-bold);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 </style>

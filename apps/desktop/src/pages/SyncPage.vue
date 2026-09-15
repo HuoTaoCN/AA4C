@@ -5,6 +5,7 @@ import { useSyncStore } from "../stores/sync";
 import { useToastStore } from "../stores/toast";
 import { asCommandError } from "../lib/api";
 import { STATUS_LEGEND, buildTree, pruneTree, type SyncFile } from "../lib/sync-tree";
+import { Button, Card, EmptyState, Icon, Toolbar } from "../components/ui";
 
 const sync = useSyncStore();
 const toast = useToastStore();
@@ -78,66 +79,74 @@ async function refresh() {
 
 <template>
   <div class="sync">
-    <div class="head">
-      <h2>同步</h2>
-      <div class="head-actions">
-        <button class="btn btn-ghost small" :disabled="refreshing" @click="refresh">
+    <Toolbar
+      title="同步"
+      subtitle="把你「自己的设备」连成一个文件空间：在哪台设备上有、能不能直接拿到，一眼可见"
+    >
+      <template #actions>
+        <Button size="sm" variant="ghost" :disabled="refreshing" @click="refresh">
+          <Icon name="refresh" :size="14" />
           {{ refreshing ? "刷新中…" : "刷新设备" }}
-        </button>
-        <button class="btn btn-ghost small" :disabled="rescanning" @click="rescan">
+        </Button>
+        <Button size="sm" variant="ghost" :disabled="rescanning" @click="rescan">
           {{ rescanning ? "扫描中…" : "重新扫描" }}
-        </button>
-      </div>
-    </div>
-
-    <p class="intro muted">
-      把你「自己的设备」连成一个文件空间：在哪台设备上有、能不能直接拿到，一眼可见。
-      绿色「本地有」在这台机器上；黄色「可下载」在另一台在线设备上；红色「设备离线」要等那台设备上线。
-      只有标为「我的设备」的设备才会互通文件清单。
-    </p>
+        </Button>
+      </template>
+    </Toolbar>
 
     <!-- 同步范围管理 -->
-    <div class="card scopes">
-      <div class="srow" v-for="s in folders" :key="s.id">
+    <Card padding="none">
+      <div v-for="s in folders" :key="s.id" class="srow">
         <span class="fic">📁</span>
         <span class="nm">{{ s.localPath }}</span>
-        <button class="btn btn-ghost small" @click="removeFolder(s.id)">移除</button>
+        <Button size="sm" variant="ghost" @click="removeFolder(s.id)">移除</Button>
       </div>
-      <div class="srow add">
-        <button class="btn btn-ghost small" @click="addFolder">+ 添加同步文件夹</button>
-        <span class="hint muted">「收到的」自动纳入同步，无需添加</span>
+      <div class="srow">
+        <Button size="sm" variant="ghost" @click="addFolder">
+          <Icon name="plus" :size="14" /> 添加同步文件夹
+        </Button>
+        <span class="hint">「收到的」自动纳入同步，无需添加</span>
       </div>
-    </div>
+    </Card>
 
     <!-- 图例 + 筛选 -->
-    <div class="bar card">
-      <div class="legend">
-        <span v-for="l in STATUS_LEGEND" :key="l.status" class="leg">
-          <span class="dot" :class="l.status"></span>{{ l.label }}
-        </span>
+    <Card padding="sm">
+      <div class="bar">
+        <div class="legend">
+          <span v-for="l in STATUS_LEGEND" :key="l.status" class="leg">
+            <span class="dot" :class="l.status" />{{ l.label }}
+          </span>
+        </div>
+        <div class="filters">
+          <button
+            v-for="f in FILTERS"
+            :key="f.key"
+            class="ftab"
+            :class="{ on: filter === f.key }"
+            @click="filter = f.key"
+          >
+            {{ f.label }}
+          </button>
+        </div>
       </div>
-      <div class="filters">
-        <button
-          v-for="f in FILTERS"
-          :key="f.key"
-          class="ftab"
-          :class="{ on: filter === f.key }"
-          @click="filter = f.key"
-        >
-          {{ f.label }}
-        </button>
-      </div>
-    </div>
+    </Card>
 
     <!-- 目录树 -->
-    <div v-if="tree.length" class="tree card">
+    <Card v-if="tree.length" padding="sm">
       <SyncNode v-for="(n, i) in tree" :key="i" :node="n" :depth="0" />
-    </div>
-    <div v-else class="empty card muted">
-      {{ sync.files.length ? "该筛选下没有文件。" : "还没有文件：添加一个同步文件夹，或者等收到文件后自动出现在「收到的」里。" }}
-    </div>
+    </Card>
+    <EmptyState
+      v-else-if="sync.files.length"
+      title="该筛选下没有文件。"
+      hint="换一个筛选条件看看。"
+    />
+    <EmptyState
+      v-else
+      title="还没有文件。"
+      hint="添加一个同步文件夹，或者等收到文件后自动出现在「收到的」里。只有标为「我的设备」的设备才会互通文件清单。"
+    />
 
-    <p class="foot muted">
+    <p class="foot">
       点黄色「可下载」文件即可从在线设备取回到本机，完成后自动转为绿色「本地有」。
     </p>
   </div>
@@ -146,119 +155,81 @@ async function refresh() {
 <style scoped>
 .sync {
   max-width: 820px;
-}
-.head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.head-actions {
-  display: flex;
-  gap: 8px;
-}
-h2 {
-  font-size: 1rem;
-  margin: 0;
-}
-.small {
-  padding: 5px 12px;
-  min-height: 32px;
-  font-size: 0.8rem;
-}
-.intro {
-  font-size: 0.85rem;
-  line-height: 1.6;
-  margin: 6px 0 16px;
-}
-.scopes {
-  padding: 4px 0;
-  margin-bottom: 14px;
+  flex-direction: column;
+  gap: var(--sp-3);
 }
 .srow {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 14px;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
 }
 .srow + .srow {
   border-top: 1px solid var(--aa-border);
 }
-.srow .fic {
-  font-size: 0.95rem;
+.fic {
+  flex: none;
 }
-.srow .nm {
+.nm {
   flex: 1;
-  font-size: 0.85rem;
-  white-space: nowrap;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
 }
-.srow.add {
-  justify-content: space-between;
-}
-.srow .hint {
-  font-size: 0.76rem;
+.hint,
+.foot {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--aa-text-dim);
 }
 .bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  margin-bottom: 14px;
+  gap: var(--sp-4);
   flex-wrap: wrap;
 }
 .legend {
   display: flex;
-  gap: 16px;
+  gap: var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--aa-text-dim);
 }
 .leg {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 0.82rem;
-  color: var(--aa-text-dim);
+  gap: var(--sp-2);
 }
-.legend .dot {
-  width: 10px;
-  height: 10px;
+.dot {
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
+  background: var(--aa-text-dim);
 }
-.legend .dot.local {
+.dot.local {
   background: var(--aa-success);
 }
-.legend .dot.online {
-  background: #e0a400;
+.dot.online {
+  background: var(--aa-warn);
 }
-.legend .dot.offline {
+.dot.offline {
   background: var(--aa-danger);
 }
 .filters {
   display: flex;
-  gap: 4px;
+  gap: var(--sp-1);
 }
 .ftab {
-  font-size: 0.82rem;
-  padding: 5px 12px;
-  border-radius: 999px;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--aa-radius-sm);
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
 }
 .ftab.on {
   background: var(--aa-primary-dim);
   color: var(--aa-primary);
-  font-weight: 600;
-}
-.tree {
-  padding: 2px 0;
-  overflow: hidden;
-}
-.empty {
-  padding: 24px;
-  text-align: center;
-}
-.foot {
-  font-size: 0.78rem;
-  margin: 12px 2px 0;
 }
 </style>

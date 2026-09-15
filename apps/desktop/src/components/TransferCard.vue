@@ -102,29 +102,29 @@ async function resume() {
 .tc {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-1);
   width: 100%;
 }
 .row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 .title {
   flex: 1;
-  font-weight: 600;
-  font-size: 0.9rem;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-base);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .via {
   flex-shrink: 0;
-  font-size: 0.72rem;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
   color: var(--aa-text-dim);
   background: var(--aa-surface-2);
-  padding: 2px 8px;
+  padding: var(--sp-1) var(--sp-2);
   border-radius: 999px;
 }
 .via.relay {
@@ -139,8 +139,8 @@ async function resume() {
 }
 .act {
   color: var(--aa-text-dim);
-  font-size: 0.9rem;
-  padding: 2px 6px;
+  font-size: var(--fs-base);
+  padding: var(--sp-1) var(--sp-1);
   flex-shrink: 0;
 }
 .act:hover {
@@ -150,7 +150,7 @@ async function resume() {
   color: var(--aa-danger);
 }
 .file {
-  font-size: 0.82rem;
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
   white-space: nowrap;
   overflow: hidden;
@@ -170,8 +170,8 @@ async function resume() {
 }
 .meta {
   display: flex;
-  gap: 12px;
-  font-size: 0.78rem;
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
 }
 </style>

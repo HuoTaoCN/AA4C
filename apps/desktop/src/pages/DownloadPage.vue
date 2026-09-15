@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
 import DownloadCard from "../components/DownloadCard.vue";
+import { Card, EmptyState } from "../components/ui";
 import { useDownloadStore } from "../stores/download";
 import { useToastStore } from "../stores/toast";
 import { asCommandError } from "../lib/api";
@@ -349,13 +350,21 @@ onUnmounted(() => {
       <input v-model="search" type="text" class="search" placeholder="搜索任务名…" />
     </div>
 
-    <div v-if="filteredList.length" class="card list">
+    <Card v-if="filteredList.length" padding="none">
       <div v-for="t in filteredList" :key="t.id" class="drow">
         <DownloadCard :task="t" />
       </div>
-    </div>
-    <div v-else-if="download.list.length" class="empty card muted">没有匹配的任务。</div>
-    <div v-else class="empty card muted">还没有下载任务。</div>
+    </Card>
+    <EmptyState
+      v-else-if="download.list.length"
+      title="没有匹配的任务。"
+      hint="换一个筛选条件或清空搜索框。"
+    />
+    <EmptyState
+      v-else
+      title="还没有下载任务。"
+      hint="粘贴一条直链或磁力链接就能开始。"
+    />
   </div>
 </template>
 
@@ -364,46 +373,46 @@ onUnmounted(() => {
   max-width: 640px;
 }
 h2 {
-  font-size: 1rem;
-  margin: 0 0 8px;
+  font-size: var(--fs-lg);
+  margin: 0 0 var(--sp-2);
 }
 .intro {
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
   line-height: 1.6;
-  margin: 0 0 16px;
+  margin: 0 0 var(--sp-4);
 }
 .form {
-  padding: 18px 20px;
-  margin-bottom: 10px;
+  padding: var(--sp-4) var(--sp-4);
+  margin-bottom: var(--sp-2);
 }
 .row {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-2);
   align-items: flex-end;
 }
 .row textarea {
   flex: 1;
   min-height: 38px;
   max-height: 140px;
-  padding: 9px 12px;
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--aa-border);
   border-radius: var(--aa-radius-sm);
   background: var(--aa-bg);
   color: var(--aa-text);
-  font-size: 0.9rem;
+  font-size: var(--fs-base);
   font-family: inherit;
   resize: vertical;
   line-height: 1.4;
 }
 .form-actions {
   display: flex;
-  gap: 16px;
-  margin-top: 10px;
+  gap: var(--sp-4);
+  margin-top: var(--sp-2);
 }
 .link-btn {
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
-  padding: 2px 0;
+  padding: var(--sp-1) 0;
 }
 .link-btn:hover:not(:disabled) {
   color: var(--aa-primary);
@@ -414,43 +423,43 @@ h2 {
 .advanced {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-top: 14px;
-  padding-top: 14px;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
   border-top: 1px solid var(--aa-border);
 }
 .afield {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-1);
 }
 .afield label {
-  font-size: 0.8rem;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
 }
 .afield input {
-  padding: 7px 10px;
+  padding: var(--sp-2) var(--sp-2);
   border: 1px solid var(--aa-border);
   border-radius: var(--aa-radius-sm);
   background: var(--aa-bg);
   color: var(--aa-text);
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
 }
 .afield .dir {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 .afield .path {
   flex: 1;
-  font-size: 0.82rem;
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
   word-break: break-all;
 }
 .afield .small {
-  padding: 4px 10px;
+  padding: var(--sp-1) var(--sp-2);
   min-height: 28px;
-  font-size: 0.78rem;
+  font-size: var(--fs-sm);
   flex-shrink: 0;
 }
 .ahint {
@@ -470,53 +479,53 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  margin-bottom: 10px;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-2);
   background: var(--aa-surface-2);
   border-left: 3px solid var(--aa-primary);
 }
 .detect-text {
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
   flex: 1;
   min-width: 0;
 }
 .detect-url {
-  font-weight: 600;
+  font-weight: var(--fw-bold);
   word-break: break-all;
 }
 .detect-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-shrink: 0;
 }
 .stats {
-  font-size: 0.78rem;
-  margin: 0 2px 10px;
+  font-size: var(--fs-sm);
+  margin: 0 var(--sp-1) var(--sp-2);
 }
 .batch {
   display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
 }
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
 }
 .tabs {
   display: inline-flex;
-  gap: 2px;
-  padding: 3px;
+  gap: var(--sp-1);
+  padding: var(--sp-1);
   background: var(--aa-surface-2);
   border-radius: var(--aa-radius-sm);
   flex-shrink: 0;
 }
 .tab {
-  padding: 5px 12px;
-  font-size: 0.8rem;
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
   border-radius: calc(var(--aa-radius-sm) - 3px);
   white-space: nowrap;
@@ -524,29 +533,22 @@ h2 {
 .tab.on {
   background: var(--aa-surface);
   color: var(--aa-text);
-  font-weight: 600;
+  font-weight: var(--fw-bold);
 }
 .search {
   flex: 1;
   min-width: 0;
-  padding: 6px 10px;
+  padding: var(--sp-1) var(--sp-2);
   border: 1px solid var(--aa-border);
   border-radius: var(--aa-radius-sm);
   background: var(--aa-bg);
   color: var(--aa-text);
-  font-size: 0.82rem;
-}
-.list {
-  padding: 4px 0;
+  font-size: var(--fs-sm);
 }
 .drow {
-  padding: 12px 16px;
+  padding: var(--sp-3) var(--sp-4);
 }
 .drow + .drow {
   border-top: 1px solid var(--aa-border);
-}
-.empty {
-  padding: 24px;
-  text-align: center;
 }
 </style>
