@@ -221,6 +221,13 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: android-actions/setup-android@v3
+        with:
+          # 默认值是 `tools platform-tools`，而 `tools` 这个包**早已从 Android SDK 里
+          # 移除**——action 照着装，sdkmanager 报 `Failed to find package 'tools'`
+          # 直接退出，哨兵从 2026-09 起就一直是红的（`continue-on-error` 挡住了它，
+          # 所以没人注意到，等于白白丢了一路信号）。去掉它；下一步本来就自己装
+          # NDK / platforms / build-tools。
+          packages: platform-tools
       - name: Install NDK
         run: sdkmanager "ndk;27.1.12297006" "platforms;android-36" "build-tools;35.0.0"
       - uses: dtolnay/rust-toolchain@stable

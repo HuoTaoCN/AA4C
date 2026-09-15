@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`rustls` 0.23.40 命中 RUSTSEC-2026-0285**（2026-09-14 公布，中危 5.3：TLS 1.3 握手消息
+  跨加密层级被错误接受）→ 升到 0.23.45。**这条对 AA4C 不是无关紧要的依赖**——rustls 就是
+  所有设备连接的 TLS 实现（证书固定的 mTLS 全走它）。
+- **Android 编译哨兵从 2026-09 起一直是红的，而且没人注意到**。
+  `android-actions/setup-android@v3` 的 `packages` 输入默认值是 `tools platform-tools`，
+  而 `tools` 这个包**早已从 Android SDK 里移除**，sdkmanager 报
+  `Failed to find package 'tools'` 直接退出。因为这个 job 挂着 `continue-on-error: true`，
+  它红了也不会让 CI 变红——于是白白丢了一路信号。显式传 `packages: platform-tools`
+  （NDK / platforms / build-tools 本来就在下一步自己装）。
+  **教训**：`continue-on-error` 的 job 坏了是没有人会发现的，除非主动去看。
+
 ### Changed
 
 - **V0.8「Focus」F2：连接阶梯从「算完就扔」变成一等数据。** `fetch_index` 此前是
