@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
 import TabBar from "../components/TabBar.vue";
+import { Button, Card, EmptyState, ListRow } from "../components/ui";
 import { useAiStore } from "../stores/ai";
 import { useArchiveStore } from "../stores/archive";
 import { useDownloadStore } from "../stores/download";
@@ -190,13 +191,23 @@ function modelSummary(model: LocalModel): string {
   return parts.length ? parts.join(" · ") : "未知格式";
 }
 
+/** 归档插件自己的设置（F1.3 起不再是 `Settings` 上的独立字段，而是
+ * `settings.plugins["archive"]` 这一格不透明 JSON——见 `PluginSettings`）。 */
+function archiveSettings(): Record<string, unknown> {
+  return (settings.settings?.plugins?.archive as Record<string, unknown>) ?? {};
+}
+
 async function selectModel(kind: "chat" | "embedding", path: string) {
   if (!settings.settings) return;
   try {
-    const next =
-      kind === "chat"
-        ? { ...settings.settings, aiChatModel: path }
-        : { ...settings.settings, aiEmbeddingModel: path };
+    const key = kind === "chat" ? "chat_model" : "embedding_model";
+    const next = {
+      ...settings.settings,
+      plugins: {
+        ...settings.settings.plugins,
+        archive: { ...archiveSettings(), [key]: path },
+      },
+    };
     await settings.save(next);
     await ai.loadStatus();
     toast.push("success", kind === "chat" ? "已设为对话模型" : "已设为知识库模型");
@@ -206,8 +217,8 @@ async function selectModel(kind: "chat" | "embedding", path: string) {
 }
 
 function isSelected(kind: "chat" | "embedding", path: string): boolean {
-  const cur = kind === "chat" ? settings.settings?.aiChatModel : settings.settings?.aiEmbeddingModel;
-  return cur === path;
+  const key = kind === "chat" ? "chat_model" : "embedding_model";
+  return archiveSettings()[key] === path;
 }
 
 /** 推荐模型直链（ARCHIVE_DESIGN.md §3.5）：URL 已实测核实可下载（HTTP 200/302 直连
@@ -329,21 +340,26 @@ async function openKbSourcePath(path: string) {
 
     <section v-show="activeTab === 'rules'">
       <h3>最近动作</h3>
-      <div v-if="recentLog.length" class="card list">
-        <div v-for="entry in recentLog" :key="entry.id" class="lrow">
-          <div class="linfo">
-            <div class="lname">{{ baseName(entry.toPath) }}</div>
-            <div class="lmeta muted">
-              {{ ruleName(entry.ruleId) }} · {{ timeText(entry.at) }}
-            </div>
-          </div>
-          <button class="btn btn-ghost small" @click="openEntryFolder(entry.toPath)">
-            打开位置
-          </button>
-          <button class="btn btn-ghost small" @click="undoLog(entry.id)">撤销</button>
-        </div>
-      </div>
-      <div v-else class="empty card muted">还没有归档动作。</div>
+      <Card v-if="recentLog.length" padding="none">
+        <ListRow
+          v-for="entry in recentLog"
+          :key="entry.id"
+          :title="baseName(entry.toPath)"
+          :subtitle="`${ruleName(entry.ruleId)} · ${timeText(entry.at)}`"
+        >
+          <template #actions>
+            <Button size="sm" variant="ghost" @click="openEntryFolder(entry.toPath)">
+              打开位置
+            </Button>
+            <Button size="sm" variant="ghost" @click="undoLog(entry.id)">撤销</Button>
+          </template>
+        </ListRow>
+      </Card>
+      <EmptyState
+        v-else
+        title="还没有归档动作。"
+        hint="启用一条规则之后，下载完成的文件会自动按规则归位。"
+      />
 
       <h3>规则</h3>
       <p class="hint muted">
@@ -441,28 +457,42 @@ async function openKbSourcePath(path: string) {
           选择文件生成建议
         </button>
       </div>
-      <div v-if="archive.suggestions.length" class="card list">
-        <div v-for="s in archive.suggestions" :key="s.id" class="srow">
-          <div class="sinfo">
-            <div class="sname">{{ baseName(s.path) }}</div>
-            <div v-if="s.error" class="smeta error">建议失败：{{ s.error }}</div>
-            <div v-else class="smeta muted">
+      <Card v-if="archive.suggestions.length" padding="none">
+        <ListRow
+          v-for="s in archive.suggestions"
+          :key="s.id"
+          :title="baseName(s.path)"
+          :status="s.error ? '建议失败' : ''"
+          tone="danger"
+        >
+          <template #detail>
+            <div v-if="s.error" class="smeta error">{{ s.error }}</div>
+            <div v-else class="smeta">
               {{ CATEGORY_LABELS[s.category] }}
               <template v-if="s.tags.length"> · {{ s.tags.join("、") }}</template>
               <template v-if="s.reason"> · {{ s.reason }}</template>
             </div>
-          </div>
-          <button
-            class="btn btn-primary small"
-            :disabled="!!s.error"
-            @click="adoptSuggestion(s.id)"
-          >
-            采纳
-          </button>
-          <button class="btn btn-ghost small" @click="ignoreSuggestion(s.id)">忽略</button>
-        </div>
-      </div>
-      <div v-else-if="!archive.suggestRunning" class="empty card muted">还没有待确认的建议。</div>
+          </template>
+          <template #actions>
+            <Button
+              size="sm"
+              variant="primary"
+              :disabled="!!s.error"
+              @click="adoptSuggestion(s.id)"
+            >
+              采纳
+            </Button>
+            <Button size="sm" variant="ghost" @click="ignoreSuggestion(s.id)">
+              忽略
+            </Button>
+          </template>
+        </ListRow>
+      </Card>
+      <EmptyState
+        v-else-if="!archive.suggestRunning"
+        title="还没有待确认的建议。"
+        hint="选一批文件让 AI 给出分类和标签；采纳之前不会移动任何文件。"
+      />
     </section>
 
     <section v-show="activeTab === 'models'">
@@ -470,44 +500,52 @@ async function openKbSourcePath(path: string) {
       <p class="hint muted">
         扫描模型目录（设置页可更改）下的模型文件；下载的模型经归档规则移入这里后会自动出现。
       </p>
-      <div class="card list rec-list">
-        <div v-for="rec in RECOMMENDED_MODELS" :key="rec.key" class="krow">
-          <div class="kinfo">
-            <div class="kname">{{ rec.label }}</div>
-          </div>
-          <button class="btn btn-ghost small" @click="downloadRecommendedModel(rec.hfUrl)">
-            HF 下载
-          </button>
-          <button class="btn btn-ghost small" @click="downloadRecommendedModel(rec.msUrl)">
-            ModelScope 下载
-          </button>
-        </div>
-      </div>
-      <div v-if="ai.models.length" class="card list">
-        <div v-for="model in ai.models" :key="model.path" class="mrow">
-          <div class="minfo">
-            <div class="mname">{{ modelFileName(model.path) }}</div>
-            <div class="mmeta muted">{{ modelSummary(model) }}</div>
-          </div>
-          <button
-            class="btn small"
-            :class="isSelected('chat', model.path) ? 'btn-primary' : 'btn-ghost'"
-            @click="selectModel('chat', model.path)"
-          >
-            {{ isSelected("chat", model.path) ? "对话模型 ✓" : "设为对话模型" }}
-          </button>
-          <button
-            class="btn small"
-            :class="isSelected('embedding', model.path) ? 'btn-primary' : 'btn-ghost'"
-            @click="selectModel('embedding', model.path)"
-          >
-            {{ isSelected("embedding", model.path) ? "知识库模型 ✓" : "设为知识库模型" }}
-          </button>
-        </div>
-      </div>
-      <div v-else class="empty card muted">
-        还没有模型文件——下载一个模型，归档后会出现在这里。
-      </div>
+      <Card padding="none">
+        <ListRow
+          v-for="rec in RECOMMENDED_MODELS"
+          :key="rec.key"
+          :title="rec.label"
+        >
+          <template #actions>
+            <Button size="sm" variant="ghost" @click="downloadRecommendedModel(rec.hfUrl)">
+              HF 下载
+            </Button>
+            <Button size="sm" variant="ghost" @click="downloadRecommendedModel(rec.msUrl)">
+              ModelScope 下载
+            </Button>
+          </template>
+        </ListRow>
+      </Card>
+      <Card v-if="ai.models.length" padding="none">
+        <ListRow
+          v-for="model in ai.models"
+          :key="model.path"
+          :title="modelFileName(model.path)"
+          :subtitle="modelSummary(model)"
+        >
+          <template #actions>
+            <Button
+              size="sm"
+              :variant="isSelected('chat', model.path) ? 'primary' : 'ghost'"
+              @click="selectModel('chat', model.path)"
+            >
+              {{ isSelected("chat", model.path) ? "对话模型 ✓" : "设为对话模型" }}
+            </Button>
+            <Button
+              size="sm"
+              :variant="isSelected('embedding', model.path) ? 'primary' : 'ghost'"
+              @click="selectModel('embedding', model.path)"
+            >
+              {{ isSelected("embedding", model.path) ? "知识库模型 ✓" : "设为知识库模型" }}
+            </Button>
+          </template>
+        </ListRow>
+      </Card>
+      <EmptyState
+        v-else
+        title="还没有模型文件。"
+        hint="下载一个模型，归档后会出现在这里。"
+      />
       <p v-if="ai.status" class="hint muted">
         对话引擎：{{ ai.status.chat.running ? "运行中" : ai.status.chat.configured ? "待命" : "未配置" }}
         · 知识库引擎：{{ ai.status.embedding.running ? "运行中" : ai.status.embedding.configured ? "待命" : "未配置" }}
@@ -533,29 +571,39 @@ async function openKbSourcePath(path: string) {
           添加来源
         </button>
       </div>
-      <div v-if="kb.sources.length" class="card list">
-        <div v-for="source in kb.sources" :key="source.id" class="krow">
-          <div class="kinfo">
-            <div class="kname">{{ source.path }}</div>
-            <div class="kmeta muted">
-              已索引 {{ source.indexedCount }} / {{ source.docCount }}
-              <template v-if="source.failedCount"> · 失败 {{ source.failedCount }}</template>
-            </div>
-          </div>
-          <button
-            class="btn btn-ghost small"
-            :disabled="!!kb.activeIngest"
-            @click="reindexKbSource(source.id)"
-          >
-            摄入
-          </button>
-          <button class="btn btn-ghost small" @click="openKbSourcePath(source.path)">
-            打开位置
-          </button>
-          <button class="btn btn-danger small" @click="removeKbSource(source.id)">删除</button>
-        </div>
-      </div>
-      <div v-else class="empty card muted">还没有知识库来源。</div>
+      <Card v-if="kb.sources.length" padding="none">
+        <ListRow
+          v-for="source in kb.sources"
+          :key="source.id"
+          :title="source.path"
+          :subtitle="
+            `已索引 ${source.indexedCount} / ${source.docCount}` +
+            (source.failedCount ? ` · 失败 ${source.failedCount}` : '')
+          "
+        >
+          <template #actions>
+            <Button
+              size="sm"
+              variant="ghost"
+              :disabled="!!kb.activeIngest"
+              @click="reindexKbSource(source.id)"
+            >
+              摄入
+            </Button>
+            <Button size="sm" variant="ghost" @click="openKbSourcePath(source.path)">
+              打开位置
+            </Button>
+            <Button size="sm" variant="danger" @click="removeKbSource(source.id)">
+              删除
+            </Button>
+          </template>
+        </ListRow>
+      </Card>
+      <EmptyState
+        v-else
+        title="还没有知识库来源。"
+        hint="选一个文本文件目录作为来源，摄入后就能直接提问。"
+      />
 
       <div class="card kb-ask">
         <div class="ask-row">
@@ -598,192 +646,134 @@ async function openKbSourcePath(path: string) {
   max-width: 640px;
 }
 h2 {
-  font-size: 1rem;
-  margin: 0 0 8px;
+  font-size: var(--fs-lg);
+  margin: 0 0 var(--sp-2);
 }
 h3 {
-  font-size: 0.85rem;
-  margin: 22px 0 8px;
+  font-size: var(--fs-sm);
+  margin: var(--sp-5) 0 var(--sp-2);
 }
 h3:first-child {
   margin-top: 0;
 }
 .intro {
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
   line-height: 1.6;
-  margin: 0 0 16px;
+  margin: 0 0 var(--sp-4);
 }
 .hint {
-  font-size: 0.78rem;
+  font-size: var(--fs-sm);
   line-height: 1.6;
-  margin: 0 0 8px;
-}
-.list {
-  padding: 4px 0;
-}
-.lrow,
-.rrow,
-.mrow,
-.srow,
-.krow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-}
-.lrow + .lrow,
-.rrow + .rrow,
-.mrow + .mrow,
-.srow + .srow,
-.krow + .krow {
-  border-top: 1px solid var(--aa-border);
-}
-.linfo,
-.rinfo,
-.minfo,
-.sinfo,
-.kinfo {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.lname,
-.rname,
-.mname,
-.sname,
-.kname {
-  font-size: 0.88rem;
-  font-weight: 600;
-  word-break: break-all;
-}
-.mmeta,
-.smeta,
-.kmeta {
-  font-size: 0.76rem;
+  margin: 0 0 var(--sp-2);
 }
 .smeta.error {
   color: var(--aa-danger);
 }
 .kb-ask {
-  padding: 16px;
-  margin-top: 4px;
+  padding: var(--sp-4);
+  margin-top: var(--sp-1);
 }
 .ask-row {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 .ask-row input[type="text"] {
   flex: 1;
-  padding: 8px 12px;
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--aa-border);
   border-radius: var(--aa-radius-sm);
   background: var(--aa-bg);
   color: var(--aa-text);
-  font-size: 0.88rem;
+  font-size: var(--fs-sm);
 }
 .answer {
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
   border-top: 1px solid var(--aa-border);
 }
 .answer-text {
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   white-space: pre-wrap;
 }
 .answer-error {
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
   color: var(--aa-danger);
 }
 .answer-sources {
-  margin-top: 10px;
+  margin-top: var(--sp-2);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-  font-size: 0.8rem;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
 }
 .cats {
   font-weight: 400;
-  font-size: 0.78rem;
-  margin-left: 6px;
-}
-.lmeta {
-  font-size: 0.76rem;
+  font-size: var(--fs-sm);
+  margin-left: var(--sp-1);
 }
 .rtemplate,
 .rtags {
-  padding: 6px 10px;
+  padding: var(--sp-1) var(--sp-2);
   border: 1px solid var(--aa-border);
   border-radius: var(--aa-radius-sm);
   background: var(--aa-bg);
   color: var(--aa-text);
-  font-size: 0.8rem;
-}
-.small {
-  padding: 5px 12px;
-  min-height: 32px;
-  font-size: 0.8rem;
-  flex-shrink: 0;
-}
-.empty {
-  padding: 24px;
-  text-align: center;
+  font-size: var(--fs-sm);
 }
 .banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-  margin-bottom: 12px;
-  font-size: 0.85rem;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-sm);
 }
 .new-rule-toggle {
-  margin-top: 10px;
+  margin-top: var(--sp-2);
 }
 .form {
-  padding: 18px 20px;
+  padding: var(--sp-4) var(--sp-4);
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  margin-top: 10px;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
 }
 .field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-1);
 }
 .field label {
-  font-size: 0.85rem;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
 }
 .field input[type="text"] {
-  padding: 8px 12px;
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--aa-border);
   border-radius: var(--aa-radius-sm);
   background: var(--aa-bg);
   color: var(--aa-text);
-  font-size: 0.88rem;
+  font-size: var(--fs-sm);
 }
 .cat-checks {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--sp-2);
 }
 .cat-check {
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 0.8rem;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
   font-weight: 400;
 }
 .actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 /* 开关（同 SettingsPage 既有样式） */

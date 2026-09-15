@@ -73,19 +73,19 @@ async function respond(accept: boolean) {
 }
 .dialog {
   width: 380px;
-  padding: 24px;
+  padding: var(--sp-5);
 }
 h3 {
-  margin: 0 0 8px;
+  margin: 0 0 var(--sp-2);
 }
 .sub {
-  margin: 0 0 14px;
-  font-size: 0.95rem;
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-base);
 }
 .dir {
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
-  margin-bottom: 18px;
+  margin-bottom: var(--sp-4);
   word-break: break-all;
 }
 .path {
@@ -93,12 +93,12 @@ h3 {
 }
 .link {
   color: var(--aa-primary);
-  font-weight: 600;
-  margin-left: 6px;
+  font-weight: var(--fw-bold);
+  margin-left: var(--sp-1);
 }
 .actions {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-2);
 }
 .actions .btn {
   flex: 1;

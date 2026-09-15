@@ -9,6 +9,7 @@ import ReceiveDialog from "./components/ReceiveDialog.vue";
 import ToastHost from "./components/ToastHost.vue";
 
 import { useDeviceStore } from "./stores/devices";
+import { usePluginStore } from "./stores/plugins";
 import { useSettingsStore } from "./stores/settings";
 import { useSyncStore } from "./stores/sync";
 import { useTransferStore } from "./stores/transfer";
@@ -17,6 +18,7 @@ import { startEventBridge } from "./lib/events";
 import { asCommandError } from "./lib/api";
 
 const devices = useDeviceStore();
+const plugins = usePluginStore();
 const settings = useSettingsStore();
 const sync = useSyncStore();
 const transfer = useTransferStore();
@@ -39,6 +41,7 @@ onMounted(async () => {
       devices.loadSelf(),
       devices.loadDevices(),
       devices.loadReachability(),
+      plugins.load(),
       settings.load(),
       transfer.loadHistory(),
       sync.load(),

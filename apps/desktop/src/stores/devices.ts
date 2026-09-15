@@ -7,6 +7,7 @@ import type {
   DeviceInfo,
   DeviceReachability,
   PendingIntroduction,
+  TrustLevel,
 } from "../lib/types";
 
 interface State {
@@ -68,6 +69,13 @@ export const useDeviceStore = defineStore("devices", {
      * **不要**替它编一个「离线」。 */
     reachOf(id: string): DeviceReachability | undefined {
       return this.reachability.find((r) => r.deviceId === id);
+    },
+
+    /** 升 / 降完全信任。升级后后端会立刻拉一次对端索引（顺带就是一次可达性探测），
+     * 所以两份数据都要重拉。 */
+    async setTrustLevel(deviceId: string, level: TrustLevel) {
+      await api.setTrustLevel(deviceId, level);
+      await Promise.all([this.loadDevices(), this.loadReachability()]);
     },
 
     // —— 信任传递 / 引荐（TRUST_DESIGN.md §5，里程碑 R2）——

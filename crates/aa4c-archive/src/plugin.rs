@@ -158,6 +158,25 @@ fn parse<T: serde::de::DeserializeOwned>(method: &str, payload: Value) -> Result
         .map_err(|e| Aa4cError::Protocol(format!("archive.{method}: bad arguments: {e}")))
 }
 
+/// 从 F1.3 之前的扁平设置键里把本插件的设置捡回来（同 `aa4c_download` 那份，理由见其文档）。
+///
+/// 注意键名的映射：老键带 `ai_` / `archive_` 前缀，新结构体里不带——那些前缀是
+/// 「全挤在一个结构体里」才需要的。
+async fn migrate_legacy_settings(store: &Store) -> ArchiveSettings {
+    async fn get<T: serde::de::DeserializeOwned>(store: &Store, key: &str) -> Option<T> {
+        let raw = store.get_setting(key).await.ok().flatten()?;
+        serde_json::from_str(&raw).ok()
+    }
+    ArchiveSettings {
+        archive_root: get(store, "archive_root").await,
+        auto_enabled: get(store, "archive_auto_enabled").await,
+        models_dir: get(store, "ai_models_dir").await,
+        chat_model: get(store, "ai_chat_model").await,
+        embedding_model: get(store, "ai_embedding_model").await,
+        idle_timeout_minutes: get(store, "ai_idle_timeout_minutes").await,
+    }
+}
+
 impl Plugin for ArchivePlugin {
     fn id(&self) -> &'static str {
         "archive"
@@ -171,8 +190,13 @@ impl Plugin for ArchivePlugin {
         let ai_spawner = self.ai_spawner.clone();
         let cell = self.running.clone();
         Box::pin(async move {
-            let settings: ArchiveSettings =
-                serde_json::from_value(ctx.settings.clone()).unwrap_or_default();
+            // `null` = 还没写过 `plugin.archive`：全新安装，或从 F1.3 之前升上来
+            // （设置还在老的扁平键里）。
+            let settings: ArchiveSettings = if ctx.settings.is_null() {
+                migrate_legacy_settings(&ctx.store).await
+            } else {
+                serde_json::from_value(ctx.settings.clone()).unwrap_or_default()
+            };
 
             // 首次启动写入五条**默认停用**的预设规则（装完就悄悄移动用户文件是
             // 意外行为，ARCHIVE_DESIGN.md §2.3）。失败只记 warn，不阻断插件启动。

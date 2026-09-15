@@ -63,8 +63,8 @@ async function pair() {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 7px;
-  padding: 18px 14px;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-3);
   text-align: center;
 }
 .device.offline {
@@ -74,18 +74,18 @@ async function pair() {
   font-size: 2rem;
 }
 .name {
-  font-weight: 700;
+  font-weight: var(--fw-bold);
   font-size: 0.98rem;
 }
 .status {
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-1);
 }
 .act {
-  margin-top: 6px;
+  margin-top: var(--sp-1);
   width: 100%;
 }
 </style>

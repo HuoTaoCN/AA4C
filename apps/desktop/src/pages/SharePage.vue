@@ -5,6 +5,15 @@ import { useSyncStore } from "../stores/sync";
 import { useToastStore } from "../stores/toast";
 import { asCommandError } from "../lib/api";
 import { humanBytes, timeText } from "../lib/format";
+import {
+  Button,
+  Card,
+  EmptyState,
+  Field,
+  Icon,
+  ListRow,
+  Toolbar,
+} from "../components/ui";
 
 const share = useShareStore();
 const sync = useSyncStore();
@@ -91,204 +100,157 @@ function expiryText(s: { expiresAt: number | null; status: string }): string {
 
 <template>
   <div class="share">
-    <h2>分享</h2>
-    <p class="intro muted">
-      把已经同步到本机的文件生成一个链接，发给已配对的朋友——对方粘贴链接即可取回，不需要
-      你在线盯着（局域网内不依赖服务器；跨网络可达随「远程连接」设置就绪自然生效）。
-    </p>
+    <Toolbar
+      title="分享"
+      subtitle="生成一条链接，给还没配对的人——对方粘贴链接即可取回"
+    />
 
-    <div class="card form">
-      <div class="field">
-        <label>选一个要分享的文件</label>
+    <Card>
+      <Field
+        label="选一个要分享的文件"
+        :hint="
+          localFiles.length
+            ? undefined
+            : '还没有本地文件可分享——先在「同步」页添加一个同步文件夹。'
+        "
+      >
         <select v-model="form.relPath">
           <option value="" disabled>请选择…</option>
           <option v-for="f in localFiles" :key="f.basePath" :value="f.basePath">
             {{ f.relPath }}（{{ humanBytes(f.size) }}）
           </option>
         </select>
-        <p v-if="!localFiles.length" class="hint muted">
-          还没有本地文件可分享——先在「同步」页添加一个同步文件夹。
-        </p>
-      </div>
-      <div class="field">
-        <label>有效期</label>
-        <select v-model="form.expiry">
-          <option v-for="o in EXPIRY_OPTIONS" :key="o.key" :value="o.key">{{ o.label }}</option>
-        </select>
-      </div>
-      <div class="actions">
-        <button class="btn btn-primary" :disabled="creating || !form.relPath" @click="createShare">
-          {{ creating ? "生成中…" : "生成分享链接" }}
-        </button>
-      </div>
-    </div>
+      </Field>
 
-    <div class="card form">
-      <div class="field">
-        <label>打开一个分享链接</label>
+      <Field label="有效期">
+        <select v-model="form.expiry">
+          <option v-for="o in EXPIRY_OPTIONS" :key="o.key" :value="o.key">
+            {{ o.label }}
+          </option>
+        </select>
+      </Field>
+
+      <div class="actions">
+        <Button
+          variant="primary"
+          :disabled="creating || !form.relPath"
+          @click="createShare"
+        >
+          {{ creating ? "生成中…" : "生成分享链接" }}
+        </Button>
+      </div>
+    </Card>
+
+    <Card>
+      <Field label="打开一个分享链接">
         <div class="row">
           <input v-model="openLink" type="text" placeholder="aa4c://share/…" />
-          <button class="btn btn-primary small" :disabled="opening || !openLink.trim()" @click="openShare">
+          <Button
+            variant="primary"
+            :disabled="opening || !openLink.trim()"
+            @click="openShare"
+          >
             {{ opening ? "打开中…" : "打开" }}
-          </button>
+          </Button>
         </div>
-      </div>
-    </div>
+      </Field>
+    </Card>
 
-    <h3>我的分享</h3>
-    <div v-if="share.shares.length" class="card list">
-      <div v-for="s in share.shares" :key="s.id" class="srow">
-        <div class="sinfo">
-          <div class="sname">
-            <span class="nm">{{ s.relPath }}</span>
-            <span class="tag" :class="{ off: s.status === 'revoked' }">{{ expiryText(s) }}</span>
-          </div>
-          <div class="slink">
-            <span class="link">{{ s.link }}</span>
-            <button class="btn btn-ghost small" @click="copyLink(s.link)">复制</button>
-          </div>
-        </div>
-        <button
-          class="btn btn-danger small"
-          :disabled="s.status === 'revoked'"
-          @click="revoke(s.id)"
+    <section>
+      <h2>我的分享</h2>
+      <Card v-if="share.shares.length" padding="none">
+        <ListRow
+          v-for="s in share.shares"
+          :key="s.id"
+          :title="s.relPath"
+          :status="expiryText(s)"
+          :tone="s.status === 'revoked' ? 'muted' : 'ok'"
         >
-          吊销
-        </button>
-      </div>
-    </div>
-    <div v-else class="empty card muted">还没有生成过分享链接。</div>
+          <template #detail>
+            <div class="slink">
+              <code>{{ s.link }}</code>
+              <Button size="sm" variant="ghost" @click="copyLink(s.link)">
+                <Icon name="copy" :size="14" /> 复制
+              </Button>
+            </div>
+          </template>
+          <template #actions>
+            <Button
+              size="sm"
+              variant="danger"
+              :disabled="s.status === 'revoked'"
+              @click="revoke(s.id)"
+            >
+              吊销
+            </Button>
+          </template>
+        </ListRow>
+      </Card>
+      <EmptyState
+        v-else
+        title="还没有生成过分享链接。"
+        hint="选一个本地文件生成链接，发给对方即可——不需要你在线盯着。"
+      />
+    </section>
   </div>
 </template>
 
 <style scoped>
 .share {
-  max-width: 640px;
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
 }
 h2 {
-  font-size: 1rem;
-  margin: 0 0 8px;
-}
-h3 {
-  font-size: 0.85rem;
-  margin: 26px 0 10px;
-}
-.intro {
-  font-size: 0.85rem;
-  line-height: 1.6;
-  margin: 0 0 16px;
-}
-.form {
-  padding: 18px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-label {
-  font-size: 0.88rem;
-  font-weight: 600;
-}
-select,
-input[type="text"] {
-  padding: 9px 12px;
-  border: 1px solid var(--aa-border);
-  border-radius: var(--aa-radius-sm);
-  background: var(--aa-bg);
-  color: var(--aa-text);
-  font-size: 0.9rem;
-}
-.row {
-  display: flex;
-  gap: 10px;
-}
-.row input {
-  flex: 1;
+  margin: 0;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-bold);
+  color: var(--aa-text-dim);
 }
 .actions {
   display: flex;
   justify-content: flex-end;
+  margin-top: var(--sp-3);
 }
-.small {
-  padding: 5px 12px;
-  min-height: 32px;
-  font-size: 0.8rem;
-}
-.hint {
-  font-size: 0.78rem;
-}
-.list {
-  padding: 4px 0;
-}
-.srow {
+.row {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
+  gap: var(--sp-2);
 }
-.srow + .srow {
-  border-top: 1px solid var(--aa-border);
-}
-.sinfo {
+.row input {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.sname {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.nm {
-  font-weight: 600;
-  font-size: 0.9rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tag {
-  flex-shrink: 0;
-  font-size: 0.68rem;
-  font-weight: 600;
-  color: #9a6a00;
-  background: #ffedcc;
-  padding: 1px 8px;
-  border-radius: 999px;
-}
-.tag.off {
-  color: var(--aa-text-dim);
-  background: var(--aa-surface-2);
-}
-@media (prefers-color-scheme: dark) {
-  .tag {
-    color: #ffce80;
-    background: #4a3a16;
-  }
 }
 .slink {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  min-width: 0;
 }
-.link {
+.slink code {
   flex: 1;
   min-width: 0;
-  font-size: 0.78rem;
-  color: var(--aa-text-dim);
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: monospace;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--aa-text-dim);
 }
-.empty {
-  padding: 24px;
-  text-align: center;
+select,
+input[type="text"] {
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--aa-border);
+  border-radius: var(--aa-radius-sm);
+  background: var(--aa-bg);
+  color: var(--aa-text);
+  font: inherit;
+  font-size: var(--fs-base);
 }
 </style>

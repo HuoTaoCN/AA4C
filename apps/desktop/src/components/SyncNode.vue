@@ -78,8 +78,8 @@ async function onFile() {
 .row {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 8px 14px 8px 12px;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-3);
   cursor: pointer;
 }
 .row:hover {
@@ -91,7 +91,7 @@ async function onFile() {
 .caret {
   display: inline-block;
   width: 12px;
-  font-size: 0.7rem;
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
   transition: transform 0.12s;
 }
@@ -99,36 +99,36 @@ async function onFile() {
   transform: rotate(90deg);
 }
 .fic {
-  font-size: 1rem;
+  font-size: var(--fs-lg);
 }
 .dir .nm {
-  font-weight: 600;
+  font-weight: var(--fw-bold);
 }
 .nm {
   flex: 1;
-  font-size: 0.9rem;
+  font-size: var(--fs-base);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .cnt {
-  font-size: 0.78rem;
+  font-size: var(--fs-sm);
 }
 .sz {
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
 }
 .ow {
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
   min-width: 96px;
   text-align: right;
 }
 
 /* 冲突（多版本）标记 */
 .conflict {
-  font-size: 0.68rem;
-  font-weight: 600;
-  padding: 2px 7px;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  padding: var(--sp-1) var(--sp-2);
   border-radius: 999px;
   color: #7a5200;
   background: #fff0d6;
@@ -145,10 +145,10 @@ async function onFile() {
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 2px 9px;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  padding: var(--sp-1) var(--sp-2);
   border-radius: 999px;
 }
 .pill .dot {

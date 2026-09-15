@@ -430,7 +430,7 @@ impl RelayDialer for RelayDialerImpl {
         let fallback_save_dir = self.fallback_save_dir.clone();
         Box::pin(async move {
             let settings =
-                crate::settings::load(&store, &fallback_name, &fallback_save_dir).await?;
+                crate::settings::load_core(&store, &fallback_name, &fallback_save_dir).await?;
             if !settings.enable_remote {
                 return Err(Aa4cError::Network(
                     "remote not enabled, no relay available".into(),
@@ -493,7 +493,7 @@ impl PunchDialer for PunchDialerImpl {
         let signal_channel = self.signal_channel.clone();
         Box::pin(async move {
             let settings =
-                crate::settings::load(&store, &fallback_name, &fallback_save_dir).await?;
+                crate::settings::load_core(&store, &fallback_name, &fallback_save_dir).await?;
             if !settings.enable_remote {
                 return Err(Aa4cError::Network(
                     "remote not enabled, no punch available".into(),
@@ -602,7 +602,7 @@ async fn run_persistent_session(
     outbox_rx: &mut mpsc::UnboundedReceiver<(DeviceId, Vec<SocketAddr>)>,
     portmap: &PortMapState,
 ) -> Result<()> {
-    let settings = crate::settings::load(store, fallback_name, fallback_save_dir).await?;
+    let settings = crate::settings::load_core(store, fallback_name, fallback_save_dir).await?;
     if !settings.enable_remote {
         return Ok(());
     }

@@ -60,6 +60,21 @@ fn require_tiny_gguf() -> PathBuf {
     }
 }
 
+/// 设置归档插件自己的模型路径。
+///
+/// F1.3 之后 `Settings` 里不再有 `ai_chat_model` 这些字段——它们住在
+/// `settings.plugins["archive"]` 这个不透明 JSON 里，由插件自己解释。
+/// 测试也照着这条路走，顺带就验证了「设置改了之后插件真的收得到」。
+async fn set_archive_models(core: &std::sync::Arc<Core>, chat: &str, embedding: Option<&str>) {
+    let mut settings = core.get_settings().await.unwrap();
+    let mut own = json!({ "chat_model": chat });
+    if let Some(e) = embedding {
+        own["embedding_model"] = json!(e);
+    }
+    settings.plugins.insert("archive".into(), own);
+    core.update_settings(settings).await.unwrap();
+}
+
 /// AI 建议全链路（V0.5 里程碑 AI3，ARCHIVE_DESIGN.md §5）：真实 `llama-server` + 微型
 /// GGUF（同 AI2.0/AI3.1 实证结论，不 mock）走 `Core` 公开方法——`start_suggest`
 /// 正确组好输入（文件识别 + 读文本头，这两步是 aa4c-core 的职责，aa4c-ai 不碰
@@ -92,9 +107,7 @@ async fn ai_suggest_lifecycle_through_core_orchestration() {
         )))));
     let core = Core::start(config).await.expect("core starts");
 
-    let mut settings = core.get_settings().await.unwrap();
-    settings.ai_chat_model = Some(require_tiny_gguf().to_string_lossy().into_owned());
-    core.update_settings(settings).await.unwrap();
+    set_archive_models(&core, &require_tiny_gguf().to_string_lossy(), None).await;
 
     let src = dir.path().join("todo.md");
     tokio::fs::write(&src, "- buy milk\n- write tests\n")
@@ -224,10 +237,7 @@ async fn kb_lifecycle_through_core_orchestration() {
     let core = Core::start(config).await.expect("core starts");
 
     let model = require_tiny_gguf().to_string_lossy().into_owned();
-    let mut settings = core.get_settings().await.unwrap();
-    settings.ai_chat_model = Some(model.clone());
-    settings.ai_embedding_model = Some(model);
-    core.update_settings(settings).await.unwrap();
+    set_archive_models(&core, &model, Some(&model)).await;
 
     let notes_dir = dir.path().join("notes");
     tokio::fs::create_dir_all(&notes_dir).await.unwrap();

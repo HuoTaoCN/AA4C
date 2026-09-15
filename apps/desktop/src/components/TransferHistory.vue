@@ -1,21 +1,21 @@
 <script setup lang="ts">
+// 传输记录（UI_DESIGN_SPEC §3.2 ②）。
+//
+// F3 之前这是独立的「记录」页。记录就是传输的过去时，为它单开一个导航目标，
+// 代价是用户想确认「刚才那个发成功没有」得离开当前页——而那正是他刚做完的事。
+// 现在它是传输页下半部分的一个区块。
 import { computed } from "vue";
-import { useRouter } from "vue-router";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useDeviceStore } from "../stores/devices";
 import { useSettingsStore } from "../stores/settings";
 import { useTransferStore } from "../stores/transfer";
 import { useToastStore } from "../stores/toast";
-import {
-  baseName,
-  dayGroup,
-  humanBytes,
-  statusText,
-  timeText,
-} from "../lib/format";
+import { Button, Card, EmptyState, Icon } from "./ui";
+import { baseName, dayGroup, humanBytes, statusText, timeText } from "../lib/format";
 import type { TransferTask } from "../lib/types";
 
-const router = useRouter();
+const emit = defineEmits<{ resend: [] }>();
+
 const devices = useDeviceStore();
 const settings = useSettingsStore();
 const transfer = useTransferStore();
@@ -47,23 +47,27 @@ async function openFolder() {
 </script>
 
 <template>
-  <div class="records">
+  <section class="history">
     <h2>记录</h2>
-    <div v-if="transfer.history.length === 0" class="empty card muted">
-      还没有传输记录。
-    </div>
+
+    <EmptyState
+      v-if="transfer.history.length === 0"
+      title="还没有传输记录。"
+      hint="发出去或收到的文件都会记在这里。"
+    />
+
     <template v-for="g in GROUPS" :key="g">
-      <section v-if="grouped[g].length" class="group">
+      <div v-if="grouped[g].length" class="group">
         <h3>{{ g }}</h3>
-        <ul class="card">
-          <li v-for="t in grouped[g]" :key="t.id">
+        <Card padding="none">
+          <div v-for="t in grouped[g]" :key="t.id" class="row">
             <span class="dir">{{ t.direction === "send" ? "⬆" : "⬇" }}</span>
             <div class="info">
               <div class="line1">
                 <span class="peer">{{ devices.nameOf(t.peer) }}</span>
-                <span class="files muted">{{ summary(t) }}</span>
+                <span class="files">{{ summary(t) }}</span>
               </div>
-              <div class="line2 muted">
+              <div class="line2">
                 {{ humanBytes(t.totalBytes) }} · {{ statusText(t.status) }} ·
                 {{ timeText(t.createdAt) }}
                 <span v-if="t.status === 'failed' && t.error" class="err">
@@ -72,61 +76,59 @@ async function openFolder() {
               </div>
             </div>
             <div class="ops">
-              <button
+              <Button
                 v-if="t.direction === 'recv' && t.status === 'done'"
-                class="link"
+                size="sm"
+                variant="ghost"
                 @click="openFolder"
               >
-                打开所在文件夹
-              </button>
-              <button
+                <Icon name="folder-open" :size="14" /> 打开所在文件夹
+              </Button>
+              <Button
                 v-if="t.status === 'failed'"
-                class="link"
-                @click="router.push('/send')"
+                size="sm"
+                variant="ghost"
+                @click="emit('resend')"
               >
-                重新发送
-              </button>
+                <Icon name="retry" :size="14" /> 重新发送
+              </Button>
             </div>
-          </li>
-        </ul>
-      </section>
+          </div>
+        </Card>
+      </div>
     </template>
-  </div>
+  </section>
 </template>
 
 <style scoped>
-.records {
-  max-width: 820px;
+.history {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
 }
 h2 {
-  font-size: 1rem;
-  margin: 0 0 16px;
+  margin: 0;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-bold);
+  color: var(--aa-text-dim);
 }
 h3 {
-  font-size: 0.82rem;
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
-  margin: 18px 0 8px;
 }
-.empty {
-  padding: 30px;
-  text-align: center;
-}
-ul {
-  list-style: none;
-  margin: 0;
-  padding: 4px 0;
-}
-li {
+.row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
 }
-li + li {
+.row + .row {
   border-top: 1px solid var(--aa-border);
 }
 .dir {
-  font-size: 1.1rem;
+  flex: none;
+  color: var(--aa-text-dim);
 }
 .info {
   flex: 1;
@@ -134,36 +136,33 @@ li + li {
 }
 .line1 {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-2);
   align-items: baseline;
   min-width: 0;
 }
 .peer {
-  font-weight: 600;
-  font-size: 0.9rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-medium);
+  flex: none;
 }
 .files {
-  font-size: 0.85rem;
-  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--aa-text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
+  white-space: nowrap;
 }
 .line2 {
-  font-size: 0.78rem;
-  margin-top: 2px;
+  margin-top: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--aa-text-dim);
 }
 .err {
   color: var(--aa-danger);
 }
-.link {
-  color: var(--aa-primary);
-  font-weight: 600;
-  font-size: 0.82rem;
-  white-space: nowrap;
+.ops {
+  flex: none;
+  display: flex;
+  gap: var(--sp-2);
 }
 </style>

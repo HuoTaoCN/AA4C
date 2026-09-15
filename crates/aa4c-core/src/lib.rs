@@ -162,7 +162,13 @@ impl Core {
             .default_save_dir
             .to_string_lossy()
             .into_owned();
-        let current = settings::load(&store, &fallback_name, &save_dir_fallback).await?;
+        let current = settings::load(
+            &store,
+            &fallback_name,
+            &save_dir_fallback,
+            &config.plugins.ids(),
+        )
+        .await?;
 
         let self_info = DeviceInfo {
             id: identity.device_id().clone(),
@@ -375,7 +381,7 @@ impl Core {
             store: store.clone(),
             events: events.clone(),
             data_dir: config.data_dir.clone(),
-            settings: settings::plugin_settings(&current),
+            settings: current.plugins.clone(),
         };
         config.plugins.start_all(&plugin_ctx).await;
         let plugins = config.plugins;

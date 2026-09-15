@@ -25,8 +25,8 @@ const others = computed(() => transfer.activeList.length - 1);
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 18px;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
   border-top: 1px solid var(--aa-border);
   background: var(--aa-surface);
 }
@@ -39,7 +39,7 @@ const others = computed(() => transfer.activeList.length - 1);
   min-width: 0;
 }
 .more {
-  font-size: 0.78rem;
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
   white-space: nowrap;
 }

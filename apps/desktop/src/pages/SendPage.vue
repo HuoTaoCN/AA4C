@@ -11,6 +11,8 @@ import { useTransferStore } from "../stores/transfer";
 import { useToastStore } from "../stores/toast";
 import { asCommandError } from "../lib/api";
 import { baseName, platformIcon } from "../lib/format";
+import TransferHistory from "../components/TransferHistory.vue";
+import { Button, Card, EmptyState } from "../components/ui";
 import type { DeviceInfo } from "../lib/types";
 
 const route = useRoute();
@@ -21,8 +23,13 @@ const toast = useToastStore();
 
 const paths = ref<string[]>([]);
 const dragging = ref(false);
+// 设备页的「发送」按钮跳过来时带 `?to=<设备 id>`（`device=` 是旧参数名，一并认）。
 const selectedId = ref<string | null>(
-  typeof route.query.device === "string" ? route.query.device : null,
+  typeof route.query.to === "string"
+    ? route.query.to
+    : typeof route.query.device === "string"
+      ? route.query.device
+      : null,
 );
 
 const onlineDevices = computed(() => devices.visible.filter((d) => d.online));
@@ -91,13 +98,13 @@ async function aa() {
 
 <template>
   <div class="send">
-    <h2>AA 发送</h2>
+    <h2>发送</h2>
     <div class="steps">
       <!-- 第 1 步：选文件 -->
       <section class="step">
         <div class="label">1 · 选文件</div>
         <div
-          class="drop card"
+          class="drop"
           :class="{ active: dragging }"
           @click="pickFiles"
         >
@@ -113,8 +120,8 @@ async function aa() {
           </ul>
         </div>
         <div class="pickers">
-          <button class="btn btn-ghost" @click="pickFiles">选择文件</button>
-          <button class="btn btn-ghost" @click="pickFolder">选择文件夹</button>
+          <Button variant="ghost" @click="pickFiles">选择文件</Button>
+          <Button variant="ghost" @click="pickFolder">选择文件夹</Button>
           <span v-if="paths.length" class="muted count">
             共 {{ paths.length }} 项
           </span>
@@ -124,7 +131,7 @@ async function aa() {
       <!-- 第 2 步：选设备 -->
       <section class="step">
         <div class="label">2 · 选设备</div>
-        <div v-if="onlineDevices.length" class="devices card">
+        <Card v-if="onlineDevices.length" class="devices" padding="sm">
           <div
             v-for="d in onlineDevices"
             :key="d.id"
@@ -135,13 +142,17 @@ async function aa() {
             <span class="ico">{{ platformIcon(d.platform) }}</span>
             <span class="nm">{{ d.name }}</span>
             <span class="online-dot"></span>
-            <button v-if="!d.trusted" class="btn btn-ghost small" @click.stop="pair(d)">
+            <Button v-if="!d.trusted" size="sm" variant="ghost" @click.stop="pair(d)">
               先配对
-            </button>
+            </Button>
             <span v-else-if="d.id === selectedId" class="check">✓</span>
           </div>
-        </div>
-        <div v-else class="empty card muted">附近没有在线设备</div>
+        </Card>
+        <EmptyState
+          v-else
+          title="附近没有在线设备"
+          hint="在另一台设备上打开 AA连接，连到同一个 WiFi。"
+        />
       </section>
 
       <!-- 第 3 步：AA -->
@@ -150,6 +161,11 @@ async function aa() {
         <button class="aa" :disabled="!canSend" @click="aa">AA！</button>
       </section>
     </div>
+
+    <!-- 记录：F3 起并入本页（UI_DESIGN_SPEC §3.2 ②）。
+         「发」和「发过什么」是同一件事的两个时态，切页会让人为了看一眼刚才
+         发成功没有而离开当前页。 -->
+    <TransferHistory @resend="paths = []" />
   </div>
 </template>
 
@@ -158,8 +174,9 @@ async function aa() {
   max-width: 980px;
 }
 h2 {
-  font-size: 1rem;
-  margin: 0 0 16px;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  margin: 0 0 var(--sp-4);
 }
 .steps {
   display: grid;
@@ -169,16 +186,19 @@ h2 {
      "占 1fr 份额，但允许缩到 0"的写法，让轨道宽度真正由 1fr 分配决定，
      子元素内部的 overflow/ellipsis 才有意义。 */
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 18px;
+  gap: var(--sp-5);
   align-items: start;
 }
 .label {
-  font-size: 0.82rem;
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
-  margin-bottom: 8px;
-  font-weight: 600;
+  margin-bottom: var(--sp-2);
+  font-weight: var(--fw-bold);
 }
 .drop {
+  background: var(--aa-surface);
+  border: 1px solid var(--aa-border);
+  border-radius: var(--aa-radius);
   min-height: 150px;
   display: flex;
   flex-direction: column;
@@ -187,14 +207,14 @@ h2 {
   text-align: center;
   cursor: pointer;
   border-style: dashed;
-  padding: 14px;
+  padding: var(--sp-4);
 }
 .drop.active {
   border-color: var(--aa-primary);
   background: var(--aa-primary-dim);
 }
 .drop p {
-  margin: 3px 0;
+  margin: var(--sp-1) 0;
 }
 .files {
   list-style: none;
@@ -208,9 +228,9 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 5px 4px;
-  font-size: 0.85rem;
+  gap: var(--sp-2);
+  padding: var(--sp-1);
+  font-size: var(--fs-sm);
 }
 .fn {
   white-space: nowrap;
@@ -226,20 +246,20 @@ h2 {
 .pickers {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 10px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
 }
 .count {
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
 }
 .devices {
-  padding: 6px;
+  padding: var(--sp-2);
 }
 .drow {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
   border-radius: var(--aa-radius-sm);
   cursor: pointer;
 }
@@ -255,20 +275,15 @@ h2 {
 .nm {
   flex: 1;
   min-width: 0;
-  font-weight: 600;
-  font-size: 0.9rem;
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-base);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .check {
   color: var(--aa-primary);
-  font-weight: 800;
-}
-.small {
-  padding: 4px 10px;
-  min-height: 30px;
-  font-size: 0.8rem;
+  font-weight: var(--fw-bold);
 }
 .center {
   align-self: stretch;
@@ -282,10 +297,10 @@ h2 {
   border-radius: 50%;
   background: var(--aa-primary);
   color: #fff;
-  font-size: 1.5rem;
-  font-weight: 800;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
   box-shadow: 0 8px 24px var(--aa-primary-dim);
-  transition: transform 0.1s, filter 0.15s;
+  transition: transform var(--motion-fast), filter var(--motion-fast);
 }
 .aa:hover:not(:disabled) {
   filter: brightness(1.05);
@@ -297,12 +312,8 @@ h2 {
   opacity: 0.4;
   cursor: not-allowed;
 }
-.empty {
-  padding: 24px;
-  text-align: center;
-}
 
-@media (max-width: 700px) {
+@media (max-width: 699px) {
   .steps {
     grid-template-columns: 1fr;
   }

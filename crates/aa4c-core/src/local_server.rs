@@ -95,7 +95,7 @@ pub(crate) fn spawn_local_server_loop(
 ) {
     tokio::spawn(async move {
         loop {
-            match crate::settings::load(&store, &fallback_name, &fallback_save_dir).await {
+            match crate::settings::load_core(&store, &fallback_name, &fallback_save_dir).await {
                 Ok(s) => local.apply(&s).await,
                 Err(e) => tracing::debug!(error = %e, "load settings for local server failed"),
             }

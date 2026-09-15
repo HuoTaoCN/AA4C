@@ -146,31 +146,31 @@ async function openFolder() {
 .dc {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-1);
   width: 100%;
 }
 .row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 .title {
   flex: 1;
-  font-weight: 600;
-  font-size: 0.9rem;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-base);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .actions {
   display: flex;
-  gap: 4px;
+  gap: var(--sp-1);
   flex-shrink: 0;
 }
 .actions button {
   color: var(--aa-text-dim);
-  font-size: 0.9rem;
-  padding: 2px 6px;
+  font-size: var(--fs-base);
+  padding: var(--sp-1) var(--sp-1);
 }
 .actions button:hover {
   color: var(--aa-primary);
@@ -196,8 +196,8 @@ async function openFolder() {
 }
 .meta {
   display: flex;
-  gap: 12px;
-  font-size: 0.78rem;
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
   color: var(--aa-text-dim);
 }
 .err {
