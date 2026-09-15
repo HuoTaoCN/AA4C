@@ -186,7 +186,7 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
     gh api repos/HuoTaoCN/AA4C/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name): \(.conclusion // .status)"'
     ```
 
-## 四、下一步：V0.8「Focus」收缩到「连接」（F1 已完成，进行 F2）
+## 四、下一步：V0.8「Focus」——F1–F3 已完成，**F4 真机验证要你亲自做**
 
 **V0.3「AA Connect」六个里程碑（C1–C6）全部实现完毕并测试通过，且已打包发布 `v0.3.0-preview`**：连接阶梯「局域网直连 → 公网直连 → 打洞 → 中继」四档贯通，外加脱离配对关系的能力型分享，随三平台安装包 + Android arm64 APK + `aa4c-server` Linux 二进制一起发出（GitHub Release，prerelease）。设计见 [CONNECT_DESIGN.md](CONNECT_DESIGN.md)（§12 已确认决策清单）、实现拆解见 [V0.3_IMPLEMENTATION_PLAN.md](V0.3_IMPLEMENTATION_PLAN.md)。
 
@@ -268,15 +268,15 @@ cd AA4C/apps/desktop && pnpm tauri android build --apk --target aarch64 --debug
 
 五个阶段（编号用 F，不用 R——R1–R4 已经是 V0.7 的里程碑编号）：
 
-- **F1 插件化**：✅ 已完成，见第一节表格最后一行。
-- **F2 连接可见化**：把连接阶梯从内部实现细节变成一等数据（`ConnectionVia` 细化成
-  局域网直连 / 公网直连(v4|v6) / 打洞 / 中继，`resolve_addr` 返回地址来源，新增
-  `DeviceReachability` 与 `ReachabilityUpdated` 事件，失败原因人话化）。
-- **F3 重建 UI**：设计系统（21 个组件里 ~2100 行私有 CSS → 共享组件 + 完整 token 集）、
-  换掉 9 个 emoji 上 lucide（设计规范 V0.2 就承诺了，欠了五个版本）、主导航 8→4、
-  首页从功能宫格改成**设备网络状态图**、设置页 903→300 行（插件设置由 `settings_schema()`
-  驱动的通用渲染器画）。**纪律：先写 UI_DESIGN_SPEC 的页面规格再改代码**——归档页与下载页
-  当初就是没规格徒手画出来的，那是「杂乱」的直接成因。
+- **F1 插件化**：✅ 已完成。core 6533→4419 行、Tauri 命令 60→35、`aa4c-core` 依赖列表里
+  不再有 download/ai/archive/engine。
+- **F1.3 设置拆分**：✅ 已完成（随 F3）。`Settings` 28 字段 → 核心 10 项 + 一格不透明插件 JSON；
+  迁移写在插件自己那儿（从旧版本升上来的库里设置还在老的扁平键里）。
+- **F2 连接可见化**：✅ 已完成。`fetch_index` 此前把算出来的连接档位原地丢掉，现在它是
+  `DeviceReachability` 的数据源；不新开后台循环。
+- **F3 重建 UI**：✅ 已完成。主导航 8→5、首页=设备网络状态图、token + 8 个共享组件、
+  lucide 换 emoji、设置页 903→383、移动端去掉「我的」杂物抽屉。
+  **第一次做了 GUI 走查**（dev server 逐页看，此前七个版本从未做过）。
 - **F4 真机验证**：照 [docs/V0.7_VERIFICATION.md](docs/V0.7_VERIFICATION.md) 走 A/B/C 三组。
   **只能用户本人做**，Agent 代劳不了。
 - **F5 补深度**：分享链接 deep-link + 二维码（「把文件 AA 给我」这句传播语现在落不了地，
